@@ -4629,8 +4629,58 @@ void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction){
 }
 
 void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction){
+    /*
+    OpShiftRightLogical
+
+    Shift the bits in Base right by the number of bits specified in Shift. The most-significant bits are zero filled.
+    Result Type must be a scalar or vector of integer type.
+    The type of each Base and Shift must be a scalar or vector of integer type. Base and Shift must have the same number of components. The number of components and bit width of the type of Base must be the same as in Result Type.
+    Shift is consumed as an unsigned integer. The resulting value is undefined if Shift is greater than or equal to the bit width of the components of Base.
+    Results are computed per component.
+    */
     assert(instruction.opcode == spv::Op::OpShiftRightLogical);
-    assertx ("SPIRV simulator: Op_ShiftRightLogical is currently unimplemented");
+
+    uint32_t type_id = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op1_id = instruction.words[3];
+    uint32_t op2_id = instruction.words[4];
+
+    const Type& type = types_.at(type_id);
+    const Value& op1 = GetValue(op1_id);
+    const Value& op2 = GetValue(op2_id);
+
+    if (type.kind == Type::Kind::Vector) {
+        Value result = std::make_shared<VectorV>();
+        auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(op1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(op2);
+
+        assertm(vec1->elems.size() == vec2->elems.size() && vec1->elems.size() == type.vector.elem_count, "SPIRV simulator: Vector size mismatch in Op_ShiftRightLogical");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i) {
+            if (std::holds_alternative<uint64_t>(vec1->elems[i]) && std::holds_alternative<uint64_t>(vec2->elems[i])) {
+                result_vec->elems.push_back(std::get<uint64_t>(vec1->elems[i]) >> std::get<uint64_t>(vec2->elems[i]));
+            } else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<uint64_t>(vec2->elems[i])) {
+                result_vec->elems.push_back((uint64_t)std::get<int64_t>(vec1->elems[i]) >> std::get<uint64_t>(vec2->elems[i]));
+            } else {
+                assertx("SPIRV simulator: Invalid operand types in Op_ShiftRightLogical vector");
+            }
+        }
+        SetValue(result_id, result);
+    } else if (type.kind == Type::Kind::Int) {
+        Value result;
+        if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<uint64_t>(op2)) {
+            result = std::get<uint64_t>(op1) >> std::get<uint64_t>(op2);
+        } else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<uint64_t>(op2)) {
+            result = (uint64_t)std::get<int64_t>(op1) >> std::get<uint64_t>(op2);
+        } else {
+            assertx("SPIRV simulator: Invalid operand types in Op_ShiftRightLogical");
+        }
+        SetValue(result_id, result);
+    } else {
+        assertx("SPIRV simulator: Invalid result type in Op_ShiftRightLogical, must be vector or int");
+    }
 }
 
 void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction){
