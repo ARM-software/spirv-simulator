@@ -259,6 +259,8 @@ public:
 
     const std::vector<PhysicalAddressData>& GetPhysicalAddressData() const {return physical_address_pointer_source_data_;}
 
+    const std::unordered_map<uint32_t, Type>& GetTypes() const {return types_;}
+
     std::set<std::string> unsupported_opcodes;
 
 private:
@@ -380,7 +382,7 @@ private:
     void T_Float(const Instruction&);
     void T_Vector(const Instruction&);
     void T_Matrix(const Instruction&);
-    void T_Array(const Instruction&); 
+    void T_Array(const Instruction&);
     void T_Struct(const Instruction&);
     void T_Pointer(const Instruction&);
     void T_ForwardPointer(const Instruction&);

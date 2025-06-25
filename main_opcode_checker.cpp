@@ -1,24 +1,5 @@
 #include "spirv_simulator.hpp"
-
-static std::vector<uint32_t> ReadFile(const std::string &path){
-    std::ifstream infile(path, std::ios::binary | std::ios::ate);
-
-    if(!infile){
-        throw std::runtime_error("Cannot open " + path);
-    }
-
-    auto size = infile.tellg();
-    infile.seekg(0, std::ios::beg);
-
-    std::vector<uint32_t> buf(static_cast<size_t>(size) / 4);
-
-    infile.read(reinterpret_cast<char*>(buf.data()), size);
-    if (infile.fail()){
-        throw std::runtime_error("Read error");
-    }
-
-    return buf;
-}
+#include "util.hpp"
 
 
 int main(int argc, char** argv){
@@ -38,7 +19,7 @@ int main(int argc, char** argv){
     std::set<std::string> unsupported_instructions;
     while (std::getline(file, line)) {
         SPIRVSimulator::InputData inputs;
-        SPIRVSimulator::SPIRVSimulator sim(ReadFile(line), inputs);
+        SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(line), inputs);
         unsupported_instructions.insert(sim.unsupported_opcodes.begin(), sim.unsupported_opcodes.end());
     }
 

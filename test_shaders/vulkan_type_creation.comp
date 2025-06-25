@@ -1,0 +1,36 @@
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+struct Test{ int x; int y;};
+
+
+layout(std430, set = 0, binding = 0) buffer Buf {
+    int data[];
+};
+
+void main()
+{
+    // Scalar types
+	bool boolean_var = true;
+	int int_var = 1;
+	float float_var = 2;
+
+    // Vector types
+    vec2 vec2_var = vec2(1,2);
+	vec3 vec3_var = vec3(1,2,3);
+	vec4 vec4_var = vec4(1,2,3,4);
+
+    // Matrix types
+    mat2 mat2_var = mat2(1,2,3,4);
+    mat2 mat2_var_vecs = mat2(vec2_var,vec2_var);
+    mat3 mat3_var = mat3(1,2,3,4,5,6,7,8,9);
+    mat3 mat3_var_vecs = mat3(vec3_var,vec3_var,vec3_var);
+    mat4 mat4_var = mat4(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16);
+    mat4 mat4_var_vecs = mat4(vec4_var,vec4_var,vec4_var,vec4_var);
+
+    // Array
+    float arr[3] = float[3](2.5, 7.0, 1.5);
+
+    // Struct
+    Test t = Test(1, 2);
+}
