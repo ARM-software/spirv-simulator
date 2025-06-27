@@ -1,29 +1,13 @@
-#define CATCH_CONFIG_MAIN
-#define CATCH_CONFIG_ENABLE_ALL_REPORTERS
+#include "testing_common.hpp"
 
 #include <memory>
 #include <algorithm>
 #include <cstdint>
 #include <unordered_map>
+#include <filesystem>
 
-#include <catch2/catch_test_macros.hpp>
-#include "../spirv_simulator.hpp"
-#include "../util.hpp"
-
-const char* input_test_file = "../test_shaders/vulkan_type_creation.spirv";
-
-struct SimulatorSetup
-{
-	SimulatorSetup(){
-		sim = std::make_unique<SPIRVSimulator::SPIRVSimulator>(util::ReadFile(input_test_file), inputs, false);
-		sim->Run();
-	}
-
-	SPIRVSimulator::InputData inputs{};
-	std::unique_ptr<SPIRVSimulator::SPIRVSimulator> sim;
-};
-
-static SimulatorSetup setup;
+std::filesystem::path input_test_file_path = std::filesystem::path(TEST_SHADER_DIR) / "vulkan_type_creation.spirv";
+static SimulatorSetup setup(input_test_file_path.c_str());
 
 TEST_CASE("1: Declaring an main function that returns \"void\" should create a \"void\" type","[single-file]")
 {
