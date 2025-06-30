@@ -259,50 +259,60 @@ public:
 
     const std::vector<PhysicalAddressData>& GetPhysicalAddressData() const {return physical_address_pointer_source_data_;}
 
-    const std::unordered_map<uint32_t, Type>& GetTypes() const {return types_;}
-
     std::set<std::string> unsupported_opcodes;
 
-private:
-    // Used to create object id's for entries not created by a spirv instruction
-    uint32_t next_external_id_ = 0;
+    virtual ~SPIRVSimulator() = default;
 
-    // Parsing artefacts
-    InputData input_data_;
-    // Contains entry point ID -> entry point OpName labels (labels may be non-existent/empty)
-    std::unordered_map<uint32_t, std::string> entry_points_;
-    std::vector<uint32_t> program_words_;
-    std::span<const uint32_t> stream_;
-    std::vector<Instruction> instructions_;
-    std::unordered_map<uint32_t, std::vector<uint32_t>> spec_instr_words_;
-    std::unordered_map<uint32_t, Instruction> spec_instructions_;
-    std::unordered_map<uint32_t, size_t> result_id_to_inst_index_;
-    std::unordered_map<uint32_t, Type> types_;
-    std::unordered_map<uint32_t, std::vector<uint32_t>> struct_members_;
-    std::unordered_map<uint32_t, uint32_t> forward_type_declarations_;  // Unused, consider removing this
-    std::unordered_map<uint32_t, std::vector<DecorationInfo>> decorators_;
-    std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<DecorationInfo>>> struct_decorators_;
-    std::unordered_map<uint32_t, std::string> extended_imports_;
-    // Any result ID in this set, can be treated as if it has any valid value for the given type
-    std::set<uint32_t> arbitrary_values_;
-    // This maps the result ID of pointers to the result ID of values stored through them
-    std::unordered_map<uint32_t, uint32_t> values_stored_;
+protected:
+  SPIRVSimulator() = default;
 
-    // Debug only
-    bool verbose_;
+  // Used to create object id's for entries not created by a spirv instruction
+  uint32_t next_external_id_ = 0;
 
-    // These hold information about any pointers that reference physical storage buffers
-    std::vector<PointerV> physical_address_pointers_;
-    std::vector<std::pair<PointerV, PointerV>> pointers_to_physical_address_pointers_;
-    std::vector<PhysicalAddressData> physical_address_pointer_source_data_;
-    std::unordered_map<uint32_t, DataSourceBits> data_source_bits_;
+  // Parsing artefacts
+  InputData input_data_;
+  // Contains entry point ID -> entry point OpName labels (labels may be
+  // non-existent/empty)
+  std::unordered_map<uint32_t, std::string> entry_points_;
+  std::vector<uint32_t> program_words_;
+  std::span<const uint32_t> stream_;
+  std::vector<Instruction> instructions_;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> spec_instr_words_;
+  std::unordered_map<uint32_t, Instruction> spec_instructions_;
+  std::unordered_map<uint32_t, size_t> result_id_to_inst_index_;
+  std::unordered_map<uint32_t, Type> types_;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> struct_members_;
+  std::unordered_map<uint32_t, uint32_t>
+      forward_type_declarations_; // Unused, consider removing this
+  std::unordered_map<uint32_t, std::vector<DecorationInfo>> decorators_;
+  std::unordered_map<uint32_t,
+                     std::unordered_map<uint32_t, std::vector<DecorationInfo>>>
+      struct_decorators_;
+  std::unordered_map<uint32_t, std::string> extended_imports_;
+  // Any result ID in this set, can be treated as if it has any valid value for
+  // the given type
+  std::set<uint32_t> arbitrary_values_;
+  // This maps the result ID of pointers to the result ID of values stored
+  // through them
+  std::unordered_map<uint32_t, uint32_t> values_stored_;
 
-    // Control flow
-    struct FunctionInfo{
-        size_t inst_index;
-        size_t first_inst_index;
-        std::vector<uint32_t> parameter_ids_;
-        std::vector<uint32_t> parameter_type_ids_;
+  // Debug only
+  bool verbose_;
+
+  // These hold information about any pointers that reference physical storage
+  // buffers
+  std::vector<PointerV> physical_address_pointers_;
+  std::vector<std::pair<PointerV, PointerV>>
+      pointers_to_physical_address_pointers_;
+  std::vector<PhysicalAddressData> physical_address_pointer_source_data_;
+  std::unordered_map<uint32_t, DataSourceBits> data_source_bits_;
+
+  // Control flow
+  struct FunctionInfo {
+    size_t inst_index;
+    size_t first_inst_index;
+    std::vector<uint32_t> parameter_ids_;
+    std::vector<uint32_t> parameter_type_ids_;
     };
     uint32_t prev_defined_func_id_;
     std::unordered_map<uint32_t, FunctionInfo> funcs_;
@@ -343,37 +353,37 @@ private:
 
     // Helpers
     // TODO: Many more of these can be const, fix
-    void DecodeHeader();
-    void ParseAll();
-    void RegisterOpcodeHandlers();
-    void CheckOpcodeSupport();
-    void Validate();
-    void ExecuteInstruction(const Instruction&);
-    std::string GetValueString(const Value&);
-    std::string GetTypeString(const Type&);
-    void PrintInstruction(const Instruction&);
-    void HandleUnimplementedOpcode(const Instruction&);
-    Value MakeScalar(uint32_t type_id, const uint32_t*& words);
-    Value MakeDefault(uint32_t type_id, const uint32_t** initial_data=nullptr);
-    Value& Deref(const PointerV &ptr);
-    Value& GetValue(uint32_t result_id);
-    void SetValue(uint32_t result_id, const Value& value);
-    Type GetType(uint32_t result_id) const;
-    uint32_t GetTypeID(uint32_t result_id) const;
-    void ExtractWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
-    uint64_t GetPointerOffset(const PointerV& pointer_value);
-    size_t GetBitizeOfType(uint32_t type_id);
-    size_t GetBitizeOfTargetType(const PointerV& pointer);
-    void GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
-    std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
-    bool HasDecorator(uint32_t result_id, spv::Decoration decorator);
-    bool HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator);
-    uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset=0);
-    uint32_t GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset=0);
-    uint32_t GetNextExternalID(){uint32_t new_id = next_external_id_; next_external_id_ += 1; return new_id;}
-    bool ValueIsArbitrary(uint32_t result_id) const {return arbitrary_values_.contains(result_id);};
-    Value CopyValue(const Value& value) const;
-    std::unordered_map<uint32_t,Value>& Heap(uint32_t sc){ return heaps_[sc]; }
+    virtual void DecodeHeader();
+    virtual void ParseAll();
+    virtual void RegisterOpcodeHandlers();
+    virtual void CheckOpcodeSupport();
+    virtual void Validate();
+    virtual void ExecuteInstruction(const Instruction&);
+    virtual std::string GetValueString(const Value&);
+    virtual std::string GetTypeString(const Type&);
+    virtual void PrintInstruction(const Instruction&);
+    virtual void HandleUnimplementedOpcode(const Instruction&);
+    virtual Value MakeScalar(uint32_t type_id, const uint32_t*& words);
+    virtual Value MakeDefault(uint32_t type_id, const uint32_t** initial_data=nullptr);
+    virtual Value& Deref(const PointerV &ptr);
+    virtual Value& GetValue(uint32_t result_id);
+    virtual void SetValue(uint32_t result_id, const Value& value);
+    virtual Type GetType(uint32_t result_id) const;
+    virtual uint32_t GetTypeID(uint32_t result_id) const;
+    virtual void ExtractWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
+    virtual uint64_t GetPointerOffset(const PointerV& pointer_value);
+    virtual size_t GetBitizeOfType(uint32_t type_id);
+    virtual size_t GetBitizeOfTargetType(const PointerV& pointer);
+    virtual void GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
+    virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
+    virtual bool HasDecorator(uint32_t result_id, spv::Decoration decorator);
+    virtual bool HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator);
+    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset=0);
+    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset=0);
+    virtual uint32_t GetNextExternalID(){uint32_t new_id = next_external_id_; next_external_id_ += 1; return new_id;}
+    virtual bool ValueIsArbitrary(uint32_t result_id) const {return arbitrary_values_.contains(result_id);};
+    virtual Value CopyValue(const Value& value) const;
+    virtual std::unordered_map<uint32_t,Value>& Heap(uint32_t sc){ return heaps_[sc]; }
 
     // Opcode handlers, 96/498 implemented for SPIRV 1.6
     void T_Void(const Instruction&);

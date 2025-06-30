@@ -3,22 +3,43 @@
 #ifndef ARM_TESTING_COMMON_HPP
 #define ARM_TESTING_COMMON_HPP
 
+#include <cstdint>
+#include <functional>
+#include <unordered_map>
+#include <vector>
+
 #define CATCH_CONFIG_MAIN
+#include <catch2/catch_test_macros.hpp>
 
 #include <spirv_simulator.hpp>
 #include <util.hpp>
-#include <catch2/catch_test_macros.hpp>
-#include <string_view>
 
-struct SimulatorSetup
-{
-	SimulatorSetup(std::string_view input_file){
-		sim = std::make_unique<SPIRVSimulator::SPIRVSimulator>(util::ReadFile(input_file.data()), inputs, false);
-		sim->Run();
-	}
+struct SPIRVSimulatorMockedFunctions {
+  std::function<void(uint32_t, const SPIRVSimulator::Value &)> SetValueMock;
+  std::function<SPIRVSimulator::Value &(uint32_t)> GetValueMock;
+  std::function<SPIRVSimulator::Type(uint32_t)> GetTypeMock;
+};
 
-	SPIRVSimulator::InputData inputs{};
-	std::unique_ptr<SPIRVSimulator::SPIRVSimulator> sim;
+class SPIRVSimulatorMock : public SPIRVSimulator::SPIRVSimulator {
+public:
+  SPIRVSimulatorMock(const SPIRVSimulatorMockedFunctions &mocked_functions)
+      : mocked_functions_(mocked_functions) {
+    RegisterOpcodeHandlers();
+  }
+
+  void ExecuteSingleInstruction(const ::SPIRVSimulator::Instruction &instruction) {
+    ExecuteInstruction(instruction);
+  }
+
+protected:
+  SPIRVSimulatorMockedFunctions mocked_functions_;
+
+protected:
+  void DecodeHeader() override;
+  void SetValue(uint32_t result_id,
+                const ::SPIRVSimulator::Value &value) override;
+  ::SPIRVSimulator::Value &GetValue(uint32_t result_id) override;
+  ::SPIRVSimulator::Type GetType(uint32_t result_id) const override;
 };
 
 #endif

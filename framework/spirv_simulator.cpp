@@ -1359,7 +1359,7 @@ Value& SPIRVSimulator::Deref(const PointerV &ptr){
 }
 
 Value& SPIRVSimulator::GetValue(uint32_t result_id){
-    for (auto riter = call_stack_.rbegin(); riter != call_stack_.rend(); ++riter) { 
+    for (auto riter = call_stack_.rbegin(); riter != call_stack_.rend(); ++riter) {
         if (riter->locals.find(result_id) != riter->locals.end()){
             return riter->locals.at(result_id);
         }
@@ -2453,7 +2453,7 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction){
     uint32_t type_id = instruction.words[1];
     uint32_t result_id = instruction.words[2];
 
-    const Type& type = types_.at(type_id);
+    const Type type = GetType(type_id);
 
     if (type.kind == Type::Kind::Vector){
         Value result = std::make_shared<VectorV>();
@@ -5415,7 +5415,7 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction){
 
 void SPIRVSimulator::Op_SNegate(const Instruction& instruction){
     /*
-    
+
     OpSNegate
 
     Signed-integer subtract of Operand from zero.
