@@ -8,8 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-#define CATCH_CONFIG_MAIN
-#include <catch2/catch_test_macros.hpp>
+#include <gtest/gtest.h>
 
 #include <spirv_simulator.hpp>
 #include <util.hpp>

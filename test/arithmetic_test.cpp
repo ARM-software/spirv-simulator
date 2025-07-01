@@ -1,4 +1,3 @@
-#include "catch2/catch_test_macros.hpp"
 #include "spirv.hpp"
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
@@ -9,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-TEST_CASE("1: Adding two integers", "[single-file]") {
+TEST(ArithmeticTest, IntegerAddition) {
   std::unordered_map<uint32_t, SPIRVSimulator::Value> values{
       {2, 1},
       {3, 2},
@@ -38,8 +37,8 @@ TEST_CASE("1: Adding two integers", "[single-file]") {
 
   mocked_functions.SetValueMock = [](uint32_t id,
                                      const SPIRVSimulator::Value &value) {
-    REQUIRE(id == 1);
-    REQUIRE(std::get<int64_t>(value) == static_cast<int64_t>(3));
+    EXPECT_EQ(id , 1);
+    EXPECT_EQ(std::get<int64_t>(value) , static_cast<int64_t>(3));
   };
 
   // This means add the values referenced by id's 2 and 3 into and store them in value referenced by id 1 of type id 0
