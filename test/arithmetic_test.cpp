@@ -1,51 +1,47 @@
-#include "spirv.hpp"
+#include <cstdint>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
 
-#include <cmath>
-#include <cstdint>
-#include <limits>
-#include <unordered_map>
-#include <vector>
+using namespace testing;
 
 TEST(ArithmeticTest, IntegerAddition) {
-  std::unordered_map<uint32_t, SPIRVSimulator::Value> values{
-      {2, 1},
-      {3, 2},
-      {std::numeric_limits<uint32_t>::max(), SPIRVSimulator::Value()}};
+  class Mock : public SPIRVSimulatorMockBase{
+      public:
+        MOCK_METHOD(void, SetValue,
+                    (uint32_t id, const ::  SPIRVSimulator::Value &value),
+                    (override));
+        MOCK_METHOD(::SPIRVSimulator::Value &, GetValue, (uint32_t id),
+                    (override));
 
-  SPIRVSimulatorMockedFunctions mocked_functions;
-
-  mocked_functions.GetValueMock =
-      [&values](uint32_t id) -> SPIRVSimulator::Value & {
-    auto result = values.find(id);
-    if (result != values.end()) {
-      return result->second;
-    }
-    return values[std::numeric_limits<uint32_t>::max()];
+        MOCK_METHOD(::SPIRVSimulator::Type, GetType, (uint32_t id),
+                    (const override));
   };
 
-  mocked_functions.GetTypeMock = [](uint32_t id) -> SPIRVSimulator::Type {
-    SPIRVSimulator::Type type{};
-    if (id == 0) {
-      type.kind = SPIRVSimulator::Type::Kind::Int;
-      type.scalar = {32, true};
-      return type;
-    };
-    return type;
-  };
+  SPIRVSimulator::Type type;
+  type.kind = SPIRVSimulator::Type::Kind::Int;
+  type.scalar = {32, true};
 
-  mocked_functions.SetValueMock = [](uint32_t id,
-                                     const SPIRVSimulator::Value &value) {
-    EXPECT_EQ(id , 1);
-    EXPECT_EQ(std::get<int64_t>(value) , static_cast<int64_t>(3));
-  };
+  Mock mock;
+  EXPECT_CALL(mock, GetType(0)).WillRepeatedly(::Return(type));
 
-  // This means add the values referenced by id's 2 and 3 into and store them in value referenced by id 1 of type id 0
+  ::SPIRVSimulator::Value lhs(1);
+  ::SPIRVSimulator::Value rhs(1);
+  EXPECT_CALL(mock, GetValue(2)).WillRepeatedly(::ReturnRef(lhs));
+  EXPECT_CALL(mock, GetValue(3)).WillRepeatedly(::ReturnRef(rhs));
+
+  uint32_t captured_id;
+  ::SPIRVSimulator::Value captured_value;
+  EXPECT_CALL(mock,SetValue(::_,::_)).WillOnce(::DoAll(::SaveArg<0>(&captured_id), ::SaveArg<1>(&captured_value)));
+
   std::vector<uint32_t> words{spv::Op::OpIAdd, 0, 1, 2, 3};
-  SPIRVSimulator::Instruction instruction{
-      .opcode = spv::Op::OpIAdd, .word_count = 5, .words = words};
+  SPIRVSimulator::Instruction instruction{.opcode = spv::Op::OpIAdd, .word_count = 5, .words = words};
 
-  SPIRVSimulatorMock mock(mocked_functions);
   mock.ExecuteSingleInstruction(instruction);
+
+  EXPECT_EQ(captured_id, 1);
+  EXPECT_EQ(std::get<int64_t>(captured_value), 3);
 }

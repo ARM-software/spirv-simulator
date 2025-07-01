@@ -10,13 +10,13 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-set(SOURCE_FILES arithmetic_test.cpp testing_common.cpp)
+set(SOURCE_FILES arithmetic_test.cpp)
 set(HEADER_FILES testing_common.hpp)
 
 add_executable(arithmetic_test)
 target_sources(arithmetic_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES})
 target_compile_definitions(arithmetic_test PRIVATE TEST_SHADER_DIR="${CMAKE_SOURCE_DIR}/test_shaders")
-target_link_libraries(arithmetic_test PRIVATE GTest::gtest_main spirv_simulator_lib)
+target_link_libraries(arithmetic_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
 
 include(CTest)
 include(GoogleTest)
