@@ -188,6 +188,12 @@ void SPIRVSimulator::RegisterOpcodeHandlers(){
     R(spv::Op::OpLogicalAnd,             [this](const Instruction& i){Op_LogicalAnd(i);});
     R(spv::Op::OpMatrixTimesMatrix,      [this](const Instruction& i){Op_MatrixTimesMatrix(i);});
     R(spv::Op::OpIsNan,                  [this](const Instruction& i){Op_IsNan(i);});
+    R(spv::Op::OpConvertFToS,            [this](const Instruction& i){OpConvertFToS(i);});
+    R(spv::Op::OpConvertFToU,            [this](const Instruction& i){OpConvertFToU(i);});
+    R(spv::Op::OpFOrdEqual,              [this](const Instruction& i){OpFOrdEqual(i);});
+    R(spv::Op::OpFOrdGreaterThanEqual,   [this](const Instruction& i){OpFOrdGreaterThanEqual(i);});
+    R(spv::Op::OpFOrdNotEqual,           [this](const Instruction& i){OpFOrdNotEqual(i);});
+    R(spv::Op::OpFRem,                   [this](const Instruction& i){OpFRem(i);});
 }
 
 void SPIRVSimulator::CheckOpcodeSupport(){
@@ -1359,7 +1365,7 @@ Value& SPIRVSimulator::Deref(const PointerV &ptr){
 }
 
 Value& SPIRVSimulator::GetValue(uint32_t result_id){
-    for (auto riter = call_stack_.rbegin(); riter != call_stack_.rend(); ++riter) { 
+    for (auto riter = call_stack_.rbegin(); riter != call_stack_.rend(); ++riter) {
         if (riter->locals.find(result_id) != riter->locals.end()){
             return riter->locals.at(result_id);
         }
@@ -5415,7 +5421,7 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction){
 
 void SPIRVSimulator::Op_SNegate(const Instruction& instruction){
     /*
-    
+
     OpSNegate
 
     Signed-integer subtract of Operand from zero.
@@ -5757,6 +5763,257 @@ void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction){
     */
     assert(instruction.opcode == spv::Op::OpImageTexelPointer);
     assertx ("SPIRV simulator: Op_ImageTexelPointer is currently unimplemented");
+}
+
+void SPIRVSimulator::OpConvertFToS(const Instruction& instruction){
+    /*
+    Convert value numerically from floating point to signed integer, with round toward 0.0.
+
+    Result Type must be a scalar or vector of integer type. Behavior is undefined if Result Type is not wide enough to hold the converted value.
+
+    Float Value must be a scalar or vector of floating-point type. It must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+   assert(instruction.opcode == spv::Op::OpConvertFToS);
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t val_id    = instruction.words[3];
+
+    const Type& type = types_.at(type_id);
+    const Value& x_val     = GetValue(val_id);
+    if (type.kind == Type::Kind::Vector){
+        Value result = std::make_shared<VectorV>();
+        auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm (std::holds_alternative<std::shared_ptr<VectorV>>(x_val), "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+
+        auto x_vec = std::get<std::shared_ptr<VectorV>>(x_val);
+
+        assertm (std::holds_alternative<double>(x_vec->elems[0]), "SPIRV simulator: Invalid vector component value for operand 1, must be bool");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i){
+            result_vec->elems.push_back((int64_t)(truncf(std::get<double>(x_vec->elems[i]))));
+        }
+        SetValue(result_id, result);
+    }
+    else if(type.kind == Type::Kind::Int)
+    {
+        Value result = (int64_t)(truncf(std::get<double>(x_val)));
+
+        SetValue(result_id, result);
+    }
+}
+void SPIRVSimulator::OpConvertFToU(const Instruction& instruction){
+    /*
+    Convert value numerically from floating point to unsigned integer, with round toward 0.0.
+
+    Result Type must be a scalar or vector of integer type, whose Signedness operand is 0. Behavior is undefined if Result Type is not wide enough to hold the converted value.
+
+    Float Value must be a scalar or vector of floating-point type. It must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+   assert(instruction.opcode == spv::Op::OpConvertFToU);
+   uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t val_id    = instruction.words[3];
+
+    const Type& type = types_.at(type_id);
+    const Value& x_val     = GetValue(val_id);
+    if (type.kind == Type::Kind::Vector){
+        Value result = std::make_shared<VectorV>();
+        auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm (std::holds_alternative<std::shared_ptr<VectorV>>(x_val), "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+
+        auto x_vec = std::get<std::shared_ptr<VectorV>>(x_val);
+
+        assertm (std::holds_alternative<double>(x_vec->elems[0]), "SPIRV simulator: Invalid vector component value for operand 1, must be float");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i){
+            result_vec->elems.push_back((uint64_t)(truncf(std::get<double>(x_vec->elems[i]))));
+        }
+        SetValue(result_id, result);
+    }
+    else if(type.kind == Type::Kind::Int)
+    {
+        Value result = (uint64_t)(truncf(std::get<float>(x_val)));
+
+        SetValue(result_id, result);
+    }
+}
+void SPIRVSimulator::OpFOrdEqual(const Instruction& instruction){
+    /*
+    Floating-point comparison for being ordered and equal.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of floating-point type. They must have the same type, and they must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFOrdEqual);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op1_id    = instruction.words[3];
+    uint32_t op2_id    = instruction.words[4];
+
+    const Type& type     = types_.at(type_id);
+    const Value& op1_val = GetValue(op1_id);
+    const Value& op2_val = GetValue(op2_id);
+
+    if(type.kind == Type::Kind::Vector){
+        assertm (std::holds_alternative<VectorVPtr>(op1_val), "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+        assertm (std::holds_alternative<VectorVPtr>(op2_val), "SPIRV simulator: Invalid value type for operand 2, must be vector when using vector type");
+        Value res = std::make_shared<VectorV>();
+        auto result_vec = std::get<VectorVPtr>(res);
+        auto op1_vec = std::get<VectorVPtr>(op1_val);
+        auto op2_vec = std::get<VectorVPtr>(op2_val);
+        for(uint32_t i = 0; i < type.vector.elem_count; i++){
+            bool is_ordered = !std::isnan(std::get<double>(op1_vec->elems[i])) && !std::isnan(std::get<double>(op2_vec->elems[i]));
+            bool is_equal   = std::get<double>(op1_vec->elems[i]) == std::get<double>(op2_vec->elems[i]);
+            result_vec->elems.push_back((uint64_t)(is_ordered && is_equal));
+        }
+        SetValue(result_id, res);
+    }
+    else if(type.kind == Type::Kind::BoolT){
+        bool is_ordered = !std::isnan(std::get<double>(op1_val)) && !std::isnan(std::get<double>(op2_val));
+        bool is_equal   = std::get<double>(op1_val) == std::get<double>(op2_val);
+        Value res = (uint64_t)(is_ordered && is_equal);
+        SetValue(result_id, res);
+    }
+}
+void SPIRVSimulator::OpFOrdGreaterThanEqual(const Instruction& instruction){
+    /*
+    Floating-point comparison if operands are ordered and Operand 1 is greater than or equal to Operand 2.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of floating-point type. They must have the same type, and they must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFOrdGreaterThanEqual);
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op1_id    = instruction.words[3];
+    uint32_t op2_id    = instruction.words[4];
+
+    const Type& type     = types_.at(type_id);
+    const Value& op1_val = GetValue(op1_id);
+    const Value& op2_val = GetValue(op2_id);
+
+    if(type.kind == Type::Kind::Vector){
+        assertm (std::holds_alternative<VectorVPtr>(op1_val), "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+        assertm (std::holds_alternative<VectorVPtr>(op2_val), "SPIRV simulator: Invalid value type for operand 2, must be vector when using vector type");
+        Value res = std::make_shared<VectorV>();
+        auto result_vec = std::get<VectorVPtr>(res);
+        auto op1_vec = std::get<VectorVPtr>(op1_val);
+        auto op2_vec = std::get<VectorVPtr>(op2_val);
+        for(uint32_t i = 0; i < type.vector.elem_count; i++){
+            bool is_ordered = !std::isnan(std::get<double>(op1_vec->elems[i])) && !std::isnan(std::get<double>(op2_vec->elems[i]));
+            bool is_gr_or_eq   = std::get<double>(op1_vec->elems[i]) >= std::get<double>(op2_vec->elems[i]);
+            result_vec->elems.push_back((uint64_t)(is_ordered && is_gr_or_eq));
+        }
+        SetValue(result_id, res);
+    }
+    else if(type.kind == Type::Kind::BoolT){
+        bool is_ordered = !std::isnan(std::get<double>(op1_val)) && !std::isnan(std::get<double>(op2_val));
+        bool is_gr_or_eq   = std::get<double>(op1_val) >= std::get<double>(op2_val);
+        Value res = (uint64_t)(is_ordered && is_gr_or_eq);
+        SetValue(result_id, res);
+    }
+}
+void SPIRVSimulator::OpFOrdNotEqual(const Instruction& instruction){
+    /*
+    Floating-point comparison for being ordered and not equal.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of floating-point type. They must have the same type, and they must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFOrdNotEqual);
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op1_id    = instruction.words[3];
+    uint32_t op2_id    = instruction.words[4];
+
+    const Type& type     = types_.at(type_id);
+    const Value& op1_val = GetValue(op1_id);
+    const Value& op2_val = GetValue(op2_id);
+
+    if(type.kind == Type::Kind::Vector){
+        assertm (std::holds_alternative<VectorVPtr>(op1_val), "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+        assertm (std::holds_alternative<VectorVPtr>(op2_val), "SPIRV simulator: Invalid value type for operand 2, must be vector when using vector type");
+        Value res = std::make_shared<VectorV>();
+        auto result_vec = std::get<VectorVPtr>(res);
+        auto op1_vec = std::get<VectorVPtr>(op1_val);
+        auto op2_vec = std::get<VectorVPtr>(op2_val);
+        for(uint32_t i = 0; i < type.vector.elem_count; i++){
+            bool is_ordered = !std::isnan(std::get<double>(op1_vec->elems[i])) && !std::isnan(std::get<double>(op2_vec->elems[i]));
+            bool is_equal   = std::get<double>(op1_vec->elems[i]) == std::get<double>(op2_vec->elems[i]);
+            result_vec->elems.push_back((uint64_t)(is_ordered && !is_equal));
+        }
+        SetValue(result_id, res);
+    }
+    else if(type.kind == Type::Kind::BoolT){
+        bool is_ordered = !std::isnan(std::get<double>(op1_val)) && !std::isnan(std::get<double>(op2_val));
+        bool is_equal   = std::get<double>(op1_val) == std::get<double>(op2_val);
+        Value res = (uint64_t)(is_ordered && !is_equal);
+        SetValue(result_id, res);
+    }
+}
+void SPIRVSimulator::OpFRem(const Instruction& instruction){
+    /*
+    The floating-point remainder whose sign matches the sign of Operand 1.
+
+    Result Type must be a scalar or vector of floating-point type.
+
+    The types of Operand 1 and Operand 2 both must be the same as Result Type.
+
+    Results are computed per component. The resulting value is undefined if Operand 2 is 0. Otherwise, the result is the remainder r of Operand 1 divided by Operand 2 where if r ≠ 0, the sign of r is the same as the sign of Operand 1.
+    */
+    assert(instruction.opcode == spv::Op::OpFRem);
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op1_id    = instruction.words[3];
+    uint32_t op2_id    = instruction.words[4];
+
+    const Type& type     = types_.at(type_id);
+    const Value& op1_val = GetValue(op1_id);
+    const Value& op2_val = GetValue(op2_id);
+    if(type.kind == Type::Kind::Vector){
+        assertm (std::holds_alternative<VectorVPtr>(op1_val), "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+        assertm (std::holds_alternative<VectorVPtr>(op2_val), "SPIRV simulator: Invalid value type for operand 2, must be vector when using vector type");
+        Value res = std::make_shared<VectorV>();
+        auto result_vec = std::get<VectorVPtr>(res);
+        auto op1_vec = std::get<VectorVPtr>(op1_val);
+        auto op2_vec = std::get<VectorVPtr>(op2_val);
+        for(uint32_t i = 0; i < type.vector.elem_count; i++){
+            bool is_positive = std::get<double>(op1_vec->elems[i]) >= 0.0;
+            double rem = remainder(std::get<double>(op1_vec->elems[i]), std::get<double>(op2_vec->elems[i]));
+            if((!is_positive && rem > 0.0) || (is_positive && rem < 0.0))
+            {
+                rem = -rem;
+            }
+            result_vec->elems.push_back(rem);
+        }
+        SetValue(result_id, res);
+    }
+    else if(type.kind == Type::Kind::Float){
+        bool is_positive = std::get<double>(op1_val) >= 0.0;
+        double rem = remainder(std::get<double>(op1_val), std::get<double>(op2_val));
+        if((!is_positive && rem > 0.0) || (is_positive && rem < 0.0))
+        {
+            rem = -rem;
+        }
+        Value res = res;
+        SetValue(result_id, res);
+    }
 }
 
 #undef assertx

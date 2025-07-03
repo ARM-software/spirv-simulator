@@ -179,14 +179,18 @@ struct PointerV;
 struct VectorV;
 struct MatrixV;
 
+using VectorVPtr    = std::shared_ptr<VectorV>;
+using MatrixVPtr    = std::shared_ptr<MatrixV>;
+using AggregateVPtr = std::shared_ptr<AggregateV>;
+
 using Value = std::variant<
     std::monostate,
     uint64_t,
     int64_t,
     double,
-    std::shared_ptr<VectorV>,
-    std::shared_ptr<MatrixV>,
-    std::shared_ptr<AggregateV>,
+    VectorVPtr,
+    MatrixVPtr,
+    AggregateVPtr,
     PointerV>;
 
 struct VectorV{
@@ -380,7 +384,7 @@ private:
     void T_Float(const Instruction&);
     void T_Vector(const Instruction&);
     void T_Matrix(const Instruction&);
-    void T_Array(const Instruction&); 
+    void T_Array(const Instruction&);
     void T_Struct(const Instruction&);
     void T_Pointer(const Instruction&);
     void T_ForwardPointer(const Instruction&);
@@ -487,6 +491,12 @@ private:
     void Op_LogicalAnd(const Instruction&);
     void Op_MatrixTimesMatrix(const Instruction&);
     void Op_IsNan(const Instruction&);
+    void OpConvertFToS(const Instruction&);
+    void OpConvertFToU(const Instruction&);
+    void OpFOrdEqual(const Instruction&);
+    void OpFOrdGreaterThanEqual(const Instruction&);
+    void OpFOrdNotEqual(const Instruction&);
+    void OpFRem(const Instruction&);
 };
 
 }
