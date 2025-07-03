@@ -17,10 +17,7 @@ public:
   }
   ~SPIRVSimulatorMockBase() = default;
 
-  void ExecuteSingleInstruction(const ::SPIRVSimulator::Instruction &instruction)
-  {
-    ExecuteInstruction(instruction);
-  }
+  using SPIRVSimulator::SPIRVSimulator::ExecuteInstruction;
 };
 
 #endif

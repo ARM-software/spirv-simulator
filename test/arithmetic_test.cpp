@@ -40,7 +40,7 @@ TEST(ArithmeticTest, IntegerAddition) {
   std::vector<uint32_t> words{spv::Op::OpIAdd, 0, 1, 2, 3};
   SPIRVSimulator::Instruction instruction{.opcode = spv::Op::OpIAdd, .word_count = 5, .words = words};
 
-  mock.ExecuteSingleInstruction(instruction);
+  mock.ExecuteInstruction(instruction);
 
   EXPECT_EQ(captured_id, 1);
   EXPECT_EQ(std::get<int64_t>(captured_value), 3);
