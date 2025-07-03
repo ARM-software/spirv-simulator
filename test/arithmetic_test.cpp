@@ -29,7 +29,7 @@ TEST(ArithmeticTest, IntegerAddition) {
   EXPECT_CALL(mock, GetType(0)).WillRepeatedly(::Return(type));
 
   ::SPIRVSimulator::Value lhs(1);
-  ::SPIRVSimulator::Value rhs(1);
+  ::SPIRVSimulator::Value rhs(2);
   EXPECT_CALL(mock, GetValue(2)).WillRepeatedly(::ReturnRef(lhs));
   EXPECT_CALL(mock, GetValue(3)).WillRepeatedly(::ReturnRef(rhs));
 
