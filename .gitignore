@@ -1,2 +1,5 @@
 build/*
 test_shaders/local
+
+.cache
+.vscode
