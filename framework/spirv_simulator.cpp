@@ -645,7 +645,7 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
             bool has_type_value = types_.find(instruction.words[1]) != types_.end();
             if (has_type_value)
             {
-                result_and_type << GetTypeString(GetTypeByResultId(instruction.words[1])) << "(" << instruction.words[1]
+                result_and_type << GetTypeString(GetTypeByTypeId(instruction.words[1])) << "(" << instruction.words[1]
                                 << ") ";
             }
         }
@@ -669,7 +669,7 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
         else if (instruction.opcode == spv::Op::OpTypePointer)
         {
             std::cout << spv::StorageClassToString((spv::StorageClass)instruction.words[2]) << " "
-                      << GetTypeString(GetTypeByResultId(instruction.words[3])) << "(" << instruction.words[3] << ") ";
+                      << GetTypeString(GetTypeByTypeId(instruction.words[3])) << "(" << instruction.words[3] << ") ";
         }
         else if (instruction.opcode == spv::Op::OpVariable)
         {
@@ -942,7 +942,7 @@ size_t SPIRVSimulator::GetBitizeOfTargetType(const PointerV& pointer)
     assertm(types_.find(pointer.type_id) != types_.end(),
             "SPIRV simulator: No valid type for the given pointer type ID was found");
 
-    Type type = GetTypeByResultId(pointer.type_id);
+    Type type = GetTypeByTypeId(pointer.type_id);
 
     uint32_t type_id = type.pointer.pointee_type_id;
     type             = GetTypeByTypeId(type_id);
@@ -1091,7 +1091,7 @@ void SPIRVSimulator::ExtractWords(const std::byte*       external_pointer,
                     HasDecorator(type_id, spv::Decoration::DecorationColMajor),
                 "SPIRV simulator: No RowMajor or ColMajor decorator for input matrix");
 
-        const Type& col_type = GetTypeByResultId(type.matrix.col_type_id);
+        const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
         assertm(col_type.kind == Type::Kind::Vector, "SPIRV simulator: Non-vector column type found in matrix");
 
         // Because row-major matrices may not have a valid col type, we extract the subcomponents directly
@@ -1132,7 +1132,7 @@ void SPIRVSimulator::ExtractWords(const std::byte*       external_pointer,
         size_t ext_ptr_offset = 0;
         for (auto base_type_id : base_type_ids)
         {
-            const Type& base_type = GetTypeByResultId(base_type_id);
+            const Type& base_type = GetTypeByTypeId(base_type_id);
             size_t      bytes_to_extract;
 
             if (base_type.kind == Type::Kind::Pointer)
@@ -1202,7 +1202,7 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value)
         else if (type.kind == Type::Kind::Vector)
         {
             type_id = type.vector.elem_type_id;
-            type    = GetTypeByResultId(type.vector.elem_type_id);
+            type    = GetTypeByTypeId(type.vector.elem_type_id);
             offset += indirection_index * std::ceil(type.scalar.width / 8.0);
         }
         else
@@ -2365,7 +2365,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         }
     }
 
-    const Type& pointee_type = GetTypeByResultId(type.pointer.pointee_type_id);
+    const Type& pointee_type = GetTypeByTypeId(type.pointer.pointee_type_id);
     if ((pointee_type.kind == Type::Kind::Pointer) &&
         (pointee_type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer))
     {
@@ -2498,7 +2498,7 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
     }
 
     const Type& result_type         = GetTypeByTypeId(type_id);
-    const Type& result_pointee_type = GetTypeByResultId(result_type.pointer.pointee_type_id);
+    const Type& result_pointee_type = GetTypeByTypeId(result_type.pointer.pointee_type_id);
     if ((result_pointee_type.kind == Type::Kind::Pointer) &&
         (result_pointee_type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer))
     {
@@ -4211,7 +4211,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     std::vector<std::byte> bytes;
     if (std::holds_alternative<std::shared_ptr<VectorV>>(operand))
     {
-        const Type&              elem_type = GetTypeByResultId(operand_type.vector.elem_type_id);
+        const Type&              elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
         std::shared_ptr<VectorV> vec       = std::get<std::shared_ptr<VectorV>>(operand);
         for (const Value& element : vec->elems)
         {
@@ -4274,7 +4274,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     Value result;
     if (type.kind == Type::Kind::Vector)
     {
-        const Type&              elem_type       = GetTypeByResultId(type.vector.elem_type_id);
+        const Type&              elem_type       = GetTypeByTypeId(type.vector.elem_type_id);
         uint32_t                 elem_size_bytes = elem_type.scalar.width / 8;
         std::shared_ptr<VectorV> vec             = std::get<std::shared_ptr<VectorV>>(result);
         uint32_t                 current_byte    = 0;
@@ -5212,7 +5212,7 @@ void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
     assertm(type.kind == Type::Kind::Matrix, "SPIRV simulator: Non-matrix type given to Op_Transpose");
     assertm(type.matrix.col_count > 0, "SPIRV simulator: Matrix type with no columns encountered");
 
-    const Type& col_type = GetTypeByResultId(type.matrix.col_type_id);
+    const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
     assertm(col_type.kind == Type::Kind::Vector,
             "SPIRV simulator: Non-vector column type in matrix type given to Op_Transpose");
     assertm(col_type.vector.elem_count > 0, "SPIRV simulator: Vector type with no elements encountered");
@@ -6116,7 +6116,7 @@ void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
 
     if (type.kind == Type::Kind::Vector)
     {
-        const Type&                    base_type  = GetTypeByResultId(base_type_id);
+        const Type&                    base_type  = GetTypeByTypeId(base_type_id);
         const std::shared_ptr<VectorV> vec        = std::get<std::shared_ptr<VectorV>>(base_val);
         std::shared_ptr<VectorV>       result_vec = std::make_shared<VectorV>();
 
@@ -6796,7 +6796,7 @@ void SPIRVSimulator::Op_MatrixTimesMatrix(const Instruction& instruction)
     assertm(left_type.kind == Type::Kind::Matrix, "SPIRV simulator: First operand is not a matrix");
     assertm(right_type.kind == Type::Kind::Matrix, "SPIRV simulator: Second operand is not a matrix");
 
-    const Type& left_col_type = GetTypeByResultId(left_type.matrix.col_type_id);
+    const Type& left_col_type = GetTypeByTypeId(left_type.matrix.col_type_id);
     assertm(left_col_type.kind == Type::Kind::Vector, "SPIRV simulator: Left matrix col type is not vector");
 
     const std::shared_ptr<MatrixV>& matrix_left  = std::get<std::shared_ptr<MatrixV>>(GetValue(matrix_left_id));
