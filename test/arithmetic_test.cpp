@@ -200,81 +200,81 @@ TEST_P(ArithmeticsTest, ArithmeticOperations)
 std::vector<ArithmeticParams> test_cases = {
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpSNegate)
-        .set_op1(SPIRVSimulator::Value(int64_t(1)), Type::i64)
+        .set_op1(int64_t(1), Type::i64)
         .set_op2(SPIRVSimulator::Value(), Type::i64)
-        .set_expected(SPIRVSimulator::Value(-1), Type::i64)
+        .set_expected(-1, Type::i64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpFNegate)
-        .set_op1(SPIRVSimulator::Value(1.0), Type::f64)
+        .set_op1(1.0, Type::f64)
         .set_op2(SPIRVSimulator::Value(), Type::f64)
-        .set_expected(SPIRVSimulator::Value(-1.0), Type::f64)
+        .set_expected(-1.0, Type::f64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpIAdd)
-        .set_op1(SPIRVSimulator::Value(1), Type::i64)
-        .set_op2(SPIRVSimulator::Value(2), Type::i64)
-        .set_expected(SPIRVSimulator::Value(3), Type::i64)
+        .set_op1(1, Type::i64)
+        .set_op2(2, Type::i64)
+        .set_expected(3, Type::i64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpFAdd)
-        .set_op1(SPIRVSimulator::Value(1.0), Type::f64)
-        .set_op2(SPIRVSimulator::Value(2.0), Type::f64)
-        .set_expected(SPIRVSimulator::Value(3.0), Type::f64)
+        .set_op1(1.0, Type::f64)
+        .set_op2(2.0, Type::f64)
+        .set_expected(3.0, Type::f64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpISub)
-        .set_op1(SPIRVSimulator::Value(uint64_t(1)), Type::u64)
-        .set_op2(SPIRVSimulator::Value(2), Type::i64)
-        .set_expected(SPIRVSimulator::Value(std::numeric_limits<uint64_t>::max()), Type::u64)
+        .set_op1(uint64_t(1), Type::u64)
+        .set_op2(2, Type::i64)
+        .set_expected(std::numeric_limits<uint64_t>::max(), Type::u64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpISub)
-        .set_op1(SPIRVSimulator::Value(1), Type::i64)
-        .set_op2(SPIRVSimulator::Value(2), Type::i64)
-        .set_expected(SPIRVSimulator::Value(-1), Type::i64)
+        .set_op1(1, Type::i64)
+        .set_op2(2, Type::i64)
+        .set_expected(-1, Type::i64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpFSub)
-        .set_op1(SPIRVSimulator::Value(1.0), Type::f64)
-        .set_op2(SPIRVSimulator::Value(2.0), Type::f64)
-        .set_expected(SPIRVSimulator::Value(-1.0), Type::f64)
+        .set_op1(1.0, Type::f64)
+        .set_op2(2.0, Type::f64)
+        .set_expected(-1.0, Type::f64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpIMul)
-        .set_op1(SPIRVSimulator::Value(2), Type::i64)
-        .set_op2(SPIRVSimulator::Value(2), Type::i64)
-        .set_expected(SPIRVSimulator::Value(4), Type::i64)
+        .set_op1(2, Type::i64)
+        .set_op2(2, Type::i64)
+        .set_expected(4, Type::i64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpFMul)
-        .set_op1(SPIRVSimulator::Value(2.0), Type::f64)
-        .set_op2(SPIRVSimulator::Value(2.0), Type::f64)
-        .set_expected(SPIRVSimulator::Value(4.0), Type::f64)
+        .set_op1(2.0, Type::f64)
+        .set_op2(2.0, Type::f64)
+        .set_expected(4.0, Type::f64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpSDiv)
-        .set_op1(SPIRVSimulator::Value(-5), Type::i64)
-        .set_op2(SPIRVSimulator::Value(2), Type::i64)
-        .set_expected(SPIRVSimulator::Value(-2), Type::i64)
+        .set_op1(-5, Type::i64)
+        .set_op2(2, Type::i64)
+        .set_expected(-2, Type::i64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpUDiv)
-        .set_op1(SPIRVSimulator::Value(uint64_t(5)), Type::u64)
-        .set_op2(SPIRVSimulator::Value(uint64_t(2)), Type::u64)
-        .set_expected(SPIRVSimulator::Value(uint64_t(2)), Type::u64)
+        .set_op1(uint64_t(5), Type::u64)
+        .set_op2(uint64_t(2), Type::u64)
+        .set_expected(uint64_t(2), Type::u64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpFDiv)
-        .set_op1(SPIRVSimulator::Value(1.0), Type::f64)
-        .set_op2(SPIRVSimulator::Value(3.0), Type::f64)
-        .set_expected(SPIRVSimulator::Value(1.0 / 3.0), Type::f64)
+        .set_op1(1.0, Type::f64)
+        .set_op2(3.0, Type::f64)
+        .set_expected(1.0 / 3.0, Type::f64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpUMod)
-        .set_op1(SPIRVSimulator::Value(uint64_t(13)), Type::u64)
-        .set_op2(SPIRVSimulator::Value(uint64_t(6)), Type::u64)
-        .set_expected(SPIRVSimulator::Value(uint64_t(1)), Type::u64)
+        .set_op1(uint64_t(13), Type::u64)
+        .set_op2(uint64_t(6), Type::u64)
+        .set_expected(uint64_t(1), Type::u64)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpIAdd)
@@ -320,32 +320,27 @@ std::vector<ArithmeticParams> test_cases = {
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpMatrixTimesVector)
-        .set_op1(
-            std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 })),
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 4.0 })) }),
-            Type::mat2)
+        .set_op1(std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
+                     std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }),
+                     std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 4.0 }) }),
+                 Type::mat2)
         .set_op2(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }), Type::vec2)
         .set_expected(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 7.0, 10.0 }), Type::vec2)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpMatrixTimesMatrix)
-        .set_op1(
-            std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 })),
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 4.0 })) }),
-            Type::mat2)
-        .set_op2(
-            std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 })),
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 4.0 })) }),
-            Type::mat2)
-        .set_expected(
-            std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                SPIRVSimulator::Value(std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 7.0, 10.0 })),
-                SPIRVSimulator::Value(
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 15.0, 22.0 })) }),
-            Type::mat2)
+        .set_op1(std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
+                     std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }),
+                     std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 4.0 }) }),
+                 Type::mat2)
+        .set_op2(std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
+                     std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }),
+                     std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 4.0 }) }),
+                 Type::mat2)
+        .set_expected(std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
+                          std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 7.0, 10.0 }),
+                          std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 15.0, 22.0 }) }),
+                      Type::mat2)
         .build(),
     ArithmeticParamsBuilder()
         .set_opcode(spv::Op::OpDot)
