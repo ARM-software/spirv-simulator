@@ -1,17 +1,14 @@
 #include "spirv_simulator.hpp"
+#include "util.hpp"
 
 #include <iostream>
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cmath>
 #include <iomanip>
 
 namespace SPIRVSimulator
 {
-
-#define assertx(msg) assert((void(msg), false))
-#define assertm(exp, msg) assert((void(msg), exp))
 
 constexpr uint32_t kWordCountShift = 16u;
 constexpr uint32_t kOpcodeMask     = 0xFFFFu;
@@ -3204,7 +3201,7 @@ void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
         {
             assertm(std::holds_alternative<uint64_t>(vec->elems[i]),
                     "SPIRV simulator: Non-boolean type found in vector operand");
-            result_vec->elems.push_back((uint64_t) !(std::get<uint64_t>(vec->elems[i])));
+            result_vec->elems.push_back((uint64_t)!(std::get<uint64_t>(vec->elems[i])));
         }
 
         SetValue(result_id, result);
@@ -3214,7 +3211,7 @@ void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
         Value result;
 
         assertm(std::holds_alternative<uint64_t>(operand), "SPIRV simulator: Non-boolean type found in operand");
-        result = (uint64_t) !(std::get<uint64_t>(operand));
+        result = (uint64_t)!(std::get<uint64_t>(operand));
 
         SetValue(result_id, result);
     }
