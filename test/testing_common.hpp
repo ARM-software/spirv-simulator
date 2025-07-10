@@ -53,6 +53,7 @@ struct TestParameters
     spv::Op                            opcode;
     std::vector<SPIRVSimulator::Value> operands;
     std::vector<Type>                  operand_types;
+    std::string                        death_message;
 
     friend std::ostream& operator<<(std::ostream& os, TestParameters const& p)
     {
@@ -91,6 +92,11 @@ struct TestParametersBuilder
     {
         params.operands[n]      = v;
         params.operand_types[n] = t;
+        return *this;
+    }
+    TestParametersBuilder& set_death_message(const std::string& message)
+    {
+        params.death_message = message;
         return *this;
     }
 };

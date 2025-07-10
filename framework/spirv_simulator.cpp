@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <iomanip>
+#include <variant>
 
 namespace SPIRVSimulator
 {
@@ -2702,6 +2703,8 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
 
         for (uint32_t i = 0; i < type.vector.elem_count; ++i)
         {
+            assertm((std::holds_alternative<double>(vec1->elems[i]) && std::holds_alternative<double>(vec2->elems[i])),
+                    "SPIRV simulator: vector contains non-doubles in Op_FAdd");
             double elem_result = std::get<double>(vec1->elems[i]) + std::get<double>(vec2->elems[i]);
             result_vec->elems.push_back(elem_result);
         }
@@ -2723,7 +2726,7 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
     }
     else
     {
-        assertx("SPIRV simulator: Invalid result type int Op_FAdd, must be vector or float");
+        assertx("SPIRV simulator: Invalid result type for Op_FAdd, must be vector or float");
     }
 }
 
@@ -2811,6 +2814,8 @@ void SPIRVSimulator::Op_FMul(const Instruction& instruction)
 
         for (uint32_t i = 0; i < type.vector.elem_count; ++i)
         {
+            assertm((std::holds_alternative<double>(vec1->elems[i]) && std::holds_alternative<double>(vec2->elems[i])),
+                    "SPIRV simulator: vector contains non-doubles in Op_FMul");
             double elem_result = std::get<double>(vec1->elems[i]) * std::get<double>(vec2->elems[i]);
             result_vec->elems.push_back(elem_result);
         }
@@ -3057,7 +3062,7 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
     }
     else
     {
-        assertx("SPIRV simulator: Invalid result type int Op_IAdd, must be vector or int");
+        assertx("SPIRV simulator: Invalid result type for Op_IAdd, must be vector or int");
     }
 }
 
@@ -3092,13 +3097,13 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
 
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
                     std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
-                "SPIRV simulator: Operands not of vector type in Op_IAdd");
+                "SPIRV simulator: Operands not of vector type in Op_ISub");
 
         auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
         auto vec2 = std::get<std::shared_ptr<VectorV>>(val_op2);
 
         assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
-                "SPIRV simulator: Operands not of equal/correct length in Op_IAdd");
+                "SPIRV simulator: Operands not of equal/correct length in Op_ISub");
 
         for (uint32_t i = 0; i < type.vector.elem_count; ++i)
         {
@@ -5291,7 +5296,7 @@ void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
     }
     else
     {
-        assertx("SPIRV simulator: Invalid result type int, must be vector or float");
+        assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 }
 
