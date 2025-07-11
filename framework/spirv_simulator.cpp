@@ -101,6 +101,7 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpConstantComposite, [this](const Instruction& i) { Op_ConstantComposite(i); });
     R(spv::Op::OpCompositeConstruct, [this](const Instruction& i) { Op_CompositeConstruct(i); });
     R(spv::Op::OpVariable, [this](const Instruction& i) { Op_Variable(i); });
+    R(spv::Op::OpImageTexelPointer, [this](const Instruction& i) { Op_ImageTexelPointer(i); });
     R(spv::Op::OpLoad, [this](const Instruction& i) { Op_Load(i); });
     R(spv::Op::OpStore, [this](const Instruction& i) { Op_Store(i); });
     R(spv::Op::OpAccessChain, [this](const Instruction& i) { Op_AccessChain(i); });
@@ -160,11 +161,17 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpAtomicISub, [this](const Instruction& i) { Op_AtomicISub(i); });
     R(spv::Op::OpSelect, [this](const Instruction& i) { Op_Select(i); });
     R(spv::Op::OpIEqual, [this](const Instruction& i) { Op_IEqual(i); });
-    R(spv::Op::OpImageTexelPointer, [this](const Instruction& i) { Op_ImageTexelPointer(i); });
     R(spv::Op::OpVectorShuffle, [this](const Instruction& i) { Op_VectorShuffle(i); });
     R(spv::Op::OpCompositeInsert, [this](const Instruction& i) { Op_CompositeInsert(i); });
     R(spv::Op::OpTranspose, [this](const Instruction& i) { Op_Transpose(i); });
+    R(spv::Op::OpSampledImage, [this](const Instruction& i) { Op_SampledImage(i); });
+    R(spv::Op::OpImageSampleImplicitLod, [this](const Instruction& i) { Op_ImageSampleImplicitLod(i); });
+    R(spv::Op::OpImageSampleExplicitLod, [this](const Instruction& i) { Op_ImageSampleExplicitLod(i); });
     R(spv::Op::OpImageFetch, [this](const Instruction& i) { Op_ImageFetch(i); });
+    R(spv::Op::OpImageGather, [this](const Instruction& i) { Op_ImageGather(i); });
+    R(spv::Op::OpImageRead, [this](const Instruction& i) { Op_ImageRead(i); });
+    R(spv::Op::OpImageWrite, [this](const Instruction& i) { Op_ImageWrite(i); });
+    R(spv::Op::OpImageQuerySize, [this](const Instruction& i) { Op_ImageQuerySize(i); });
     R(spv::Op::OpFNegate, [this](const Instruction& i) { Op_FNegate(i); });
     R(spv::Op::OpMatrixTimesVector, [this](const Instruction& i) { Op_MatrixTimesVector(i); });
     R(spv::Op::OpUGreaterThan, [this](const Instruction& i) { Op_UGreaterThan(i); });
@@ -1979,16 +1986,22 @@ void SPIRVSimulator::T_Image(const Instruction& instruction)
 
     uint32_t result_id       = instruction.words[1];
     uint32_t sampled_type_id = instruction.words[2];
-    // uint32_t dim = instruction.words[3];
-    // uint32_t depth = instruction.words[4];
-    // uint32_t arrayed = instruction.words[5];
-    // uint32_t multisampled = instruction.words[6];
-    // uint32_t sampled = instruction.words[7];
-    // uint32_t image_format = instruction.words[8];
+    uint32_t dim             = instruction.words[3];
+    uint32_t depth           = instruction.words[4];
+    uint32_t arrayed         = instruction.words[5];
+    uint32_t multisampled    = instruction.words[6];
+    uint32_t sampled         = instruction.words[7];
+    uint32_t image_format    = instruction.words[8];
+
+    // uint32_t access_qualifier = spv::AccessQualifier::AccessQualifierMax;
+    // if (instruction.word_count == 10)
+    // {
+    //     access_qualifier = instruction.words[9];
+    // }
 
     Type type;
     type.kind         = Type::Kind::Image;
-    type.image        = { sampled_type_id };
+    type.image        = { sampled_type_id, dim, depth, arrayed, multisampled, sampled, image_format };
     types_[result_id] = type;
 }
 
@@ -2379,6 +2392,45 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
     SetValue(result_id, new_pointer);
 }
 
+void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction)
+{
+    /*
+    OpImageTexelPointer
+
+    Form a pointer to a texel of an image. Use of such a pointer is limited to atomic operations.
+    Result Type must be an OpTypePointer whose Storage Class operand is Image.
+    Its Type operand must be a scalar numerical type or OpTypeVoid.
+
+    Image must have a type of OpTypePointer with Type OpTypeImage.
+    The Sampled Type of the type of Image must be the same as the Type pointed to by Result Type. The Dim operand of
+    Type must not be SubpassData.
+
+    Coordinate and Sample specify which texel and sample within the image to form a pointer to.
+
+    Coordinate must be a scalar or vector of integer type. It must have the number of components specified below,
+    given the following Arrayed and Dim operands of the type of the OpTypeImage.
+
+    If Arrayed is 0:
+    1D: scalar
+    2D: 2 components
+    3D: 3 components
+    Cube: 3 components
+    Rect: 2 components
+    Buffer: scalar
+
+    If Arrayed is 1:
+    1D: 2 components
+    2D: 3 components
+    Cube: 3 components; the face and layer combine into the 3rd component, layer_face,
+    such that face is layer_face % 6 and layer is floor(layer_face / 6)
+
+    Sample must be an integer type scalar. It specifies which sample to select at the given coordinate.
+    Behavior is undefined unless it is a valid <id> for the value 0 when the OpTypeImage has MS of 0.
+    */
+    assert(instruction.opcode == spv::Op::OpImageTexelPointer);
+    assertx("SPIRV simulator: Op_ImageTexelPointer is currently unimplemented");
+}
+
 void SPIRVSimulator::Op_Load(const Instruction& instruction)
 {
     /*
@@ -2764,7 +2816,8 @@ void SPIRVSimulator::Op_ExtInst(const Instruction& instruction)
         if (verbose_)
         {
             std::cout << execIndent << "OpExtInst set with literal: " << set_literal
-                      << " (length: " << set_literal.length() << ") " << " does not exist" << std::endl;
+                      << " (length: " << set_literal.length() << ") "
+                      << " does not exist" << std::endl;
         }
         SetValue(result_id, MakeDefault(type_id));
     }
@@ -6925,6 +6978,204 @@ void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
     }
 }
 
+void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
+{
+    /*
+    OpSampledImage
+
+    Create a sampled image, containing both a sampler and an image.
+
+    Result Type must be OpTypeSampledImage.
+
+    Image is an object whose type is an OpTypeImage, whose Sampled operand is
+    0 or 1, and whose Dim operand is not SubpassData. Additionally, starting with
+    version 1.6, the Dim operand must not be Buffer.
+
+    Sampler must be an object whose type is OpTypeSampler.
+
+    If the client API does not ignore Depth, the Image Type operand of the Result
+    Type must be the same as the type of Image. Otherwise, the type of Image and
+    the Image Type operand of the Result Type must be two OpTypeImage with all
+    operands matching each other except for Depth which can be different.
+    */
+    assert(instruction.opcode == spv::Op::OpSampledImage);
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t image_id       = instruction.words[3];
+    uint32_t sampler_id     = instruction.words[4];
+
+    const Type& result_type  = GetTypeByTypeId(result_type_id);
+    const Type& image_type   = GetTypeByResultId(image_id);
+    const Type& sampler_type = GetTypeByResultId(sampler_id);
+
+    assert(result_type.kind == Type::Kind::SampledImage);
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.sampled == 0 || image_type.image.sampled == 1);
+    assert(image_type.image.dim != spv::Dim::DimSubpassData && image_type.image.dim != spv::Dim::DimBuffer);
+    assert(sampler_type.kind == Type::Kind::Sampler);
+
+    assert(result_type.sampled_image.image_type_id == GetTypeID(image_id));
+}
+
+void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
+{
+    /*
+    OpImageSampleImplicitLod
+
+    Sample an image with an implicit level of detail.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its
+    derivative group have executed all dynamic instances that are program-ordered before X'.
+
+    Result Type must be a vector of four components of floating-point type or integer type. Its
+    components must be the same as Sampled Type of the underlying OpTypeImage (unless that
+    underlying Sampled Type is OpTypeVoid).
+
+    Sampled Image must be an object whose type is OpTypeSampledImage. Its OpTypeImage must
+    not have a Dim of Buffer. The MS operand of the underlying OpTypeImage must be 0.
+
+    Coordinate must be a scalar or vector of floating-point type. It contains (u[, v] …​ [, array layer]) as
+    needed by the definition of Sampled Image. It may be a vector larger than needed, but all unused
+    components appear after all used components.
+
+    Image Operands encodes what operands follow, as per Image Operands.
+
+    This instruction is only valid in the Fragment Execution Model. In addition, it consumes an implicit
+    derivative that can be affected by code motion.
+    */
+    assert(instruction.opcode == spv::Op::OpImageSampleImplicitLod);
+
+    uint32_t result_type_id   = instruction.words[1];
+    uint32_t result_id        = instruction.words[2];
+    uint32_t sampled_image_id = instruction.words[3];
+    uint32_t coordinate_id    = instruction.words[4];
+
+    uint32_t image_operand_mask = 0;
+    if (instruction.word_count > 5)
+    {
+        image_operand_mask = instruction.words[5];
+    }
+
+    // TODO: Load image operands if they exist
+
+    const Type& result_type        = GetTypeByTypeId(result_type_id);
+    const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
+    const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
+
+    assert(result_type.kind == Type::Kind::Vector);
+    assert(result_type.vector.elem_count == 4);
+    assert(sampled_image_type.kind == Type::Kind::SampledImage);
+    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Vector);
+
+    const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+    const Type& image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
+
+    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.dim != spv::Dim::DimBuffer);
+    assert(image_type.image.multisampled == 0);
+
+    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
+
+    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
+
+    // TODO: Actually compute coordinates according to image operands
+    // TODO: Actually retrieve data from the image according to format
+
+    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+    if (result_elem_type.kind == Type::Kind::Float)
+    {
+        result_value->elems.resize(4, double(0));
+    }
+    else if (result_elem_type.scalar.is_signed)
+    {
+        result_value->elems.resize(4, int64_t(0));
+    }
+    else
+    {
+        result_value->elems.resize(4, uint64_t(0));
+    }
+
+    SetValue(result_id, result_value);
+}
+
+void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
+{
+    /*
+    OpImageSampleExplicitLod
+
+    Sample an image using an explicit level of detail.
+
+    Result Type must be a vector of four components of floating-point type or integer type. Its components
+    must be the same as Sampled Type of the underlying OpTypeImage (unless that underlying Sampled
+    Type is OpTypeVoid).
+
+    Sampled Image must be an object whose type is OpTypeSampledImage. Its OpTypeImage must not
+    have a Dim of Buffer. The MS operand of the underlying OpTypeImage must be 0.
+
+    Coordinate must be a scalar or vector of floating-point type or integer type. It contains (u[, v] …​ [, array
+    layer]) as needed by the definition of Sampled Image. Unless the Kernel capability is declared, it must
+    be floating point. It may be a vector larger than needed, but all unused components appear after all used
+    components.
+
+    Image Operands encodes what operands follow, as per Image Operands. Either Lod or Grad image
+    operands must be present.
+    */
+    assert(instruction.opcode == spv::Op::OpImageSampleExplicitLod);
+
+    uint32_t result_type_id     = instruction.words[1];
+    uint32_t result_id          = instruction.words[2];
+    uint32_t sampled_image_id   = instruction.words[3];
+    uint32_t coordinate_id      = instruction.words[4];
+    uint32_t image_operand_mask = instruction.words[5];
+
+    // TODO: Load image operands (at least 1)
+
+    assert((image_operand_mask & spv::ImageOperandsLodMask) || (image_operand_mask & spv::ImageOperandsGradMask));
+
+    const Type& result_type        = GetTypeByTypeId(result_type_id);
+    const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
+    const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
+
+    assert(result_type.kind == Type::Kind::Vector);
+    assert(result_type.vector.elem_count == 4);
+    assert(sampled_image_type.kind == Type::Kind::SampledImage);
+    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Int ||
+           coordinate_type.kind == Type::Kind::Vector);
+
+    const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+    const Type& image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
+
+    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.dim != spv::Dim::DimBuffer);
+    assert(image_type.image.multisampled == 0);
+
+    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
+
+    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
+
+    // TODO: Actually compute coordinates according to image operands
+    // TODO: Actually retrieve data from the image according to format
+
+    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+    if (result_elem_type.kind == Type::Kind::Float)
+    {
+        result_value->elems.resize(4, double(0));
+    }
+    else if (result_elem_type.scalar.is_signed)
+    {
+        result_value->elems.resize(4, int64_t(0));
+    }
+    else
+    {
+        result_value->elems.resize(4, uint64_t(0));
+    }
+
+    SetValue(result_id, result_value);
+}
+
 void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
 {
     /*
@@ -6945,46 +7196,428 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     Image Operands encodes what operands follow, as per Image Operands.
     */
     assert(instruction.opcode == spv::Op::OpImageFetch);
-    assertx("SPIRV simulator: Op_ImageFetch is currently unimplemented");
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t image_id       = instruction.words[3];
+    uint32_t coordinate_id  = instruction.words[4];
+
+    uint32_t image_operand_mask = 0;
+    if (instruction.word_count > 5)
+    {
+        image_operand_mask = instruction.words[5];
+    }
+
+    // TODO: Load image operands if they exist
+
+    const Type& result_type     = GetTypeByTypeId(result_type_id);
+    const Type& image_type      = GetTypeByResultId(image_id);
+    const Type& coordinate_type = GetTypeByResultId(coordinate_id);
+
+    assert(result_type.kind == Type::Kind::Vector);
+    assert(result_type.vector.elem_count == 4);
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.dim != spv::Dim::DimCube);
+    assert(image_type.image.sampled == 1);
+    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Vector);
+
+    const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+    const Type& sampled_type     = GetTypeByTypeId(image_type.image.sampled_type_id);
+
+    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
+    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
+
+    // TODO: Actually compute coordinates according to image operands
+    // TODO: Actually retrieve data from the image according to format
+
+    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+    if (result_elem_type.kind == Type::Kind::Float)
+    {
+        result_value->elems.resize(4, double(0));
+    }
+    else if (result_elem_type.scalar.is_signed)
+    {
+        result_value->elems.resize(4, int64_t(0));
+    }
+    else
+    {
+        result_value->elems.resize(4, uint64_t(0));
+    }
+
+    SetValue(result_id, result_value);
 }
 
-void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction)
+void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
 {
     /*
-    OpImageTexelPointer
+    OpImageGather
 
-    Form a pointer to a texel of an image. Use of such a pointer is limited to atomic operations.
-    Result Type must be an OpTypePointer whose Storage Class operand is Image.
-    Its Type operand must be a scalar numerical type or OpTypeVoid.
+    Gathers the requested component from four texels.
 
-    Image must have a type of OpTypePointer with Type OpTypeImage.
-    The Sampled Type of the type of Image must be the same as the Type pointed to by Result Type. The Dim operand of
-    Type must not be SubpassData.
+    Result Type must be a vector of four components of floating-point type or integer type. Its components
+    must be the same as Sampled Type of the underlying OpTypeImage (unless that underlying Sampled
+    Type is OpTypeVoid). It has one component per gathered texel.
 
-    Coordinate and Sample specify which texel and sample within the image to form a pointer to.
+    Sampled Image must be an object whose type is OpTypeSampledImage. Its OpTypeImage must have
+    a Dim of 2D, Cube, or Rect. The MS operand of the underlying OpTypeImage must be 0.
 
-    Coordinate must be a scalar or vector of integer type. It must have the number of components specified below,
-    given the following Arrayed and Dim operands of the type of the OpTypeImage.
+    Coordinate must be a scalar or vector of floating-point type. It contains (u[, v] …​ [, array layer]) as
+    needed by the definition of Sampled Image.
 
-    If Arrayed is 0:
-    1D: scalar
-    2D: 2 components
-    3D: 3 components
-    Cube: 3 components
-    Rect: 2 components
-    Buffer: scalar
+    Component is the component number gathered from all four texels. It must be a 32-bit integer type
+    scalar. Behavior is undefined if its value is not 0, 1, 2 or 3.
 
-    If Arrayed is 1:
-    1D: 2 components
-    2D: 3 components
-    Cube: 3 components; the face and layer combine into the 3rd component, layer_face,
-    such that face is layer_face % 6 and layer is floor(layer_face / 6)
-
-    Sample must be an integer type scalar. It specifies which sample to select at the given coordinate.
-    Behavior is undefined unless it is a valid <id> for the value 0 when the OpTypeImage has MS of 0.
+    Image Operands encodes what operands follow, as per Image Operands.
     */
-    assert(instruction.opcode == spv::Op::OpImageTexelPointer);
-    assertx("SPIRV simulator: Op_ImageTexelPointer is currently unimplemented");
+    assert(instruction.opcode == spv::Op::OpImageGather);
+
+    uint32_t result_type_id   = instruction.words[1];
+    uint32_t result_id        = instruction.words[2];
+    uint32_t sampled_image_id = instruction.words[3];
+    uint32_t coordinate_id    = instruction.words[4];
+    uint32_t component_id     = instruction.words[5];
+
+    uint32_t image_operand_mask = 0;
+    if (instruction.word_count > 6)
+    {
+        image_operand_mask = instruction.words[6];
+    }
+
+    // TODO: Load image operands if they exist
+
+    const Type& result_type        = GetTypeByTypeId(result_type_id);
+    const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
+    const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
+    const Type& component_type     = GetTypeByResultId(component_id);
+
+    assert(result_type.kind == Type::Kind::Vector);
+    assert(result_type.vector.elem_count == 4);
+    assert(sampled_image_type.kind == Type::Kind::SampledImage);
+    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Vector);
+    assert(component_type.kind == Type::Kind::Int);
+    assert(component_type.scalar.width == 32);
+
+    const Type&  result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+    const Type&  image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
+    const Value& component_value  = GetValue(component_id);
+
+    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube ||
+           image_type.image.dim == spv::Dim::DimRect);
+    assert(image_type.image.multisampled == 0);
+
+    if (component_type.scalar.is_signed)
+    {
+        assert(std::get<int64_t>(component_value) >= 0 && std::get<int64_t>(component_value) < 4);
+    }
+    else
+    {
+        assert(std::get<uint64_t>(component_value) < 4);
+    }
+
+    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
+
+    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
+
+    // TODO: Actually compute coordinates according to image operands
+    // TODO: Actually retrieve data from the image according to format
+
+    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+    if (result_elem_type.kind == Type::Kind::Float)
+    {
+        result_value->elems.resize(4, double(0));
+    }
+    else if (result_elem_type.scalar.is_signed)
+    {
+        result_value->elems.resize(4, int64_t(0));
+    }
+    else
+    {
+        result_value->elems.resize(4, uint64_t(0));
+    }
+
+    SetValue(result_id, result_value);
+}
+
+void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
+{
+    /*
+    OpImageRead
+
+    Read a texel from an image without a sampler.
+
+    Result Type must be a scalar or vector of floating-point type or integer type. It must be a scalar or
+    vector with component type the same as Sampled Type of the OpTypeImage (unless that Sampled
+    Type is OpTypeVoid).
+
+    Image must be an object whose type is OpTypeImage with a Sampled operand of 0 or 2. If the
+    Arrayed operand is 1, then additional capabilities may be required; e.g., ImageCubeArray, or
+    ImageMSArray.
+
+    Coordinate must be a scalar or vector of floating-point type or integer type. It contains non-normalized
+    texel coordinates (u[, v] …​ [, array layer]) as needed by the definition of Image. See the
+    client API specification for handling of coordinates outside the image.
+
+    If the Image Dim operand is SubpassData, Coordinate is relative to the current fragment location.
+    See the client API specification for more detail on how these coordinates are applied.
+
+    If the Image Dim operand is not SubpassData, the Image Format must not be Unknown, unless
+    the StorageImageReadWithoutFormat Capability was declared.
+
+    Image Operands encodes what operands follow, as per Image Operands.
+    */
+    assert(instruction.opcode == spv::Op::OpImageRead);
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t image_id       = instruction.words[3];
+    uint32_t coordinate_id  = instruction.words[4];
+
+    uint32_t image_operand_mask = 0;
+    if (instruction.word_count > 5)
+    {
+        image_operand_mask = instruction.words[5];
+    }
+
+    // TODO: Load image operands if they exist
+
+    const Type& result_type     = GetTypeByTypeId(result_type_id);
+    const Type& image_type      = GetTypeByResultId(image_id);
+    const Type& coordinate_type = GetTypeByResultId(coordinate_id);
+
+    assert(result_type.kind == Type::Kind::Int || result_type.kind == Type::Kind::Float ||
+           result_type.kind == Type::Kind::Vector);
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.dim != spv::Dim::DimCube);
+    assert(image_type.image.sampled == 0 || image_type.image.sampled == 2);
+    assert(coordinate_type.kind == Type::Kind::Int || coordinate_type.kind == Type::Kind::Float ||
+           coordinate_type.kind == Type::Kind::Vector);
+
+    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
+
+    // TODO: Actually compute coordinates according to image operands
+    // TODO: Actually retrieve data from the image according to format
+
+    if (result_type.kind == Type::Kind::Int)
+    {
+        assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == Type::Kind::Int);
+        if (result_type.scalar.is_signed)
+        {
+            SetValue(result_id, int64_t(0));
+        }
+        else
+        {
+            SetValue(result_id, uint64_t(0));
+        }
+    }
+    if (result_type.kind == Type::Kind::Float)
+    {
+        assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == Type::Kind::Float);
+        SetValue(result_id, double(0));
+    }
+    if (result_type.kind == Type::Kind::Vector)
+    {
+        const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+        assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
+
+        std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+        if (result_elem_type.kind == Type::Kind::Float)
+        {
+            result_value->elems.resize(result_type.vector.elem_count, double(0));
+        }
+        else if (result_elem_type.scalar.is_signed)
+        {
+            result_value->elems.resize(result_type.vector.elem_count, int64_t(0));
+        }
+        else
+        {
+            result_value->elems.resize(result_type.vector.elem_count, uint64_t(0));
+        }
+
+        SetValue(result_id, result_value);
+    }
+}
+
+void SPIRVSimulator::Op_ImageWrite(const Instruction& instruction)
+{
+    /*
+    OpImageWrite
+
+    Write a texel to an image without a sampler.
+
+    Image must be an object whose type is OpTypeImage with a Sampled operand of 0 or 2. If the
+    Arrayed operand is 1, then additional capabilities may be required; e.g., ImageCubeArray, or
+    ImageMSArray. Its Dim operand must not be SubpassData.
+
+    Coordinate must be a scalar or vector of floating-point type or integer type. It contains non-normalized
+    texel coordinates (u[, v] …​ [, array layer]) as needed by the definition of Image. See
+    the client API specification for handling of coordinates outside the image.
+
+    Texel is the data to write. It must be a scalar or vector with component type the same as
+    Sampled Type of the OpTypeImage (unless that Sampled Type is OpTypeVoid).
+
+    The Image Format must not be Unknown, unless the StorageImageWriteWithoutFormat
+    Capability was declared.
+
+    Image Operands encodes what operands follow, as per Image Operands.
+    */
+    assert(instruction.opcode == spv::Op::OpImageWrite);
+
+    uint32_t image_id      = instruction.words[1];
+    uint32_t coordinate_id = instruction.words[2];
+    uint32_t texel_id      = instruction.words[3];
+
+    uint32_t image_operand_mask = 0;
+    if (instruction.word_count > 5)
+    {
+        image_operand_mask = instruction.words[5];
+    }
+
+    // TODO: Load image operands if they exist
+
+    const Type& image_type      = GetTypeByResultId(image_id);
+    const Type& coordinate_type = GetTypeByResultId(coordinate_id);
+    const Type& texel_type      = GetTypeByResultId(texel_id);
+    const Type& texel_elem_type =
+        (texel_type.kind == Type::Kind::Vector ? GetTypeByTypeId(texel_type.vector.elem_type_id) : texel_type);
+
+    assert(image_type.kind == Type::Kind::Image);
+    assert(image_type.image.sampled == 0 || image_type.image.sampled == 2);
+    assert(image_type.image.dim != spv::Dim::DimSubpassData);
+    assert(coordinate_type.kind == Type::Kind::Int || coordinate_type.kind == Type::Kind::Float ||
+           coordinate_type.kind == Type::Kind::Vector);
+    assert(texel_elem_type.kind == GetTypeByTypeId(image_type.image.sampled_type_id).kind);
+}
+
+void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
+{
+    /*
+    OpImageQuerySize
+
+    Query the dimensions of Image, with no level of detail.
+
+    Result Type must be an integer type scalar or vector. The number of components must be:
+    1 for the 1D and Buffer dimensionalities,
+    2 for the 2D, Cube, and Rect dimensionalities,
+    3 for the 3D dimensionality,
+    plus 1 more if the image type is arrayed. This vector is filled in with (width [, height] [, elements])
+    where elements is the number of layers in an image array or the number of cubes in a cube-map
+    array.
+
+    Image must be an object whose type is OpTypeImage. Its Dim operand must be one of those listed
+    under Result Type, above. Additionally, if its Dim is 1D, 2D, 3D, or Cube, it must also have either an
+    MS of 1 or a Sampled of 0 or 2. There is no implicit level-of-detail consumed by this instruction. See
+    OpImageQuerySizeLod for querying images having level of detail. See the client API specification
+    for additional image type restrictions.
+    */
+    assert(instruction.opcode == spv::Op::OpImageQuerySize);
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t image_id       = instruction.words[3];
+
+    const Type& result_type = GetTypeByTypeId(result_type_id);
+    const Type& image_type  = GetTypeByResultId(image_id);
+
+    assert(image_type.kind == Type::Kind::Image);
+
+    // TODO: Retrieve actual size instead of fake size
+
+    std::vector<uint64_t> size;
+    switch (image_type.image.dim)
+    {
+        case spv::Dim::Dim1D:
+        case spv::Dim::DimBuffer:
+        {
+            if (image_type.image.dim == spv::Dim::Dim1D)
+            {
+                assert(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
+                       image_type.image.sampled == 2);
+            }
+
+            size.resize(1, 1);
+
+            break;
+        }
+        case spv::Dim::Dim2D:
+        case spv::Dim::DimCube:
+        case spv::Dim::DimRect:
+        {
+            if (image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube)
+            {
+                assert(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
+                       image_type.image.sampled == 2);
+            }
+
+            size.resize(2, 1);
+
+            break;
+        }
+        case spv::Dim::Dim3D:
+        {
+            if (image_type.image.dim == spv::Dim::Dim3D)
+            {
+                assert(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
+                       image_type.image.sampled == 2);
+            }
+
+            size.resize(3, 1);
+
+            break;
+        }
+        default:
+        {
+            assert(false); // These image dimensions are not accepted for this opcode.
+        }
+    }
+
+    if (image_type.image.arrayed == 1)
+    {
+        size.push_back(1);
+    }
+
+    if (result_type.kind == Type::Kind::Int)
+    {
+        assert(size.size() == 1);
+
+        if (result_type.scalar.is_signed)
+        {
+            SetValue(result_id, int64_t(size[0]));
+        }
+        else
+        {
+            SetValue(result_id, uint64_t(size[0]));
+        }
+    }
+    else if (result_type.kind == Type::Kind::Vector)
+    {
+        assert(size.size() == result_type.vector.elem_count);
+
+        const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+        assert(result_elem_type.kind == Type::Kind::Int);
+
+        std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+
+        result_value->elems.resize(result_type.vector.elem_count);
+        for (int i = 0; i < result_type.vector.elem_count; ++i)
+        {
+            if (result_elem_type.scalar.is_signed)
+            {
+                result_value->elems[i] = int64_t(size[i]);
+            }
+            else
+            {
+                result_value->elems[i] = uint64_t(size[i]);
+            }
+        }
+
+        SetValue(result_id, result_value);
+    }
+    else
+    {
+        assert(false);
+    }
 }
 
 #undef assertx
