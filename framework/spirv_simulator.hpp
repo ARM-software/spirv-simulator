@@ -187,6 +187,12 @@ struct Type
     struct ImageTypeData
     {
         uint32_t sampled_type_id;
+        uint32_t dim;
+        uint32_t depth;
+        uint32_t arrayed;
+        uint32_t multisampled;
+        uint32_t sampled;
+        uint32_t image_format;
     };
     struct SampledImageTypeData
     {
@@ -513,6 +519,7 @@ class SPIRVSimulator
     void Op_ConstantComposite(const Instruction&);
     void Op_CompositeConstruct(const Instruction&);
     void Op_Variable(const Instruction&);
+    void Op_ImageTexelPointer(const Instruction&);
     void Op_Load(const Instruction&);
     void Op_Store(const Instruction&);
     void Op_AccessChain(const Instruction&);
@@ -571,11 +578,17 @@ class SPIRVSimulator
     void Op_AtomicISub(const Instruction&);
     void Op_Select(const Instruction&);
     void Op_IEqual(const Instruction&);
-    void Op_ImageTexelPointer(const Instruction&);
     void Op_VectorShuffle(const Instruction&);
     void Op_CompositeInsert(const Instruction&);
     void Op_Transpose(const Instruction&);
+    void Op_SampledImage(const Instruction&);
+    void Op_ImageSampleImplicitLod(const Instruction&);
+    void Op_ImageSampleExplicitLod(const Instruction&);
     void Op_ImageFetch(const Instruction&);
+    void Op_ImageGather(const Instruction&);
+    void Op_ImageRead(const Instruction&);
+    void Op_ImageWrite(const Instruction&);
+    void Op_ImageQuerySize(const Instruction&);
     void Op_FNegate(const Instruction&);
     void Op_MatrixTimesVector(const Instruction&);
     void Op_UGreaterThan(const Instruction&);
