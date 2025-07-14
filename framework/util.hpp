@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <cassert>
+
+#define assertx(msg) assert((void(msg), false))
+#define assertm(exp, msg) assert((void(msg), exp))
 
 namespace util
 {
