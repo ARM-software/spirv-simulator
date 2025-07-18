@@ -330,18 +330,20 @@ void SPIRVSimulator::ParseAll()
             if (has_type)
             {
                 result_id_to_inst_index_[instruction.words[2]] = instruction_index;
+                next_external_id_ = std::max(next_external_id_, instruction.words[2]) + 1;
             }
             else
             {
                 result_id_to_inst_index_[instruction.words[1]] = instruction_index;
+                next_external_id_ = std::max(next_external_id_, instruction.words[1]) + 1;
             }
         }
 
-        if (verbose_)
-        {
-            PrintInstruction(instruction);
-        }
+        instruction_index += 1;
+    }
 
+    instruction_index = 0;
+    for (const auto& instruction : instructions_){
         switch (instruction.opcode)
         {
             case spv::Op::OpFunction:
@@ -374,6 +376,11 @@ void SPIRVSimulator::ParseAll()
                 }
                 break;
             }
+        }
+
+        if (verbose_)
+        {
+            PrintInstruction(instruction);
         }
 
         ++instruction_index;
@@ -1471,7 +1478,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                 uint32_t pointee_obj_id                          = GetNextExternalID();
                 Heap(type.pointer.storage_class)[pointee_obj_id] = init;
 
-                PointerV new_pointer{ pointee_obj_id, type_id, type.pointer.storage_class, pointer_value, {}, {} };
+                PointerV new_pointer{ pointee_obj_id, type_id, type.pointer.storage_class, pointer_value, {} };
                 physical_address_pointers_.push_back(new_pointer);
                 return new_pointer;
             }
@@ -2197,12 +2204,15 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
     uint32_t    result_id = instruction.words[2];
     const Type& type      = GetTypeByTypeId(type_id);
 
+    bool is_arbitrary = false;
+
     if (type.kind == Type::Kind::Vector)
     {
         auto vec = std::make_shared<VectorV>();
         for (auto i = 3; i < instruction.word_count; ++i)
         {
             const Value& component_value = GetValue(instruction.words[i]);
+            is_arbitrary |= ValueIsArbitrary(instruction.words[i]);
 
             if (std::holds_alternative<std::shared_ptr<VectorV>>(component_value))
             {
@@ -2226,6 +2236,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         auto matrix = std::make_shared<MatrixV>();
         for (auto i = 3; i < instruction.word_count; ++i)
         {
+            is_arbitrary |= ValueIsArbitrary(instruction.words[i]);
             matrix->cols.push_back(GetValue(instruction.words[i]));
         }
 
@@ -2236,6 +2247,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         auto aggregate = std::make_shared<AggregateV>();
         for (auto i = 3; i < instruction.word_count; ++i)
         {
+            is_arbitrary |= ValueIsArbitrary(instruction.words[i]);
             aggregate->elems.push_back(GetValue(instruction.words[i]));
         }
 
@@ -2244,6 +2256,10 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: CompositeConstruct not implemented yet for type");
+    }
+
+    if (is_arbitrary){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -2276,7 +2292,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
     assertm(type.kind == Type::Kind::Pointer, "SPIRV simulator: Op_Variable must only be used to create pointer types");
 
-    PointerV new_pointer{ result_id, type_id, storage_class, 0, {}, {} };
+    PointerV new_pointer{ result_id, type_id, storage_class, 0, {} };
 
     if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
     {
@@ -2527,9 +2543,6 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
     {
         const Value& index_value = GetValue(instruction.words[i]);
 
-        // Used to calculate arbitrary offsets
-        new_pointer.idx_path_ids.push_back(instruction.words[i]);
-
         if (std::holds_alternative<uint64_t>(index_value))
         {
             new_pointer.idx_path.push_back((uint32_t)std::get<uint64_t>(index_value));
@@ -2716,6 +2729,9 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     if (call_stack_.size())
     {
         SetValue(result_id, return_value);
+        if (ValueIsArbitrary(value_id)){
+            SetIsArbitrary(result_id);
+        }
     }
 }
 
@@ -2779,6 +2795,10 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type int Op_FAdd, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -2889,6 +2909,10 @@ void SPIRVSimulator::Op_FMul(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type int Op_FMul, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -3006,6 +3030,10 @@ void SPIRVSimulator::Op_INotEqual(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_IAdd, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
@@ -3115,6 +3143,10 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_IAdd, must be vector or int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ISub(const Instruction& instruction)
@@ -3221,6 +3253,10 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_ISub, must be vector or int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
@@ -3274,6 +3310,10 @@ void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
+    }
+
+    if (ValueIsArbitrary(operand_id)){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -3612,6 +3652,10 @@ void SPIRVSimulator::Op_UGreaterThanEqual(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type in Op_UGreaterThanEqual, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_Phi(const Instruction& instruction)
@@ -3718,6 +3762,10 @@ void SPIRVSimulator::Op_ConvertUToF(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid return type in OpConvertUToF, must be vector or float");
     }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ConvertSToF(const Instruction& instruction)
@@ -3779,6 +3827,10 @@ void SPIRVSimulator::Op_ConvertSToF(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type in Op_ConvertSToF, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -3851,6 +3903,10 @@ void SPIRVSimulator::Op_FDiv(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_FDiv, must be vector or float");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_FSub(const Instruction& instruction)
@@ -3921,6 +3977,10 @@ void SPIRVSimulator::Op_FSub(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_FSub, must be vector or float");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_VectorTimesScalar(const Instruction& instruction)
@@ -3969,6 +4029,10 @@ void SPIRVSimulator::Op_VectorTimesScalar(const Instruction& instruction)
     }
 
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_SLessThan(const Instruction& instruction)
@@ -4041,6 +4105,10 @@ void SPIRVSimulator::Op_SLessThan(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_SLessThan, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_Dot(const Instruction& instruction)
@@ -4090,6 +4158,10 @@ void SPIRVSimulator::Op_Dot(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type int Op_Dot, must be float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -4153,6 +4225,10 @@ void SPIRVSimulator::Op_FOrdGreaterThan(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type in Op_FOrdGreaterThan, must be vector or float");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_CompositeExtract(const Instruction& instruction)
@@ -4210,6 +4286,10 @@ void SPIRVSimulator::Op_CompositeExtract(const Instruction& instruction)
     }
 
     SetValue(result_id, *current_composite);
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
@@ -4422,7 +4502,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
 
         Heap(type.pointer.storage_class)[result_id] = init;
 
-        PointerV new_pointer{ result_id, type_id, type.pointer.storage_class, pointer_value, {}, {} };
+        PointerV new_pointer{ result_id, type_id, type.pointer.storage_class, pointer_value, {} };
         physical_address_pointers_.push_back(new_pointer);
         result = new_pointer;
 
@@ -4439,6 +4519,10 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     }
 
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_IMul(const Instruction& instruction)
@@ -4529,6 +4613,10 @@ void SPIRVSimulator::Op_IMul(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_IMul, must be vector or integer type");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
@@ -4594,7 +4682,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
 
     Heap(type.pointer.storage_class)[result_id] = init;
 
-    PointerV new_pointer{ result_id, type_id, type.pointer.storage_class, pointer_value, {}, {} };
+    PointerV new_pointer{ result_id, type_id, type.pointer.storage_class, pointer_value, {} };
     physical_address_pointers_.push_back(new_pointer);
     SetValue(result_id, new_pointer);
 
@@ -4604,6 +4692,10 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
     pointer_data.bit_components    = FindDataSourcesFromResultID(integer_id);
     pointer_data.raw_pointer_value = pointer_value;
     physical_address_pointer_source_data_.push_back(std::move(pointer_data));
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
@@ -4670,6 +4762,10 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or unsigned-integer");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -4741,6 +4837,10 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or unsigned-integer");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ULessThan(const Instruction& instruction)
@@ -4811,6 +4911,10 @@ void SPIRVSimulator::Op_ULessThan(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -5045,10 +5149,18 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
             if (cond_val)
             {
                 result_vec->elems.push_back(vec1->elems[i]);
+
+                if (ValueIsArbitrary(instruction.words[4])){
+                    SetIsArbitrary(result_id);
+                }
             }
             else
             {
                 result_vec->elems.push_back(vec2->elems[i]);
+
+                if (ValueIsArbitrary(instruction.words[5])){
+                    SetIsArbitrary(result_id);
+                }
             }
         }
 
@@ -5063,11 +5175,23 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
         if (condition_int)
         {
             SetValue(result_id, val_op1);
+
+            if (ValueIsArbitrary(instruction.words[4])){
+                SetIsArbitrary(result_id);
+            }
         }
         else
         {
             SetValue(result_id, val_op2);
+
+            if (ValueIsArbitrary(instruction.words[5])){
+                SetIsArbitrary(result_id);
+            }
         }
+    }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -5176,6 +5300,10 @@ void SPIRVSimulator::Op_IEqual(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type int Op_IEqual, must be vector or int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
@@ -5240,6 +5368,10 @@ void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
     const Value& source_object = GetValue(obj_id);
     *current_composite         = CopyValue(source_object);
     SetValue(result_id, composite_copy);
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
@@ -5296,6 +5428,10 @@ void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
     }
 
     SetValue(result_id, new_matrix);
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
@@ -5348,6 +5484,10 @@ void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type int, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -5412,6 +5552,10 @@ void SPIRVSimulator::Op_UGreaterThan(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_FOrdLessThan(const Instruction& instruction)
@@ -5473,6 +5617,10 @@ void SPIRVSimulator::Op_FOrdLessThan(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type in, must be vector or float");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_FOrdLessThanEqual(const Instruction& instruction)
@@ -5532,6 +5680,10 @@ void SPIRVSimulator::Op_FOrdLessThanEqual(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -5651,6 +5803,10 @@ void SPIRVSimulator::Op_MatrixTimesVector(const Instruction& instruction)
     }
 
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction)
@@ -5720,6 +5876,10 @@ void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction)
     }
 
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
@@ -5796,6 +5956,10 @@ void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type in Op_ShiftRightLogical, must be vector or int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction)
@@ -5871,6 +6035,10 @@ void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type in Op_ShiftLeftLogical, must be vector or int");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -5969,6 +6137,10 @@ void SPIRVSimulator::Op_BitwiseOr(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
@@ -6065,6 +6237,10 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_All(const Instruction& instruction)
@@ -6101,6 +6277,10 @@ void SPIRVSimulator::Op_All(const Instruction& instruction)
 
     Value result = (uint64_t)result_bool;
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_Any(const Instruction& instruction)
@@ -6137,6 +6317,10 @@ void SPIRVSimulator::Op_Any(const Instruction& instruction)
 
     Value result = (uint64_t)result_bool;
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
@@ -6167,6 +6351,8 @@ void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
 
     uint32_t base_type_id = GetTypeID(base_id);
 
+    // TODO: This is currently wrong, counts all bits but should only count set bits
+
     if (type.kind == Type::Kind::Vector)
     {
         const Type&                    base_type  = GetTypeByTypeId(base_type_id);
@@ -6188,6 +6374,10 @@ void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result value, must be vector or int");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -6311,6 +6501,10 @@ void SPIRVSimulator::Op_VectorTimesMatrix(const Instruction& instruction)
     }
 
     SetValue(result_id, result);
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_ULessThanEqual(const Instruction& instruction)
@@ -6374,6 +6568,10 @@ void SPIRVSimulator::Op_ULessThanEqual(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_SLessThanEqual(const Instruction& instruction)
@@ -6435,6 +6633,10 @@ void SPIRVSimulator::Op_SLessThanEqual(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -6498,6 +6700,10 @@ void SPIRVSimulator::Op_SGreaterThanEqual(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_SGreaterThan(const Instruction& instruction)
@@ -6559,6 +6765,10 @@ void SPIRVSimulator::Op_SGreaterThan(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -6631,6 +6841,10 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or signed int");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
@@ -6689,6 +6903,10 @@ void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or integer");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -6755,6 +6973,10 @@ void SPIRVSimulator::Op_LogicalOr(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_LogicalAnd(const Instruction& instruction)
@@ -6819,6 +7041,10 @@ void SPIRVSimulator::Op_LogicalAnd(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
     }
 }
 
@@ -6895,6 +7121,10 @@ void SPIRVSimulator::Op_MatrixTimesMatrix(const Instruction& instruction)
     }
 
     SetValue(result_id, result_matrix);
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
@@ -6976,6 +7206,10 @@ void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
+
+    if (ValueIsArbitrary(instruction.words[3])){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
@@ -7016,6 +7250,9 @@ void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
     assert(sampler_type.kind == Type::Kind::Sampler);
 
     assert(result_type.sampled_image.image_type_id == GetTypeID(image_id));
+
+    SampledImageV new_si{image_id, sampler_id};
+    SetValue(result_id, new_si);
 }
 
 void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
@@ -7098,6 +7335,7 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
     }
 
     SetValue(result_id, result_value);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
@@ -7174,6 +7412,7 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
     }
 
     SetValue(result_id, result_value);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
@@ -7245,6 +7484,7 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     }
 
     SetValue(result_id, result_value);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
@@ -7338,6 +7578,7 @@ void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
     }
 
     SetValue(result_id, result_value);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
@@ -7436,6 +7677,7 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
         }
 
         SetValue(result_id, result_value);
+        SetIsArbitrary(result_id);
     }
 }
 
