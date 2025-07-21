@@ -422,7 +422,7 @@ void extract_bytes(std::vector<std::byte>& output, T input, size_t num_bits)
     }
 }
 
-// Bitcast an be very annoying to import on certain platforms, even if c++20 is supported
+// Bitcast can be very annoying to import on certain platforms, even if c++20 is supported
 // Just do this for now, and we can replace this with the std::bit_cast version in the future
 template <class To, class From>
 typename std::enable_if_t<sizeof(To) == sizeof(From) && std::is_trivially_copyable_v<From> &&

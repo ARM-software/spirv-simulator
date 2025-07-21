@@ -54,3 +54,41 @@ std::ostream& operator<<(std::ostream& os, const SPIRVSimulator::Value& value)
         os << "<invalid>";
     return os;
 }
+
+char opcode_to_char(spv::Op opcode)
+{
+    switch (opcode)
+    {
+        case spv::OpIAdd:
+        case spv::OpFAdd:
+        {
+            return '+';
+        }
+        case spv::OpISub:
+        case spv::OpFSub:
+        case spv::OpSNegate:
+        {
+            return '-';
+        }
+        case spv::OpIMul:
+        case spv::OpFMul:
+        case spv::OpVectorTimesScalar:
+        case spv::OpDot:
+        {
+            return '*';
+        }
+        case spv::OpMatrixTimesVector:
+        case spv::OpMatrixTimesMatrix:
+        {
+            return 'x';
+        }
+        case spv::OpSDiv:
+        case spv::OpUDiv:
+        case spv::OpFDiv:
+        {
+            return '/';
+        }
+        default:
+            return ' ';
+    }
+}

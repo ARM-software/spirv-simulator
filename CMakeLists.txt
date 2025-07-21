@@ -11,12 +11,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_subdirectory(framework)
-#add_subdirectory(test)
+add_subdirectory(test)
 
 add_executable(spirv_simulator ${PROJECT_SOURCE_DIR}/main.cpp)
 target_compile_options(spirv_simulator PRIVATE -Wall -Wextra -Wpedantic -Wshadow -std=c++20 -fno-fast-math)
 target_link_libraries(spirv_simulator PRIVATE spirv_simulator_lib)
 
-#add_executable(spirv_opcode_support_checker ${PROJECT_SOURCE_DIR}/main_opcode_checker.cpp)
-#target_compile_options(spirv_opcode_support_checker PRIVATE -Wall -Wextra -Wpedantic -Wshadow -std=c++20 -fno-fast-math)
-#target_link_libraries(spirv_opcode_support_checker PRIVATE spirv_simulator_lib)
+add_executable(spirv_opcode_support_checker ${PROJECT_SOURCE_DIR}/main_opcode_checker.cpp)
+target_compile_options(spirv_opcode_support_checker PRIVATE -Wall -Wextra -Wpedantic -Wshadow -std=c++20 -fno-fast-math)
+target_link_libraries(spirv_opcode_support_checker PRIVATE spirv_simulator_lib)
