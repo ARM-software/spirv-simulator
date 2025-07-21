@@ -2103,7 +2103,7 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
         {
             size_t           spec_id_offset = input_data_.specialization_constant_offsets.at(spec_id);
             const std::byte* raw_spec_const_data =
-                static_cast<std::byte*>(input_data_.specialization_constants) + spec_id_offset;
+                static_cast<const std::byte*>(input_data_.specialization_constants) + spec_id_offset;
             std::vector<uint32_t> buffer_data;
             ExtractWords(raw_spec_const_data, type_id, buffer_data);
 
@@ -2267,7 +2267,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
     if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
     {
-        const std::byte* external_pointer = static_cast<std::byte*>(input_data_.push_constants);
+        const std::byte* external_pointer = static_cast<const std::byte*>(input_data_.push_constants);
         if (!input_data_.push_constants)
         {
             if (verbose_)
