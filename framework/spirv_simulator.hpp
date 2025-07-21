@@ -13,7 +13,6 @@
 #include <unordered_map>
 #include <variant>
 #include <vector>
-#include <type_traits>
 
 //  Flip SPIRV_HEADERS_PRESENT to 1 to auto‑pull the SPIR‑V-Headers from the environment.
 #define SPV_ENABLE_UTILITY_CODE 1
@@ -272,6 +271,24 @@ using Value = std::variant<std::monostate,
                            std::shared_ptr<AggregateV>,
                            PointerV>;
 
+struct VectorV
+{
+    std::vector<Value> elems;
+    VectorV() = default;
+    explicit VectorV(std::span<const Value> s) : elems(s.begin(), s.end()) {}
+    explicit VectorV(std::initializer_list<Value> initializer_list) : elems(initializer_list) {}
+};
+
+struct MatrixV
+{
+    std::vector<Value> cols;
+};
+
+struct AggregateV
+{
+    std::vector<Value> elems;
+}; // array or struct
+
 struct PointerV
 {
     // Always the index of the value that this pointer points to
@@ -289,99 +306,6 @@ struct PointerV
     // This is the result_id chain of the objects holding the idx path values
     std::vector<uint32_t> idx_path_ids;
 };
-
-inline bool operator==(const PointerV& a, const PointerV& b)
-{
-    return a.obj_id == b.obj_id && a.type_id == b.type_id && a.storage_class == b.storage_class &&
-           a.raw_pointer == b.raw_pointer && a.idx_path == b.idx_path && a.idx_path_ids == b.idx_path_ids;
-}
-
-struct VectorV
-{
-    std::vector<Value> elems;
-    VectorV() = default;
-
-    template <typename T>
-    explicit VectorV(std::initializer_list<T> initializer_list)
-    {
-        elems.reserve(initializer_list.size());
-        for (const auto& item : initializer_list)
-        {
-            elems.push_back(Value(item));
-        }
-    }
-};
-
-inline bool operator==(const VectorV& a, const VectorV& b)
-{
-    return a.elems == b.elems;
-}
-
-struct MatrixV
-{
-    std::vector<Value> cols;
-    MatrixV() = default;
-
-    explicit MatrixV(std::initializer_list<Value> initializer_list) :
-        cols(initializer_list.begin(), initializer_list.end())
-    {}
-};
-
-inline bool operator==(const MatrixV& a, const MatrixV& b)
-{
-    return a.cols == b.cols;
-}
-
-struct AggregateV
-{
-    std::vector<Value> elems;
-}; // array or struct
-
-inline bool operator==(const AggregateV& a, const AggregateV& b)
-{
-    return a.elems == b.elems;
-}
-
-template <typename T>
-concept Deref = requires(T t) { *t; };
-
-template <typename T>
-concept PointerT = std::is_pointer_v<T> || Deref<T>;
-
-template <typename T>
-concept ValueT = !PointerT<T>;
-
-struct ValueComparator
-{
-    template <ValueT T>
-    bool operator()(T const& a, T const& b) const
-    {
-        return a == b;
-    }
-
-    template <PointerT T>
-    bool operator()(T a, T b) const
-    {
-        if (a && b)
-            return *a == *b;
-        return a == b;
-    }
-
-    template <typename A, typename B>
-    bool operator()(A const&, B const&) const
-    {
-        return false;
-    }
-};
-
-inline bool operator==(const Value& a, const Value& b)
-{
-    if (a.index() != b.index())
-    {
-        return false;
-    }
-    return std::visit(ValueComparator{}, a, b);
-}
 
 struct DecorationInfo
 {

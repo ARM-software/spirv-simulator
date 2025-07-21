@@ -6688,7 +6688,7 @@ void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
     }
     else
     {
-        assertx("SPIRV simulator: Invalid result type, must be vector or integer");
+        assertx("SPIRV simulator: Invalid result type int, must be vector or integer");
     }
 }
 
