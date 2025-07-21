@@ -8,6 +8,8 @@
 #include <iomanip>
 #include <variant>
 
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+
 namespace SPIRVSimulator
 {
 
@@ -7844,7 +7846,7 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
         std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
 
         result_value->elems.resize(result_type.vector.elem_count);
-        for (int i = 0; i < result_type.vector.elem_count; ++i)
+        for (unsigned i = 0; i < result_type.vector.elem_count; ++i)
         {
             if (result_elem_type.scalar.is_signed)
             {
