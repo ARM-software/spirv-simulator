@@ -199,6 +199,7 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpLogicalAnd, [this](const Instruction& i) { Op_LogicalAnd(i); });
     R(spv::Op::OpMatrixTimesMatrix, [this](const Instruction& i) { Op_MatrixTimesMatrix(i); });
     R(spv::Op::OpIsNan, [this](const Instruction& i) { Op_IsNan(i); });
+    R(spv::Op::OpFunctionParameter, [this](const Instruction& i) { Op_FunctionParameter(i); });
 }
 
 void SPIRVSimulator::CheckOpcodeSupport()
@@ -253,10 +254,7 @@ void SPIRVSimulator::CheckOpcodeSupport()
         }
     }
 
-    if (verbose_)
-    {
-        std::cout << std::endl;
-    }
+    std::cout << std::endl;
 }
 
 void SPIRVSimulator::Validate()
@@ -391,10 +389,7 @@ void SPIRVSimulator::Run()
 
     if (funcs_.empty())
     {
-        if (verbose_)
-        {
-            std::cerr << "SPIRV simulator: No functions defined in the shader, cannot start execution" << std::endl;
-        }
+        std::cerr << "SPIRV simulator: No functions defined in the shader, cannot start execution" << std::endl;
         return;
     }
 
@@ -420,11 +415,8 @@ void SPIRVSimulator::Run()
     {
         if (entry_points_.find(input_data_.entry_point_id) == entry_points_.end())
         {
-            if (verbose_)
-            {
-                std::cout << "SPIRV simulator: Warning, entry point function with index: " << input_data_.entry_point_id
-                          << " not found, using first available" << std::endl;
-            }
+            std::cout << "SPIRV simulator: Warning, entry point function with index: " << input_data_.entry_point_id
+                      << " not found, using first available" << std::endl;
 
             entry_point_function_id = entry_points_.begin()->first;
         }
@@ -666,101 +658,98 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
     bool has_type   = false;
     spv::HasResultAndType(instruction.opcode, &has_result, &has_type);
 
-    if (verbose_)
+    std::stringstream result_and_type;
+
+    uint32_t result_offset = 0;
+    if (has_result)
     {
-        std::stringstream result_and_type;
-
-        uint32_t result_offset = 0;
-        if (has_result)
-        {
-            if (has_type)
-            {
-                result_offset = 2;
-            }
-            else
-            {
-                result_offset = 1;
-            }
-        }
-
         if (has_type)
         {
-            bool has_type_value = types_.find(instruction.words[1]) != types_.end();
-            if (has_type_value)
-            {
-                result_and_type << GetTypeString(GetTypeByTypeId(instruction.words[1])) << "(" << instruction.words[1]
-                                << ") ";
-            }
-        }
-
-        if (result_offset)
-        {
-            result_and_type << instruction.words[result_offset] << " ";
-        }
-
-        std::cout << std::right << std::setw(18) << result_and_type.str() << spv::OpToString(instruction.opcode) << " ";
-
-        if (instruction.opcode == spv::Op::OpExtInstImport)
-        {
-            std::cout << std::string((char*)(&instruction.words[2]), (instruction.word_count - 2) * 4);
-        }
-        else if (instruction.opcode == spv::Op::OpName)
-        {
-            std::cout << instruction.words[1] << " ";
-            std::cout << std::string((char*)(&instruction.words[2]), (instruction.word_count - 2) * 4);
-        }
-        else if (instruction.opcode == spv::Op::OpTypePointer)
-        {
-            std::cout << spv::StorageClassToString((spv::StorageClass)instruction.words[2]) << " "
-                      << GetTypeString(GetTypeByTypeId(instruction.words[3])) << "(" << instruction.words[3] << ") ";
-        }
-        else if (instruction.opcode == spv::Op::OpVariable)
-        {
-            std::cout << spv::StorageClassToString((spv::StorageClass)instruction.words[3]) << " ";
-            for (uint32_t i = 4; i < instruction.word_count; ++i)
-            {
-                std::cout << instruction.words[i] << " ";
-            }
+            result_offset = 2;
         }
         else
         {
-            for (uint32_t i = result_offset; i < instruction.word_count; ++i)
+            result_offset = 1;
+        }
+    }
+
+    if (has_type)
+    {
+        bool has_type_value = types_.find(instruction.words[1]) != types_.end();
+        if (has_type_value)
+        {
+            result_and_type << GetTypeString(GetTypeByTypeId(instruction.words[1])) << "(" << instruction.words[1]
+                            << ") ";
+        }
+    }
+
+    if (result_offset)
+    {
+        result_and_type << instruction.words[result_offset] << " ";
+    }
+
+    std::cout << std::right << std::setw(18) << result_and_type.str() << spv::OpToString(instruction.opcode) << " ";
+
+    if (instruction.opcode == spv::Op::OpExtInstImport)
+    {
+        std::cout << std::string((char*)(&instruction.words[2]), (instruction.word_count - 2) * 4);
+    }
+    else if (instruction.opcode == spv::Op::OpName)
+    {
+        std::cout << instruction.words[1] << " ";
+        std::cout << std::string((char*)(&instruction.words[2]), (instruction.word_count - 2) * 4);
+    }
+    else if (instruction.opcode == spv::Op::OpTypePointer)
+    {
+        std::cout << spv::StorageClassToString((spv::StorageClass)instruction.words[2]) << " "
+                  << GetTypeString(GetTypeByTypeId(instruction.words[3])) << "(" << instruction.words[3] << ") ";
+    }
+    else if (instruction.opcode == spv::Op::OpVariable)
+    {
+        std::cout << spv::StorageClassToString((spv::StorageClass)instruction.words[3]) << " ";
+        for (uint32_t i = 4; i < instruction.word_count; ++i)
+        {
+            std::cout << instruction.words[i] << " ";
+        }
+    }
+    else
+    {
+        for (uint32_t i = result_offset; i < instruction.word_count; ++i)
+        {
+            if (i == result_offset)
             {
-                if (i == result_offset)
+                continue;
+            }
+            if (instruction.opcode == spv::Op::OpDecorate)
+            {
+                if (i == 2)
                 {
-                    continue;
-                }
-                if (instruction.opcode == spv::Op::OpDecorate)
-                {
-                    if (i == 2)
-                    {
-                        std::cout << spv::DecorationToString((spv::Decoration)instruction.words[i]) << " ";
-                    }
-                    else
-                    {
-                        std::cout << instruction.words[i] << " ";
-                    }
-                }
-                else if (instruction.opcode == spv::Op::OpMemberDecorate)
-                {
-                    if (i == 3)
-                    {
-                        std::cout << spv::DecorationToString((spv::Decoration)instruction.words[i]) << " ";
-                    }
-                    else
-                    {
-                        std::cout << instruction.words[i] << " ";
-                    }
+                    std::cout << spv::DecorationToString((spv::Decoration)instruction.words[i]) << " ";
                 }
                 else
                 {
                     std::cout << instruction.words[i] << " ";
                 }
             }
+            else if (instruction.opcode == spv::Op::OpMemberDecorate)
+            {
+                if (i == 3)
+                {
+                    std::cout << spv::DecorationToString((spv::Decoration)instruction.words[i]) << " ";
+                }
+                else
+                {
+                    std::cout << instruction.words[i] << " ";
+                }
+            }
+            else
+            {
+                std::cout << instruction.words[i] << " ";
+            }
         }
-
-        std::cout << std::endl;
     }
+
+    std::cout << std::endl;
 }
 
 bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator)
@@ -2655,6 +2644,11 @@ void SPIRVSimulator::Op_Function(const Instruction& instruction)
 
 void SPIRVSimulator::Op_FunctionEnd(const Instruction& instruction)
 {
+    /*
+    OpFunctionEnd
+
+    Last instruction of a function.
+    */
     // This is a NOP in our design
     assert(instruction.opcode == spv::Op::OpFunctionEnd);
 }
@@ -7920,6 +7914,26 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
     {
         assert(false);
     }
+}
+
+void SPIRVSimulator::Op_FunctionParameter(const Instruction& instruction)
+{
+    /*
+    OpFunctionParameter
+
+    Declare a formal parameter of the current function.
+
+    Result Type is the type of the parameter.
+
+    This instruction must immediately follow an OpFunction or OpFunctionParameter instruction.
+    The order of contiguous OpFunctionParameter instructions is the same order arguments are listed in
+    an OpFunctionCall instruction to this function.
+
+    It is also the same order in which Parameter Type operands are listed in the OpTypeFunction of the
+    Function Type operand for this function’s OpFunction instruction.
+    */
+    // This is a nop in our implementation (handled at parse time)
+    assert(instruction.opcode == spv::Op::OpFunctionParameter);
 }
 
 #undef assertx

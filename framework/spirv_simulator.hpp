@@ -707,6 +707,7 @@ class SPIRVSimulator
     void Op_LogicalAnd(const Instruction&);
     void Op_MatrixTimesMatrix(const Instruction&);
     void Op_IsNan(const Instruction&);
+    void Op_FunctionParameter(const Instruction&);
 };
 
 } // namespace SPIRVSimulator
