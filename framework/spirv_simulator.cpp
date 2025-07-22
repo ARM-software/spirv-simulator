@@ -245,16 +245,10 @@ void SPIRVSimulator::CheckOpcodeSupport()
 
     if (!unimplemented_opcodes.empty())
     {
-        if (verbose_)
-        {
-            std::cout << "SPIRV simulator: Unimplemented OpCodes detected:" << std::endl;
-        }
+        std::cout << "SPIRV simulator: Unimplemented OpCodes detected:" << std::endl;
         for (auto it = unimplemented_opcodes.begin(); it != unimplemented_opcodes.end(); ++it)
         {
-            if (verbose_)
-            {
-                std::cout << execIndent << spv::OpToString(*it) << std::endl;
-            }
+            std::cout << execIndent << spv::OpToString(*it) << std::endl;
             unsupported_opcodes.insert(spv::OpToString(*it));
         }
     }
@@ -540,7 +534,36 @@ void SPIRVSimulator::ExecuteInstruction(const Instruction& instruction)
     }
 }
 
-void SPIRVSimulator::Clone(SPIRVSimulator* output){
+void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
+{
+    // Do a shallow copy
+    // TODO: We probably want to be more specific here, check that the SPIRVSimulator we are copying has an
+    //       active stack frame (aka. it is executing a shader) and copy only the execution state
+    //       and not the full program words etc.
+    *this = source;
+
+    RegisterOpcodeHandlers();
+
+    // Then manually copy all the Values that may contain pointers
+    for (auto& stack_frame : call_stack_){
+        for (auto& value_pair : stack_frame.locals){
+            value_pair.second = CopyValue(value_pair.second);
+        }
+
+        for (auto& value_pair : stack_frame.func_heap){
+            value_pair.second = CopyValue(value_pair.second);
+        }
+    }
+
+    for (auto& value_pair : globals_){
+        value_pair.second = CopyValue(value_pair.second);
+    }
+
+    for (auto& heap_pair : heaps_){
+        for (auto& value_pair : heap_pair.second){
+            value_pair.second = CopyValue(value_pair.second);
+        }
+    }
 
 }
 

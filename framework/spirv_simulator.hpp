@@ -551,7 +551,7 @@ class SPIRVSimulator
     virtual void        Validate();
     virtual void        ExecuteInstruction(const Instruction&);
     virtual void        ExecuteInstructions();
-    virtual void        Clone(SPIRVSimulator* output);
+    virtual void        CreateExecutionFork(const SPIRVSimulator& source);
     virtual std::string GetValueString(const Value&);
     virtual std::string GetTypeString(const Type&);
     virtual void        PrintInstruction(const Instruction&);
