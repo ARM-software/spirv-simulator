@@ -273,7 +273,6 @@ void SPIRVSimulator::Validate()
     // TODO: Expand this (a lot)
     for (auto& [id, t] : types_)
     {
-
         assertm(!(t.kind == Type::Kind::Array && !types_.contains(t.array.elem_type_id)),
                 "SPIRV simulator: Missing  array elem type");
         assertm(!(t.kind == Type::Kind::Vector && !types_.contains(t.vector.elem_type_id)),
@@ -451,7 +450,10 @@ void SPIRVSimulator::Run()
     FunctionInfo& function_info = funcs_[entry_point_function_id];
     // We can set the return value to whatever, ignored if the call stack is empty on return
     call_stack_.push_back({ function_info.first_inst_index, 0, {}, {} });
+    ExecuteInstructions();
+}
 
+void SPIRVSimulator::ExecuteInstructions(){
     while (!call_stack_.empty())
     {
         auto&              stack_frame = call_stack_.back();
@@ -536,6 +538,10 @@ void SPIRVSimulator::ExecuteInstruction(const Instruction& instruction)
     {
         dispatcher->second(instruction);
     }
+}
+
+void SPIRVSimulator::Clone(SPIRVSimulator* output){
+
 }
 
 void SPIRVSimulator::HandleUnimplementedOpcode(const Instruction& instruction)
@@ -1357,6 +1363,32 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                     "opaque types");
             return (uint64_t)(0);
         }
+        case Type::Kind::Sampler:
+        {
+            assertm(!initial_data,
+                    "SPIRV simulator: Cannot create Sampler with initial_data unless we know the size of the "
+                    "opaque types");
+            return (uint64_t)0;
+        }
+        case Type::Kind::SampledImage:
+        {
+            assertm(!initial_data,
+                    "SPIRV simulator: Cannot create SampledImage with initial_data unless we know the size of the "
+                    "opaque types");
+            SampledImageV new_sampled_image{0, 0};
+            return new_sampled_image;
+        }
+        case Type::Kind::Opaque:
+        {
+            assertm(!initial_data,
+                    "SPIRV simulator: Cannot create Opaque value with initial_data unless we know the size of the "
+                    "opaque types");
+            return (uint64_t)0;
+        }
+        case Type::Kind::NamedBarrier:
+        {
+            assertx("SPIRV simulator: NamedBarrier is not supported by MakeDefault, implement it to continue.");
+        }
         case Type::Kind::Vector:
         {
             auto vec = std::make_shared<VectorV>();
@@ -1490,6 +1522,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         }
         default:
         {
+            std::cout << (uint32_t)type.kind << std::endl;
             assertx("SPIRV simulator: Invalid input type to MakeDefault");
         }
     }
