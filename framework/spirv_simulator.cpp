@@ -4672,28 +4672,28 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     {
         const Type&              elem_type       = GetTypeByTypeId(type.vector.elem_type_id);
         uint32_t                 elem_size_bytes = elem_type.scalar.width / 8;
-        std::shared_ptr<VectorV> vec             = std::get<std::shared_ptr<VectorV>>(result);
+        std::shared_ptr<VectorV> vec             = std::make_shared<VectorV>();
         uint32_t                 current_byte    = 0;
 
-        for (Value& element : vec->elems)
+        for (int i = 0; i < type.vector.elem_count; ++i)
         {
-            if (std::holds_alternative<double>(element))
+            if (elem_type.kind == Type::Kind::Float)
             {
                 double value;
                 std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
-                element = value;
+                vec->elems.push_back(value);
             }
-            else if (std::holds_alternative<uint64_t>(element))
+            else if ((elem_type.kind == Type::Kind::Int) && !elem_type.scalar.is_signed)
             {
                 uint64_t value;
                 std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
-                element = value;
+                vec->elems.push_back(value);
             }
-            else if (std::holds_alternative<int64_t>(element))
+            else if ((elem_type.kind == Type::Kind::Int) && elem_type.scalar.is_signed)
             {
                 int64_t value;
                 std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
-                element = value;
+                vec->elems.push_back(value);
             }
             else
             {
@@ -4702,6 +4702,8 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
 
             current_byte += elem_size_bytes;
         }
+
+        result = vec;
     }
     else if (type.kind == Type::Kind::Float)
     {
