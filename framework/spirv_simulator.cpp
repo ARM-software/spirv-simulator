@@ -5916,16 +5916,17 @@ void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction)
     std::shared_ptr<VectorV> result = std::make_shared<VectorV>();
     for (uint32_t literal_index = 5; literal_index < instruction.word_count; ++literal_index)
     {
-        assertm(literal_index < values.size(), "SPIRV simulator: Literal index OOB");
+        uint32_t component_index = instruction.words[literal_index];
+        assertm(component_index < values.size(), "SPIRV simulator: Literal index OOB");
 
-        if (literal_index == 0xFFFFFFFF)
+        if (component_index == 0xFFFFFFFF)
         {
             Value undef_val = (uint64_t)0xFFFFFFFF;
             result->elems.push_back(undef_val);
         }
         else
         {
-            result->elems.push_back(values[literal_index]);
+            result->elems.push_back(values[component_index]);
         }
     }
 
@@ -7297,6 +7298,7 @@ void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
     const Type& image_type   = GetTypeByResultId(image_id);
     const Type& sampler_type = GetTypeByResultId(sampler_id);
 
+    // TODO: Replace bare asserts
     assert(result_type.kind == Type::Kind::SampledImage);
     assert(image_type.kind == Type::Kind::Image);
     assert(image_type.image.sampled == 0 || image_type.image.sampled == 1);
@@ -7354,6 +7356,7 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
     const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
     const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
 
+    // TODO: Replace bare asserts
     assert(result_type.kind == Type::Kind::Vector);
     assert(result_type.vector.elem_count == 4);
     assert(sampled_image_type.kind == Type::Kind::SampledImage);
@@ -7362,6 +7365,7 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
     const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
     const Type& image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
 
+    // TODO: Replace bare asserts
     assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
     assert(image_type.kind == Type::Kind::Image);
     assert(image_type.image.dim != spv::Dim::DimBuffer);
@@ -7369,6 +7373,7 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
 
     const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
 
+    // TODO: Replace bare asserts
     assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
 
     // TODO: Actually compute coordinates according to image operands
@@ -7424,12 +7429,14 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
 
     // TODO: Load image operands (at least 1)
 
+    // TODO: Replace bare asserts
     assert((image_operand_mask & spv::ImageOperandsLodMask) || (image_operand_mask & spv::ImageOperandsGradMask));
 
     const Type& result_type        = GetTypeByTypeId(result_type_id);
     const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
     const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
 
+    // TODO: Replace bare asserts
     assert(result_type.kind == Type::Kind::Vector);
     assert(result_type.vector.elem_count == 4);
     assert(sampled_image_type.kind == Type::Kind::SampledImage);
@@ -7439,6 +7446,7 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
     const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
     const Type& image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
 
+    // TODO: Replace bare asserts
     assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
     assert(image_type.kind == Type::Kind::Image);
     assert(image_type.image.dim != spv::Dim::DimBuffer);
@@ -7446,6 +7454,7 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
 
     const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
 
+    // TODO: Replace bare asserts
     assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
 
     // TODO: Actually compute coordinates according to image operands
@@ -7507,6 +7516,7 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     const Type& image_type      = GetTypeByResultId(image_id);
     const Type& coordinate_type = GetTypeByResultId(coordinate_id);
 
+    // TODO: Replace bare asserts
     assert(result_type.kind == Type::Kind::Vector);
     assert(result_type.vector.elem_count == 4);
     assert(image_type.kind == Type::Kind::Image);
@@ -7517,6 +7527,7 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
     const Type& sampled_type     = GetTypeByTypeId(image_type.image.sampled_type_id);
 
+    // TODO: Replace bare asserts
     assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
     assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
 
@@ -7584,6 +7595,7 @@ void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
     const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
     const Type& component_type     = GetTypeByResultId(component_id);
 
+    // TODO: Replace bare asserts
     assert(result_type.kind == Type::Kind::Vector);
     assert(result_type.vector.elem_count == 4);
     assert(sampled_image_type.kind == Type::Kind::SampledImage);
@@ -7595,6 +7607,7 @@ void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
     const Type&  image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
     const Value& component_value  = GetValue(component_id);
 
+    // TODO: Replace bare asserts
     assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
     assert(image_type.kind == Type::Kind::Image);
     assert(image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube ||
@@ -7681,6 +7694,7 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
     const Type& image_type      = GetTypeByResultId(image_id);
     const Type& coordinate_type = GetTypeByResultId(coordinate_id);
 
+    // TODO: Replace bare asserts
     assert(result_type.kind == Type::Kind::Int || result_type.kind == Type::Kind::Float ||
            result_type.kind == Type::Kind::Vector);
     assert(image_type.kind == Type::Kind::Image);
@@ -7778,6 +7792,7 @@ void SPIRVSimulator::Op_ImageWrite(const Instruction& instruction)
     const Type& texel_elem_type =
         (texel_type.kind == Type::Kind::Vector ? GetTypeByTypeId(texel_type.vector.elem_type_id) : texel_type);
 
+        // TODO: Replace bare asserts
     assert(image_type.kind == Type::Kind::Image);
     assert(image_type.image.sampled == 0 || image_type.image.sampled == 2);
     assert(image_type.image.dim != spv::Dim::DimSubpassData);
@@ -7816,6 +7831,7 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
     const Type& result_type = GetTypeByTypeId(result_type_id);
     const Type& image_type  = GetTypeByResultId(image_id);
 
+    // TODO: Replace bare asserts
     assert(image_type.kind == Type::Kind::Image);
 
     // TODO: Retrieve actual size instead of fake size
