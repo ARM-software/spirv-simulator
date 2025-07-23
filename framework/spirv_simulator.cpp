@@ -147,6 +147,9 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpSLessThan, [this](const Instruction& i) { Op_SLessThan(i); });
     R(spv::Op::OpDot, [this](const Instruction& i) { Op_Dot(i); });
     R(spv::Op::OpFOrdGreaterThan, [this](const Instruction& i) { Op_FOrdGreaterThan(i); });
+    R(spv::Op::OpFOrdGreaterThanEqual, [this](const Instruction& i) { Op_FOrdGreaterThanEqual(i); });
+    R(spv::Op::OpFOrdEqual, [this](const Instruction& i) { Op_FOrdEqual(i); });
+    R(spv::Op::OpFOrdNotEqual, [this](const Instruction& i) { Op_FOrdNotEqual(i); });
     R(spv::Op::OpCompositeExtract, [this](const Instruction& i) { Op_CompositeExtract(i); });
     R(spv::Op::OpBitcast, [this](const Instruction& i) { Op_Bitcast(i); });
     R(spv::Op::OpIMul, [this](const Instruction& i) { Op_IMul(i); });
@@ -172,6 +175,7 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpImageRead, [this](const Instruction& i) { Op_ImageRead(i); });
     R(spv::Op::OpImageWrite, [this](const Instruction& i) { Op_ImageWrite(i); });
     R(spv::Op::OpImageQuerySize, [this](const Instruction& i) { Op_ImageQuerySize(i); });
+    R(spv::Op::OpImageQuerySizeLod, [this](const Instruction& i) { Op_ImageQuerySizeLod(i); });
     R(spv::Op::OpFNegate, [this](const Instruction& i) { Op_FNegate(i); });
     R(spv::Op::OpMatrixTimesVector, [this](const Instruction& i) { Op_MatrixTimesVector(i); });
     R(spv::Op::OpUGreaterThan, [this](const Instruction& i) { Op_UGreaterThan(i); });
@@ -200,6 +204,9 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpMatrixTimesMatrix, [this](const Instruction& i) { Op_MatrixTimesMatrix(i); });
     R(spv::Op::OpIsNan, [this](const Instruction& i) { Op_IsNan(i); });
     R(spv::Op::OpFunctionParameter, [this](const Instruction& i) { Op_FunctionParameter(i); });
+    R(spv::Op::OpEmitVertex, [this](const Instruction& i) { Op_EmitVertex(i); });
+    R(spv::Op::OpEndPrimitive, [this](const Instruction& i) { Op_EndPrimitive(i); });
+    R(spv::Op::OpFConvert, [this](const Instruction& i) { Op_FConvert(i); });
 }
 
 void SPIRVSimulator::CheckOpcodeSupport()
@@ -4250,7 +4257,7 @@ void SPIRVSimulator::Op_FOrdGreaterThan(const Instruction& instruction)
 
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
                     std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
-                "SPIRV simulator: Operands set to be vector type in Op_UGreaterThanEqual, but they are not, illegal "
+                "SPIRV simulator: Operands set to be vector type in Op_FOrdGreaterThan, but they are not, illegal "
                 "input parameters");
 
         auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
@@ -4278,6 +4285,207 @@ void SPIRVSimulator::Op_FOrdGreaterThan(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type in Op_FOrdGreaterThan, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_FOrdGreaterThanEqual(const Instruction& instruction)
+{
+    /*
+    OpFOrdGreaterThanEqual
+
+    Floating-point comparison if operands are ordered and Operand 1 is greater than or equal to Operand 2.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of floating-point type.
+    They must have the same type, and they must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFOrdGreaterThanEqual);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    Type         type    = GetTypeByTypeId(type_id);
+    const Value& val_op1 = GetValue(operand1_id);
+    const Value& val_op2 = GetValue(operand2_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
+                "SPIRV simulator: Operands set to be vector type in Op_FOrdGreaterThanEqual, but they are not, illegal "
+                "input parameters");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(val_op2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length in Op_UGreaterThanEqual");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec1->elems[i]) && std::holds_alternative<double>(vec2->elems[i]),
+                    "SPIRV simulator: Found non-floating point operand in Op_FOrdGreaterThanEqual vector operands");
+
+            Value elem_result = (uint64_t)(std::get<double>(vec1->elems[i]) >= std::get<double>(vec2->elems[i]));
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        Value result = (uint64_t)(std::get<double>(val_op1) >= std::get<double>(val_op2));
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in Op_FOrdGreaterThanEqual, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_FOrdEqual(const Instruction& instruction)
+{
+    /*
+    OpFOrdEqual
+
+    Floating-point comparison for being ordered and equal.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of floating-point type.
+    They must have the same type, and they must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFOrdEqual);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    Type         type    = GetTypeByTypeId(type_id);
+    const Value& val_op1 = GetValue(operand1_id);
+    const Value& val_op2 = GetValue(operand2_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
+                "SPIRV simulator: Operands set to be vector type in Op_FOrdEqual, but they are not, illegal "
+                "input parameters");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(val_op2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length in Op_UGreaterThanEqual");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec1->elems[i]) && std::holds_alternative<double>(vec2->elems[i]),
+                    "SPIRV simulator: Found non-floating point operand in Op_FOrdEqual vector operands");
+
+            Value elem_result = (uint64_t)(std::get<double>(vec1->elems[i]) == std::get<double>(vec2->elems[i]));
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        Value result = (uint64_t)(std::get<double>(val_op1) == std::get<double>(val_op2));
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in Op_FOrdEqual, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_FOrdNotEqual(const Instruction& instruction)
+{
+    /*
+    OpFOrdNotEqual
+
+    Floating-point comparison for being ordered and not equal.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of floating-point type.
+    They must have the same type, and they must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFOrdNotEqual);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    Type         type    = GetTypeByTypeId(type_id);
+    const Value& val_op1 = GetValue(operand1_id);
+    const Value& val_op2 = GetValue(operand2_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
+                "SPIRV simulator: Operands set to be vector type in Op_FOrdNotEqual, but they are not, illegal "
+                "input parameters");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(val_op2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length in Op_UGreaterThanEqual");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec1->elems[i]) && std::holds_alternative<double>(vec2->elems[i]),
+                    "SPIRV simulator: Found non-floating point operand in Op_FOrdNotEqual vector operands");
+
+            Value elem_result = (uint64_t)(std::get<double>(vec1->elems[i]) != std::get<double>(vec2->elems[i]));
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        Value result = (uint64_t)(std::get<double>(val_op1) != std::get<double>(val_op2));
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in Op_FOrdNotEqual, must be vector or float");
     }
 
     if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
@@ -7932,6 +8140,131 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
     }
 }
 
+void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
+{
+    /*
+    OpImageQuerySizeLod
+
+    Query the dimensions of Image for mipmap level for Level of Detail.
+
+    Result Type must be an integer type scalar or vector. The number of components must be
+    1 for the 1D dimensionality,
+    2 for the 2D and Cube dimensionalities,
+    3 for the 3D dimensionality,
+    plus 1 more if the image type is arrayed. This vector is filled in with (width [, height] [, depth] [, elements]) where elements is the number of layers in an image array, or the number of cubes in a cube-map array.
+
+    Image must be an object whose type is OpTypeImage. Its Dim operand must be one of 1D, 2D, 3D, or Cube, and its MS must be 0. See OpImageQuerySize for querying image types without level of detail. See the client API specification for additional image type restrictions.
+
+    Level of Detail is used to compute which mipmap level to query and must be a 32-bit integer type scalar.
+    */
+    assert(instruction.opcode == spv::Op::OpImageQuerySize);
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t image_id       = instruction.words[3];
+    uint32_t lod            = instruction.words[4];
+
+    const Type& result_type = GetTypeByTypeId(result_type_id);
+    const Type& image_type  = GetTypeByResultId(image_id);
+
+    assertm(image_type.kind == Type::Kind::Image, "SPIRV simulator: Image type is not Image");
+
+    std::vector<uint64_t> size;
+    switch (image_type.image.dim)
+    {
+        case spv::Dim::Dim1D:
+        case spv::Dim::DimBuffer:
+        {
+            if (image_type.image.dim == spv::Dim::Dim1D)
+            {
+                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
+                       image_type.image.sampled == 2, "SPIRV simulator: Invalid image configuration for 1D image");
+            }
+
+            size.resize(1, 1);
+
+            break;
+        }
+        case spv::Dim::Dim2D:
+        case spv::Dim::DimCube:
+        case spv::Dim::DimRect:
+        {
+            if (image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube)
+            {
+                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
+                       image_type.image.sampled == 2, , "SPIRV simulator: Invalid image configuration for 2D image");
+            }
+
+            size.resize(2, 1);
+
+            break;
+        }
+        case spv::Dim::Dim3D:
+        {
+            if (image_type.image.dim == spv::Dim::Dim3D)
+            {
+                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
+                       image_type.image.sampled == 2, , "SPIRV simulator: Invalid image configuration for 3D image");
+            }
+
+            size.resize(3, 1);
+
+            break;
+        }
+        default:
+        {
+            assertm(false, "SPIRV simulator: Invalid image dimensions in Op_ImageQuerySizeLod");
+        }
+    }
+
+    if (image_type.image.arrayed == 1)
+    {
+        size.push_back(1);
+    }
+
+    if (result_type.kind == Type::Kind::Int)
+    {
+        assertm(size.size() == 1, "SPIRV simulator: Calculated dim size does not match scalar return type");
+
+        if (result_type.scalar.is_signed)
+        {
+            SetValue(result_id, int64_t(size[0]));
+        }
+        else
+        {
+            SetValue(result_id, uint64_t(size[0]));
+        }
+    }
+    else if (result_type.kind == Type::Kind::Vector)
+    {
+        assertm(size.size() == result_type.vector.elem_count, "SPIRV simulator: Calculated dim size does not match return vector type size");
+
+        const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+        assertm(result_elem_type.kind == Type::Kind::Int, "SPIRV simulator: Vectory element type must be int");
+
+        std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
+
+        result_value->elems.resize(result_type.vector.elem_count);
+        for (unsigned i = 0; i < result_type.vector.elem_count; ++i)
+        {
+            if (result_elem_type.scalar.is_signed)
+            {
+                result_value->elems[i] = int64_t(size[i]);
+            }
+            else
+            {
+                result_value->elems[i] = uint64_t(size[i]);
+            }
+        }
+
+        SetValue(result_id, result_value);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in Op_ImageQuerySizeLod");
+    }
+}
+
 void SPIRVSimulator::Op_FunctionParameter(const Instruction& instruction)
 {
     /*
@@ -7950,6 +8283,58 @@ void SPIRVSimulator::Op_FunctionParameter(const Instruction& instruction)
     */
     // This is a nop in our implementation (handled at parse time)
     assert(instruction.opcode == spv::Op::OpFunctionParameter);
+}
+
+void SPIRVSimulator::Op_EmitVertex(const Instruction& instruction)
+{
+    /*
+    OpEmitVertex
+
+    Emits the current values of all output variables to the current output primitive.
+    After execution, the values of all output variables are undefined.
+
+    This instruction must only be used when only one stream is present.
+    */
+    assert(instruction.opcode == spv::Op::OpEmitVertex);
+    std::cout << "SPIRV simulator: WARNING: Geometry shaders not implemented, instructions are ignored" << std::endl;
+}
+
+void SPIRVSimulator::Op_EndPrimitive(const Instruction& instruction)
+{
+    /*
+    OpEndPrimitive
+
+    Finish the current primitive and start a new one. No vertex is emitted.
+
+    This instruction must only be used when only one stream is present.
+    */
+    assert(instruction.opcode == spv::Op::OpEndPrimitive);
+    std::cout << "SPIRV simulator: WARNING: Geometry shaders not implemented, instructions are ignored" << std::endl;
+}
+
+void SPIRVSimulator::Op_FConvert(const Instruction& instruction)
+{
+    /*
+    OpFConvert
+
+    Convert value numerically from one floating-point width to another width.
+
+    Result Type must be a scalar or vector of floating-point type.
+
+    Float Value must be a scalar or vector of floating-point type.
+    It must have the same number of components as Result Type.
+    The component type must not equal the component type in Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpFConvert);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t value_id  = instruction.words[3];
+
+    // We always store as doubles, this just equates to a type change
+    SetValue(result_id, GetValue(value_id));
 }
 
 #undef assertx

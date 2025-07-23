@@ -655,6 +655,9 @@ class SPIRVSimulator
     void Op_SLessThan(const Instruction&);
     void Op_Dot(const Instruction&);
     void Op_FOrdGreaterThan(const Instruction&);
+    void Op_FOrdGreaterThanEqual(const Instruction&);
+    void Op_FOrdEqual(const Instruction&);
+    void Op_FOrdNotEqual(const Instruction&);
     void Op_CompositeExtract(const Instruction&);
     void Op_Bitcast(const Instruction&);
     void Op_IMul(const Instruction&);
@@ -680,6 +683,7 @@ class SPIRVSimulator
     void Op_ImageRead(const Instruction&);
     void Op_ImageWrite(const Instruction&);
     void Op_ImageQuerySize(const Instruction&);
+    void Op_ImageQuerySizeLod(const Instruction&);
     void Op_FNegate(const Instruction&);
     void Op_MatrixTimesVector(const Instruction&);
     void Op_UGreaterThan(const Instruction&);
@@ -708,6 +712,9 @@ class SPIRVSimulator
     void Op_MatrixTimesMatrix(const Instruction&);
     void Op_IsNan(const Instruction&);
     void Op_FunctionParameter(const Instruction&);
+    void Op_EmitVertex(const Instruction&);
+    void Op_EndPrimitive(const Instruction&);
+    void Op_FConvert(const Instruction&);
 };
 
 } // namespace SPIRVSimulator
