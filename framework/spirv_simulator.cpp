@@ -207,6 +207,7 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
     R(spv::Op::OpEmitVertex, [this](const Instruction& i) { Op_EmitVertex(i); });
     R(spv::Op::OpEndPrimitive, [this](const Instruction& i) { Op_EndPrimitive(i); });
     R(spv::Op::OpFConvert, [this](const Instruction& i) { Op_FConvert(i); });
+    R(spv::Op::OpImage, [this](const Instruction& i) { Op_Image(i); });
 }
 
 void SPIRVSimulator::CheckOpcodeSupport()
@@ -5529,7 +5530,7 @@ void SPIRVSimulator::Op_IEqual(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
-    else if (type.kind == Type::Kind::Int)
+    else if (type.kind == Type::Kind::Int || type.kind == Type::Kind::BoolT)
     {
         const Value& op1 = GetValue(instruction.words[3]);
         const Value& op2 = GetValue(instruction.words[4]);
@@ -5560,6 +5561,7 @@ void SPIRVSimulator::Op_IEqual(const Instruction& instruction)
     }
     else
     {
+        std::cout << (uint32_t)type.kind << std::endl;
         assertx("SPIRV simulator: Invalid result type for Op_IEqual, must be vector or int");
     }
 
@@ -8177,8 +8179,7 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
         {
             if (image_type.image.dim == spv::Dim::Dim1D)
             {
-                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
-                       image_type.image.sampled == 2, "SPIRV simulator: Invalid image configuration for 1D image");
+                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 || image_type.image.sampled == 2, "SPIRV simulator: Invalid image configuration for 1D image");
             }
 
             size.resize(1, 1);
@@ -8191,8 +8192,7 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
         {
             if (image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube)
             {
-                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
-                       image_type.image.sampled == 2, , "SPIRV simulator: Invalid image configuration for 2D image");
+                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 || image_type.image.sampled == 2, "SPIRV simulator: Invalid image configuration for 2D image");
             }
 
             size.resize(2, 1);
@@ -8203,8 +8203,7 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
         {
             if (image_type.image.dim == spv::Dim::Dim3D)
             {
-                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
-                       image_type.image.sampled == 2, , "SPIRV simulator: Invalid image configuration for 3D image");
+                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 || image_type.image.sampled == 2, "SPIRV simulator: Invalid image configuration for 3D image");
             }
 
             size.resize(3, 1);
@@ -8335,6 +8334,29 @@ void SPIRVSimulator::Op_FConvert(const Instruction& instruction)
 
     // We always store as doubles, this just equates to a type change
     SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_Image(const Instruction& instruction)
+{
+    /*
+    OpImage
+
+    Extract the image from a sampled image.
+
+    Result Type must be OpTypeImage.
+
+    Sampled Image must have type OpTypeSampledImage whose Image Type is the same as Result Type.
+    */
+    assert(instruction.opcode == spv::Op::OpImage);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t sampled_image_id  = instruction.words[3];
+
+    Value sampled_image = GetValue(sampled_image_id);
+    assertm(std::holds_alternative<SampledImageV>(sampled_image), "SPIRV simulator: Input value is not a SampledImage");
+
+    SetValue(result_id, GetValue(std::get<SampledImageV>(sampled_image).image_id));
 }
 
 #undef assertx

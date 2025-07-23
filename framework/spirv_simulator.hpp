@@ -715,6 +715,7 @@ class SPIRVSimulator
     void Op_EmitVertex(const Instruction&);
     void Op_EndPrimitive(const Instruction&);
     void Op_FConvert(const Instruction&);
+    void Op_Image(const Instruction&);
 };
 
 } // namespace SPIRVSimulator

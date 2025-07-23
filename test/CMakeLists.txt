@@ -28,6 +28,6 @@ add_custom_target(run_tests
   DEPENDS arithmetic_test
 )
 
-add_custom_target(always_run_tests ALL
-  DEPENDS run_tests
-)
+#add_custom_target(always_run_tests ALL
+#  DEPENDS run_tests
+#)

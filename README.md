@@ -41,6 +41,13 @@ SPIRV_HEADERS_PRESENT=1
 ```
 Before compiling, if this is not set it will use the spirv.hpp file instead.
 
+To run compilation unit tests:
+```
+cmake -H. -Bbuild
+cd build
+make run_tests
+```
+
 
 ## Execution framework (WIP)
 
