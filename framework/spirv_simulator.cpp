@@ -838,7 +838,9 @@ uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t result_id, spv::Decoration
         }
     }
 
+    // Should never happen
     assertx("SPIRV simulator: No matching decorators for result ID");
+    return 0;
 }
 
 uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t        result_id,
@@ -866,7 +868,9 @@ uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t        result_id,
         }
     }
 
-    assertx("SPIRV simulator: Not decorators for struct member");
+    // Should never happen
+    assertx("SPIRV simulator: No matching decorators for result ID");
+    return 0;
 }
 
 Type SPIRVSimulator::GetTypeByResultId(uint32_t result_id) const
