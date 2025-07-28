@@ -15,7 +15,7 @@ set(HEADER_FILES testing_common.hpp)
 
 add_executable(arithmetic_test)
 target_sources(arithmetic_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES})
-target_compile_definitions(arithmetic_test PRIVATE TEST_SHADER_DIR="${CMAKE_SOURCE_DIR}/test_shaders")
+target_compile_definitions(arithmetic_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
 target_link_libraries(arithmetic_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
 
 include(CTest)
@@ -28,6 +28,9 @@ add_custom_target(run_tests
   DEPENDS arithmetic_test
 )
 
-#add_custom_target(always_run_tests ALL
-#  DEPENDS run_tests
-#)
+file(GLOB SPIRV_FILES ${PROJECT_SOURCE_DIR}/test_shaders/*.spv ${PROJECT_SOURCE_DIR}/test_shaders/*.spirv)
+foreach(X ${SPIRV_FILES})
+	message(STATUS "Running: ${X}")
+	get_filename_component(TESTNAME ${X} NAME_WLE)
+	add_test(NAME ${TESTNAME} COMMAND ${CMAKE_BINARY_DIR}/spirv_simulator ${X})
+endforeach()
