@@ -1895,7 +1895,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             if (type.kind == Type::Kind::Vector)
             {
-                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(base) && std::holds_alternative<std::shared_ptr<VectorV>>(exponent),
                         "SPIRV simulator: Operands not of vector type in GLSLExtHandler::pow");
 
                 Value result     = std::make_shared<VectorV>();
@@ -1956,7 +1956,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             if (type.kind == Type::Kind::Vector)
             {
-                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand) && std::holds_alternative<std::shared_ptr<VectorV>>(min_val) && std::holds_alternative<std::shared_ptr<VectorV>>(max_val),
                         "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fclamp");
 
                 Value result     = std::make_shared<VectorV>();
@@ -1989,7 +1989,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             if (type.kind == Type::Kind::Vector)
             {
-                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(x) && std::holds_alternative<std::shared_ptr<VectorV>>(y) && std::holds_alternative<std::shared_ptr<VectorV>>(a),
                         "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fmix");
 
                 Value result     = std::make_shared<VectorV>();
