@@ -441,7 +441,10 @@ class SPIRVSimulator
     explicit SPIRVSimulator(const std::vector<uint32_t>& program_words,
                             const InputData&             input_data,
                             bool                         verbose = false);
-    void Run();
+
+    // Actually interpret the SPIRV. If we return true, then this means we have to execute
+    // every thread of the invokation.
+    bool Run();
 
     // When called (after a Run()) will write the outputs to the input_data mapped pointers
     void WriteOutputs();

@@ -9,6 +9,7 @@
 #include <variant>
 
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 
 namespace SPIRVSimulator
 {
@@ -386,7 +387,7 @@ void SPIRVSimulator::ParseAll()
     }
 }
 
-void SPIRVSimulator::Run()
+bool SPIRVSimulator::Run()
 {
     assertm(unsupported_opcodes.size() == 0, "SPIRV simulator: Unhandled opcodes detected, implement them to run!");
 
@@ -398,7 +399,7 @@ void SPIRVSimulator::Run()
     if (funcs_.empty())
     {
         std::cerr << "SPIRV simulator: No functions defined in the shader, cannot start execution" << std::endl;
-        return;
+        return false;
     }
 
     uint32_t entry_point_function_id = 0;
@@ -445,6 +446,8 @@ void SPIRVSimulator::Run()
     // We can set the return value to whatever, ignored if the call stack is empty on return
     call_stack_.push_back({ function_info.first_inst_index, 0, {}, {} });
     ExecuteInstructions();
+
+    return false;
 }
 
 void SPIRVSimulator::ExecuteInstructions(){
@@ -4675,7 +4678,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         std::shared_ptr<VectorV> vec             = std::make_shared<VectorV>();
         uint32_t                 current_byte    = 0;
 
-        for (int i = 0; i < type.vector.elem_count; ++i)
+        for (unsigned i = 0; i < type.vector.elem_count; ++i)
         {
             if (elem_type.kind == Type::Kind::Float)
             {
