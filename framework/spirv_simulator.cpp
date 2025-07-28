@@ -267,8 +267,6 @@ void SPIRVSimulator::CheckOpcodeSupport()
             unsupported_opcodes.insert(spv::OpToString(*it));
         }
     }
-
-    std::cout << std::endl;
 }
 
 void SPIRVSimulator::Validate()
@@ -406,8 +404,6 @@ void SPIRVSimulator::ParseAll()
 
 bool SPIRVSimulator::Run()
 {
-    std::cout << std::endl;
-
     if (funcs_.empty())
     {
         std::cerr << "SPIRV simulator: No functions defined in the shader, cannot start execution" << std::endl;
@@ -422,7 +418,7 @@ bool SPIRVSimulator::Run()
         {
             if (it.second == input_data_.entry_point_op_name)
             {
-                std::cout << "SPIRV simulator: Using entry point with OpName label: " << it.second << std::endl;
+                if (verbose_) std::cout << "SPIRV simulator: Using entry point with OpName label: " << it.second << std::endl;
                 entry_point_function_id = it.first;
                 break;
             }
@@ -436,14 +432,13 @@ bool SPIRVSimulator::Run()
     {
         if (entry_points_.find(input_data_.entry_point_id) == entry_points_.end())
         {
-            std::cout << "SPIRV simulator: Warning, entry point function with index: " << input_data_.entry_point_id
-                      << " not found, using first available" << std::endl;
-
+            if (verbose_) std::cout << "SPIRV simulator: Warning, entry point function with index: " << input_data_.entry_point_id
+                                    << " not found, using first available" << std::endl;
             entry_point_function_id = entry_points_.begin()->first;
         }
         else
         {
-            std::cout << "SPIRV simulator: Using entry point with ID: " << input_data_.entry_point_id << std::endl;
+            if (verbose_) std::cout << "SPIRV simulator: Using entry point with ID: " << input_data_.entry_point_id << std::endl;
             entry_point_function_id = input_data_.entry_point_id;
         }
     }
