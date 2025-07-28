@@ -1883,6 +1883,205 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
             break;
         }
+    case 26:
+        { // Pow
+            const Value& base = GetValue(operand_words[0]);
+            const Value& exponent = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::pow");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto basevec = std::get<std::shared_ptr<VectorV>>(base);
+                auto expvec = std::get<std::shared_ptr<VectorV>>(exponent);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::pow(std::get<double>(basevec->elems[i]), std::get<double>(expvec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::pow(std::get<double>(base), std::get<double>(exponent));
+                SetValue(result_id, result);
+            }
+            break;
+        }
+        case 31:
+        { // Sqrt
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::sqrt");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::sqrt(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::sqrt(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            break;
+        }
+        case 43:
+        { // FClamp
+            const Value& operand = GetValue(operand_words[0]);
+            const Value& min_val = GetValue(operand_words[1]);
+            const Value& max_val = GetValue(operand_words[2]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fclamp");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+                auto min_vec = std::get<std::shared_ptr<VectorV>>(min_val);
+                auto max_vec = std::get<std::shared_ptr<VectorV>>(max_val);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::clamp(std::get<double>(vec->elems[i]), std::get<double>(min_vec->elems[i]), std::get<double>(max_vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::clamp(std::get<double>(operand), std::get<double>(min_val), std::get<double>(max_val));
+                SetValue(result_id, result);
+            }
+            break;
+        }
+        case 46:
+        { // FMix
+            const Value& x = GetValue(operand_words[0]);
+            const Value& y = GetValue(operand_words[1]);
+            const Value& a = GetValue(operand_words[2]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fmix");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto xvec = std::get<std::shared_ptr<VectorV>>(x);
+                auto yvec = std::get<std::shared_ptr<VectorV>>(y);
+                auto avec = std::get<std::shared_ptr<VectorV>>(a);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    double x_d = std::get<double>(xvec->elems[i]);
+                    double y_d = std::get<double>(yvec->elems[i]);
+                    double a_d = std::get<double>(avec->elems[i]);
+                    Value elem_result = (double)(x_d * (1 - a_d) + y_d * a_d);
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                double x_d = std::get<double>(x);
+                double y_d = std::get<double>(y);
+                double a_d = std::get<double>(a);
+                Value result = (double)(x_d * (1 - a_d) + y_d * a_d);
+                SetValue(result_id, result);
+            }
+            break;
+        }
+    case 66:
+        { // Length
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::length");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                double len_sum = 0.0;
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    len_sum += std::get<double>(vec->elems[i]) * std::get<double>(vec->elems[i]);
+                }
+
+                len_sum = std::sqrt(len_sum);
+
+                SetValue(result_id, len_sum);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                SetValue(result_id, operand);
+            }
+            break;
+        }
+        case 69:
+        { // Normalize
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::normalize");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                double len_sum = 0.0;
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    len_sum += std::get<double>(vec->elems[i]) * std::get<double>(vec->elems[i]);
+                }
+
+                len_sum = std::sqrt(len_sum);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = std::get<double>(vec->elems[i]) / len_sum;
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)1.0;
+                SetValue(result_id, result);
+            }
+            break;
+        }
         default:
         {
             if (verbose_)
