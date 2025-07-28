@@ -30,6 +30,21 @@
 namespace SPIRVSimulator
 {
 
+// Used by tracing tools to pass in potential pbuffer candidates.
+// This is optional but allows for easier remapping user side in most cases
+struct PhysicalAddressCandidate
+{
+    uint64_t address;
+    uint64_t offset;
+
+    void* payload;
+
+    // The simulator will set this if it encounters a physical address pointer matching the
+    // metadata contained in this struct, thereby confirming there is indeed a pbuffer pointer
+    // in a given buffer with these properties/values.
+    bool verified = false;
+};
+
 // ---------------------------------------------------------------------------
 //  Input structure
 //
@@ -65,6 +80,12 @@ struct InputData
     // The keys here are uint64_t values who contain the bits in the physical address pointers
     // The value pair is the size of the buffer (in bytes) followed by the pointer to the host side data
     std::unordered_map<uint64_t, std::pair<size_t, void*>> physical_address_buffers;
+
+    // Optional map of buffers to pbuffer candidates in said buffers.
+    // If provided, the simulator will mark candidates in this when it finds a physical address pointer
+    // and raise an error if it finds a physical address pointer with no candidate in this list.
+    // If the map is empty all candidate related code and functionality will be skipped.
+    std::unordered_map<const void*, PhysicalAddressCandidate> candidates;
 };
 
 // ---------------------------------------------------------------------------
@@ -552,6 +573,7 @@ class SPIRVSimulator
     virtual void        RegisterOpcodeHandlers();
     virtual void        CheckOpcodeSupport();
     virtual void        Validate();
+    virtual bool        CanEarlyOut();
     virtual void        ExecuteInstruction(const Instruction&);
     virtual void        ExecuteInstructions();
     virtual void        CreateExecutionFork(const SPIRVSimulator& source);

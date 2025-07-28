@@ -45,6 +45,11 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const
     DecodeHeader();
     RegisterOpcodeHandlers();
     CheckOpcodeSupport();
+
+    assertm(unsupported_opcodes.size() == 0, "SPIRV simulator: Unhandled opcodes detected, implement them to run!");
+
+    ParseAll();
+    Validate();
 }
 
 void SPIRVSimulator::DecodeHeader()
@@ -214,7 +219,7 @@ void SPIRVSimulator::RegisterOpcodeHandlers()
 void SPIRVSimulator::CheckOpcodeSupport()
 {
     /*
-    Verifies that all opcodes in the instructions in the input shaders have a registered handled in
+    Verifies that all opcodes in the instructions in the input shaders have a registered handler in
     RegisterOpcodeHandlers.
     */
     // Check that program_words_ has not been messed with
@@ -304,6 +309,18 @@ void SPIRVSimulator::Validate()
     assertm(sizeof(void*) == 8, "SPIRV simulator: Systems with non 64 bit pointers are not supported");
 }
 
+bool SPIRVSimulator::CanEarlyOut()
+{
+    // If the shader does not write any buffer outputs and does not create any pbuffer pointers we can skip it
+    bool can_early_out = false;
+
+    // TODO: Add checks
+    //for (const Instruction& instruction : instructions_){
+    //}
+
+    return can_early_out;
+}
+
 void SPIRVSimulator::ParseAll()
 {
     size_t instruction_index = 0;
@@ -389,11 +406,6 @@ void SPIRVSimulator::ParseAll()
 
 bool SPIRVSimulator::Run()
 {
-    assertm(unsupported_opcodes.size() == 0, "SPIRV simulator: Unhandled opcodes detected, implement them to run!");
-
-    ParseAll();
-    Validate();
-
     std::cout << std::endl;
 
     if (funcs_.empty())
@@ -1283,6 +1295,7 @@ uint32_t SPIRVSimulator::GetTypeID(uint32_t result_id) const
     }
 
     assertx("SPIRV simulator: No type found for result_id");
+    return 0;
 }
 
 Value SPIRVSimulator::MakeScalar(uint32_t type_id, const uint32_t*& words)
@@ -1358,6 +1371,7 @@ Value SPIRVSimulator::MakeScalar(uint32_t type_id, const uint32_t*& words)
         default:
         {
             assertx("SPIRV simulator: Unsupported scalar type, instructions are possibly corrupt");
+            return 0;
         }
     }
 }
@@ -1545,6 +1559,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
             {
                 assertx("SPIRV simulator: Attempting to initialize a raw pointer whose storage class is not "
                         "PhysicalStorageBuffer");
+                return 0;
             }
         }
         default:
@@ -2465,6 +2480,8 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
     }
 
+    // TODO: Compare pointer with candidates here and track
+
     SetValue(result_id, new_pointer);
 }
 
@@ -2531,6 +2548,8 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
 
     const PointerV& pointer = std::get<PointerV>(GetValue(pointer_id));
 
+    // TODO: Compare pointer with candidates here and track
+
     SetValue(result_id, Deref(pointer));
 }
 
@@ -2553,6 +2572,8 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     uint32_t        result_id  = instruction.words[2];
     const PointerV& pointer    = std::get<PointerV>(GetValue(pointer_id));
     Deref(pointer)             = GetValue(result_id);
+
+    // TODO: Compare pointer with candidates here and track
 
     values_stored_[pointer_id] = result_id;
 }
@@ -2635,6 +2656,8 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
         PointerV ppointer = std::get<PointerV>(Deref(new_pointer));
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
     }
+
+    // TODO: Compare pointer with candidates here and track
 
     SetValue(result_id, new_pointer);
 }
@@ -4660,6 +4683,9 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         if (type.kind == Type::Kind::Pointer)
         {
             SetValue(result_id, operand);
+
+            // TODO: Compare pointer with candidates here and track
+
             return;
         }
         // We currently dont handle this, we could do it by storing the pointer in a
@@ -4957,6 +4983,8 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
     PointerV new_pointer{ result_id, type_id, type.pointer.storage_class, pointer_value, {} };
     physical_address_pointers_.push_back(new_pointer);
     SetValue(result_id, new_pointer);
+
+    // TODO: Compare pointer with candidates here and track
 
     // Here we need to find the source of the values that eventually became the pointer above
     // so that any tool using the simulator can extract and deal with them.
@@ -5998,6 +6026,7 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Selector value is not an integer");
+        return;
     }
 
     const Type& type = GetTypeByResultId(selector_id);
@@ -7907,6 +7936,8 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
         image_operand_mask = instruction.words[5];
     }
 
+    SetIsArbitrary(result_id);
+
     // TODO: Load image operands if they exist
 
     const Type& result_type     = GetTypeByTypeId(result_type_id);
@@ -7964,7 +7995,6 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
         }
 
         SetValue(result_id, result_value);
-        SetIsArbitrary(result_id);
     }
 }
 
@@ -8011,7 +8041,7 @@ void SPIRVSimulator::Op_ImageWrite(const Instruction& instruction)
     const Type& texel_elem_type =
         (texel_type.kind == Type::Kind::Vector ? GetTypeByTypeId(texel_type.vector.elem_type_id) : texel_type);
 
-        // TODO: Replace bare asserts
+    // TODO: Replace bare asserts
     assert(image_type.kind == Type::Kind::Image);
     assert(image_type.image.sampled == 0 || image_type.image.sampled == 2);
     assert(image_type.image.dim != spv::Dim::DimSubpassData);
@@ -8052,6 +8082,8 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
 
     // TODO: Replace bare asserts
     assert(image_type.kind == Type::Kind::Image);
+
+    SetIsArbitrary(result_id);
 
     // TODO: Retrieve actual size instead of fake size
 
@@ -8179,6 +8211,8 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
     const Type& image_type  = GetTypeByResultId(image_id);
 
     assertm(image_type.kind == Type::Kind::Image, "SPIRV simulator: Image type is not Image");
+
+    SetIsArbitrary(result_id);
 
     std::vector<uint64_t> size;
     switch (image_type.image.dim)
@@ -8343,6 +8377,10 @@ void SPIRVSimulator::Op_FConvert(const Instruction& instruction)
 
     // We always store as doubles, this just equates to a type change
     SetValue(result_id, GetValue(value_id));
+
+    if (ValueIsArbitrary(value_id)){
+        SetIsArbitrary(result_id);
+    }
 }
 
 void SPIRVSimulator::Op_Image(const Instruction& instruction)
