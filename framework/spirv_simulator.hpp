@@ -485,6 +485,7 @@ class SPIRVSimulator
     // Used to create object id's for entries not created by a spirv instruction
     // These are guaranteed to not overlap with any result ID's mapping to spirv instructions
     uint32_t next_external_id_ = 0;
+    uint32_t num_result_ids_ = 0;
 
     // Parsing artefacts
     InputData input_data_;
@@ -542,7 +543,7 @@ class SPIRVSimulator
         uint32_t result_id;
 
         // result_id -> Value
-        std::unordered_map<uint32_t, Value> locals;
+        std::vector<Value> locals;
 
         // obj_id -> Heap Value
         std::unordered_map<uint32_t, Value> func_heap;
@@ -550,7 +551,8 @@ class SPIRVSimulator
     std::vector<Frame> call_stack_;
 
     // result_id -> Value
-    std::unordered_map<uint32_t, Value> globals_;
+    //std::unordered_map<uint32_t, Value> globals_;
+    std::vector<Value> globals_;
 
     // storage_class -> obj_id -> Heap Value
     std::unordered_map<uint32_t, std::unordered_map<uint32_t, Value>> heaps_;

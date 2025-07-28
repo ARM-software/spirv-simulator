@@ -357,6 +357,10 @@ void SPIRVSimulator::ParseAll()
         instruction_index += 1;
     }
 
+    num_result_ids_ = next_external_id_;
+    // Preinitialize to max result ID
+    globals_.resize(num_result_ids_, std::monostate{});
+
     instruction_index = 0;
     for (const auto& instruction : instructions_){
         switch (instruction.opcode)
@@ -452,6 +456,7 @@ bool SPIRVSimulator::Run()
     FunctionInfo& function_info = funcs_[entry_point_function_id];
     // We can set the return value to whatever, ignored if the call stack is empty on return
     call_stack_.push_back({ function_info.first_inst_index, 0, {}, {} });
+    call_stack_.back().locals.resize(num_result_ids_, std::monostate{});
     ExecuteInstructions();
 
     return false;
@@ -556,8 +561,8 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
 
     // Then manually copy all the Values that may contain pointers
     for (auto& stack_frame : call_stack_){
-        for (auto& value_pair : stack_frame.locals){
-            value_pair.second = CopyValue(value_pair.second);
+        for (auto& value : stack_frame.locals){
+            value = CopyValue(value);
         }
 
         for (auto& value_pair : stack_frame.func_heap){
@@ -565,8 +570,8 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
         }
     }
 
-    for (auto& value_pair : globals_){
-        value_pair.second = CopyValue(value_pair.second);
+    for (auto& value : globals_){
+        value = CopyValue(value);
     }
 
     for (auto& heap_pair : heaps_){
@@ -1818,15 +1823,15 @@ Value& SPIRVSimulator::GetValue(uint32_t result_id)
 {
     for (auto riter = call_stack_.rbegin(); riter != call_stack_.rend(); ++riter)
     {
-        if (riter->locals.find(result_id) != riter->locals.end())
+        if (!std::holds_alternative<std::monostate>(riter->locals[result_id]))
         {
-            return riter->locals.at(result_id);
+            return riter->locals[result_id];
         }
     }
 
-    assertm(globals_.find(result_id) != globals_.end(), "SPIRV simulator: Access to undefined variable");
+    assertm(!std::holds_alternative<std::monostate>(globals_[result_id]), "SPIRV simulator: Access to undefined variable");
 
-    return globals_.at(result_id);
+    return globals_[result_id];
 }
 
 void SPIRVSimulator::SetValue(uint32_t result_id, const Value& value)
@@ -2910,6 +2915,7 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
 
     FunctionInfo& function_info = funcs_[function_id];
     call_stack_.push_back({ function_info.first_inst_index, result_id, {}, {} });
+    call_stack_.back().locals.resize(num_result_ids_, std::monostate{});
 
     uint32_t parameter_index = 0;
     for (auto i = 4; i < instruction.word_count; ++i)
