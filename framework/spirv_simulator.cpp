@@ -1566,6 +1566,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         {
             std::cout << (uint32_t)type.kind << std::endl;
             assertx("SPIRV simulator: Invalid input type to MakeDefault");
+            return 0;
         }
     }
 }
