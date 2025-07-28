@@ -2712,10 +2712,13 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
     FunctionInfo& function_info = funcs_[function_id];
     call_stack_.push_back({ function_info.first_inst_index, result_id, {}, {} });
 
+    uint32_t parameter_index = 0;
     for (auto i = 4; i < instruction.word_count; ++i)
     {
         // Push parameters to the local scope
-        call_stack_.back().locals[function_info.parameter_ids_[i]] = GetValue(instruction.words[i]);
+        call_stack_.back().locals[function_info.parameter_ids_[parameter_index]] = GetValue(instruction.words[i]);
+
+        parameter_index += 1;
     }
 }
 
