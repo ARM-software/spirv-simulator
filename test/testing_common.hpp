@@ -112,7 +112,6 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
 
     SPIRVSimulatorMockBase()
     {
-        RegisterOpcodeHandlers();
         types_ = {
             { Type::void_t, ::SPIRVSimulator::Type() },
             { Type::boolean, ::SPIRVSimulator::Type::Bool() },

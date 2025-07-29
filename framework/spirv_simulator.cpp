@@ -43,8 +43,6 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const
     stream_     = program_words_;
     input_data_ = input_data;
     DecodeHeader();
-    RegisterOpcodeHandlers();
-    CheckOpcodeSupport();
 
     assertm(unsupported_opcodes.size() == 0, "SPIRV simulator: Unhandled opcodes detected, implement them to run!");
 
@@ -75,198 +73,6 @@ void SPIRVSimulator::DecodeHeader()
     }
 
     stream_ = std::span<const uint32_t>(program_words_).subspan(5);
-}
-
-void SPIRVSimulator::RegisterOpcodeHandlers()
-{
-    /*
-    New opcode implementations must be registered here.
-    */
-    auto R = [this](spv::Op op, DispatcherType f) { opcode_dispatchers_[op] = std::move(f); };
-
-    R(spv::Op::OpTypeVoid, [this](const Instruction& i) { T_Void(i); });
-    R(spv::Op::OpTypeBool, [this](const Instruction& i) { T_Bool(i); });
-    R(spv::Op::OpTypeInt, [this](const Instruction& i) { T_Int(i); });
-    R(spv::Op::OpTypeFloat, [this](const Instruction& i) { T_Float(i); });
-    R(spv::Op::OpTypeVector, [this](const Instruction& i) { T_Vector(i); });
-    R(spv::Op::OpTypeMatrix, [this](const Instruction& i) { T_Matrix(i); });
-    R(spv::Op::OpTypeArray, [this](const Instruction& i) { T_Array(i); });
-    R(spv::Op::OpTypeStruct, [this](const Instruction& i) { T_Struct(i); });
-    R(spv::Op::OpTypePointer, [this](const Instruction& i) { T_Pointer(i); });
-    R(spv::Op::OpTypeForwardPointer, [this](const Instruction& i) { T_ForwardPointer(i); });
-    R(spv::Op::OpTypeRuntimeArray, [this](const Instruction& i) { T_RuntimeArray(i); });
-    R(spv::Op::OpTypeFunction, [this](const Instruction& i) { T_Function(i); });
-    R(spv::Op::OpTypeImage, [this](const Instruction& i) { T_Image(i); });
-    R(spv::Op::OpTypeSampler, [this](const Instruction& i) { T_Sampler(i); });
-    R(spv::Op::OpTypeSampledImage, [this](const Instruction& i) { T_SampledImage(i); });
-    R(spv::Op::OpTypeOpaque, [this](const Instruction& i) { T_Opaque(i); });
-    R(spv::Op::OpTypeNamedBarrier, [this](const Instruction& i) { T_NamedBarrier(i); });
-    R(spv::Op::OpEntryPoint, [this](const Instruction& i) { Op_EntryPoint(i); });
-    R(spv::Op::OpExtInstImport, [this](const Instruction& i) { Op_ExtInstImport(i); });
-    R(spv::Op::OpConstant, [this](const Instruction& i) { Op_Constant(i); });
-    R(spv::Op::OpConstantComposite, [this](const Instruction& i) { Op_ConstantComposite(i); });
-    R(spv::Op::OpCompositeConstruct, [this](const Instruction& i) { Op_CompositeConstruct(i); });
-    R(spv::Op::OpVariable, [this](const Instruction& i) { Op_Variable(i); });
-    R(spv::Op::OpImageTexelPointer, [this](const Instruction& i) { Op_ImageTexelPointer(i); });
-    R(spv::Op::OpLoad, [this](const Instruction& i) { Op_Load(i); });
-    R(spv::Op::OpStore, [this](const Instruction& i) { Op_Store(i); });
-    R(spv::Op::OpAccessChain, [this](const Instruction& i) { Op_AccessChain(i); });
-    R(spv::Op::OpInBoundsAccessChain, [this](const Instruction& i) { Op_AccessChain(i); });
-    R(spv::Op::OpFunction, [this](const Instruction& i) { Op_Function(i); });
-    R(spv::Op::OpFunctionEnd, [this](const Instruction& i) { Op_FunctionEnd(i); });
-    R(spv::Op::OpFunctionCall, [this](const Instruction& i) { Op_FunctionCall(i); });
-    R(spv::Op::OpLabel, [this](const Instruction& i) { Op_Label(i); });
-    R(spv::Op::OpBranch, [this](const Instruction& i) { Op_Branch(i); });
-    R(spv::Op::OpBranchConditional, [this](const Instruction& i) { Op_BranchConditional(i); });
-    R(spv::Op::OpReturn, [this](const Instruction& i) { Op_Return(i); });
-    R(spv::Op::OpReturnValue, [this](const Instruction& i) { Op_ReturnValue(i); });
-    R(spv::Op::OpINotEqual, [this](const Instruction& i) { Op_INotEqual(i); });
-    R(spv::Op::OpFAdd, [this](const Instruction& i) { Op_FAdd(i); });
-    R(spv::Op::OpExtInst, [this](const Instruction& i) { Op_ExtInst(i); });
-    R(spv::Op::OpSelectionMerge, [this](const Instruction& i) { Op_SelectionMerge(i); });
-    R(spv::Op::OpFMul, [this](const Instruction& i) { Op_FMul(i); });
-    R(spv::Op::OpLoopMerge, [this](const Instruction& i) { Op_LoopMerge(i); });
-    R(spv::Op::OpIAdd, [this](const Instruction& i) { Op_IAdd(i); });
-    R(spv::Op::OpISub, [this](const Instruction& i) { Op_ISub(i); });
-    R(spv::Op::OpLogicalNot, [this](const Instruction& i) { Op_LogicalNot(i); });
-    R(spv::Op::OpCapability, [this](const Instruction& i) { Op_Capability(i); });
-    R(spv::Op::OpExtension, [this](const Instruction& i) { Op_Extension(i); });
-    R(spv::Op::OpMemoryModel, [this](const Instruction& i) { Op_MemoryModel(i); });
-    R(spv::Op::OpExecutionMode, [this](const Instruction& i) { Op_ExecutionMode(i); });
-    R(spv::Op::OpSource, [this](const Instruction& i) { Op_Source(i); });
-    R(spv::Op::OpSourceExtension, [this](const Instruction& i) { Op_SourceExtension(i); });
-    R(spv::Op::OpName, [this](const Instruction& i) { Op_Name(i); });
-    R(spv::Op::OpMemberName, [this](const Instruction& i) { Op_MemberName(i); });
-    R(spv::Op::OpDecorate, [this](const Instruction& i) { Op_Decorate(i); });
-    R(spv::Op::OpMemberDecorate, [this](const Instruction& i) { Op_MemberDecorate(i); });
-    R(spv::Op::OpArrayLength, [this](const Instruction& i) { Op_ArrayLength(i); });
-    R(spv::Op::OpSpecConstant, [this](const Instruction& i) { Op_SpecConstant(i); });
-    R(spv::Op::OpSpecConstantOp, [this](const Instruction& i) { Op_SpecConstantOp(i); });
-    R(spv::Op::OpSpecConstantComposite, [this](const Instruction& i) { Op_SpecConstantComposite(i); });
-    R(spv::Op::OpUGreaterThanEqual, [this](const Instruction& i) { Op_UGreaterThanEqual(i); });
-    R(spv::Op::OpPhi, [this](const Instruction& i) { Op_Phi(i); });
-    R(spv::Op::OpConvertUToF, [this](const Instruction& i) { Op_ConvertUToF(i); });
-    R(spv::Op::OpConvertSToF, [this](const Instruction& i) { Op_ConvertSToF(i); });
-    R(spv::Op::OpFDiv, [this](const Instruction& i) { Op_FDiv(i); });
-    R(spv::Op::OpFSub, [this](const Instruction& i) { Op_FSub(i); });
-    R(spv::Op::OpVectorTimesScalar, [this](const Instruction& i) { Op_VectorTimesScalar(i); });
-    R(spv::Op::OpSLessThan, [this](const Instruction& i) { Op_SLessThan(i); });
-    R(spv::Op::OpDot, [this](const Instruction& i) { Op_Dot(i); });
-    R(spv::Op::OpFOrdGreaterThan, [this](const Instruction& i) { Op_FOrdGreaterThan(i); });
-    R(spv::Op::OpFOrdGreaterThanEqual, [this](const Instruction& i) { Op_FOrdGreaterThanEqual(i); });
-    R(spv::Op::OpFOrdEqual, [this](const Instruction& i) { Op_FOrdEqual(i); });
-    R(spv::Op::OpFOrdNotEqual, [this](const Instruction& i) { Op_FOrdNotEqual(i); });
-    R(spv::Op::OpCompositeExtract, [this](const Instruction& i) { Op_CompositeExtract(i); });
-    R(spv::Op::OpBitcast, [this](const Instruction& i) { Op_Bitcast(i); });
-    R(spv::Op::OpIMul, [this](const Instruction& i) { Op_IMul(i); });
-    R(spv::Op::OpConvertUToPtr, [this](const Instruction& i) { Op_ConvertUToPtr(i); });
-    R(spv::Op::OpUDiv, [this](const Instruction& i) { Op_UDiv(i); });
-    R(spv::Op::OpUMod, [this](const Instruction& i) { Op_UMod(i); });
-    R(spv::Op::OpULessThan, [this](const Instruction& i) { Op_ULessThan(i); });
-    R(spv::Op::OpConstantTrue, [this](const Instruction& i) { Op_ConstantTrue(i); });
-    R(spv::Op::OpConstantFalse, [this](const Instruction& i) { Op_ConstantFalse(i); });
-    R(spv::Op::OpConstantNull, [this](const Instruction& i) { Op_ConstantNull(i); });
-    R(spv::Op::OpAtomicIAdd, [this](const Instruction& i) { Op_AtomicIAdd(i); });
-    R(spv::Op::OpAtomicISub, [this](const Instruction& i) { Op_AtomicISub(i); });
-    R(spv::Op::OpSelect, [this](const Instruction& i) { Op_Select(i); });
-    R(spv::Op::OpIEqual, [this](const Instruction& i) { Op_IEqual(i); });
-    R(spv::Op::OpVectorShuffle, [this](const Instruction& i) { Op_VectorShuffle(i); });
-    R(spv::Op::OpCompositeInsert, [this](const Instruction& i) { Op_CompositeInsert(i); });
-    R(spv::Op::OpTranspose, [this](const Instruction& i) { Op_Transpose(i); });
-    R(spv::Op::OpSampledImage, [this](const Instruction& i) { Op_SampledImage(i); });
-    R(spv::Op::OpImageSampleImplicitLod, [this](const Instruction& i) { Op_ImageSampleImplicitLod(i); });
-    R(spv::Op::OpImageSampleExplicitLod, [this](const Instruction& i) { Op_ImageSampleExplicitLod(i); });
-    R(spv::Op::OpImageFetch, [this](const Instruction& i) { Op_ImageFetch(i); });
-    R(spv::Op::OpImageGather, [this](const Instruction& i) { Op_ImageGather(i); });
-    R(spv::Op::OpImageRead, [this](const Instruction& i) { Op_ImageRead(i); });
-    R(spv::Op::OpImageWrite, [this](const Instruction& i) { Op_ImageWrite(i); });
-    R(spv::Op::OpImageQuerySize, [this](const Instruction& i) { Op_ImageQuerySize(i); });
-    R(spv::Op::OpImageQuerySizeLod, [this](const Instruction& i) { Op_ImageQuerySizeLod(i); });
-    R(spv::Op::OpFNegate, [this](const Instruction& i) { Op_FNegate(i); });
-    R(spv::Op::OpMatrixTimesVector, [this](const Instruction& i) { Op_MatrixTimesVector(i); });
-    R(spv::Op::OpUGreaterThan, [this](const Instruction& i) { Op_UGreaterThan(i); });
-    R(spv::Op::OpFOrdLessThan, [this](const Instruction& i) { Op_FOrdLessThan(i); });
-    R(spv::Op::OpFOrdLessThanEqual, [this](const Instruction& i) { Op_FOrdLessThanEqual(i); });
-    R(spv::Op::OpShiftRightLogical, [this](const Instruction& i) { Op_ShiftRightLogical(i); });
-    R(spv::Op::OpShiftLeftLogical, [this](const Instruction& i) { Op_ShiftLeftLogical(i); });
-    R(spv::Op::OpBitwiseOr, [this](const Instruction& i) { Op_BitwiseOr(i); });
-    R(spv::Op::OpBitwiseAnd, [this](const Instruction& i) { Op_BitwiseAnd(i); });
-    R(spv::Op::OpSwitch, [this](const Instruction& i) { Op_Switch(i); });
-    R(spv::Op::OpAll, [this](const Instruction& i) { Op_All(i); });
-    R(spv::Op::OpAny, [this](const Instruction& i) { Op_Any(i); });
-    R(spv::Op::OpBitCount, [this](const Instruction& i) { Op_BitCount(i); });
-    R(spv::Op::OpKill, [this](const Instruction& i) { Op_Kill(i); });
-    R(spv::Op::OpUnreachable, [this](const Instruction& i) { Op_Unreachable(i); });
-    R(spv::Op::OpUndef, [this](const Instruction& i) { Op_Undef(i); });
-    R(spv::Op::OpVectorTimesMatrix, [this](const Instruction& i) { Op_VectorTimesMatrix(i); });
-    R(spv::Op::OpULessThanEqual, [this](const Instruction& i) { Op_ULessThanEqual(i); });
-    R(spv::Op::OpSLessThanEqual, [this](const Instruction& i) { Op_SLessThanEqual(i); });
-    R(spv::Op::OpSGreaterThanEqual, [this](const Instruction& i) { Op_SGreaterThanEqual(i); });
-    R(spv::Op::OpSGreaterThan, [this](const Instruction& i) { Op_SGreaterThan(i); });
-    R(spv::Op::OpSDiv, [this](const Instruction& i) { Op_SDiv(i); });
-    R(spv::Op::OpSNegate, [this](const Instruction& i) { Op_SNegate(i); });
-    R(spv::Op::OpLogicalOr, [this](const Instruction& i) { Op_LogicalOr(i); });
-    R(spv::Op::OpLogicalAnd, [this](const Instruction& i) { Op_LogicalAnd(i); });
-    R(spv::Op::OpMatrixTimesMatrix, [this](const Instruction& i) { Op_MatrixTimesMatrix(i); });
-    R(spv::Op::OpIsNan, [this](const Instruction& i) { Op_IsNan(i); });
-    R(spv::Op::OpFunctionParameter, [this](const Instruction& i) { Op_FunctionParameter(i); });
-    R(spv::Op::OpEmitVertex, [this](const Instruction& i) { Op_EmitVertex(i); });
-    R(spv::Op::OpEndPrimitive, [this](const Instruction& i) { Op_EndPrimitive(i); });
-    R(spv::Op::OpFConvert, [this](const Instruction& i) { Op_FConvert(i); });
-    R(spv::Op::OpImage, [this](const Instruction& i) { Op_Image(i); });
-}
-
-void SPIRVSimulator::CheckOpcodeSupport()
-{
-    /*
-    Verifies that all opcodes in the instructions in the input shaders have a registered handler in
-    RegisterOpcodeHandlers.
-    */
-    // Check that program_words_ has not been messed with
-    uint32_t magic_number = program_words_[0];
-    assertm(magic_number == 0x07230203, "SPIRV simulator: Magic SPIRV header number wrong, should be: 0x07230203");
-
-    size_t current_word = 5;
-
-    std::set<spv::Op> unimplemented_opcodes;
-    while (current_word < program_words_.size())
-    {
-        uint32_t header_word = program_words_[current_word];
-        uint32_t word_count  = header_word >> kWordCountShift;
-        spv::Op  opcode      = (spv::Op)(header_word & kOpcodeMask);
-
-        assertm(word_count > 0, "SPIRV simulator: Word count was 0 (or less) for instruction. Input SPIRV is broken.");
-
-        bool is_implemented = opcode_dispatchers_.find(opcode) != opcode_dispatchers_.end();
-        if (!is_implemented)
-        {
-            unimplemented_opcodes.insert(opcode);
-        }
-
-        if (opcode == spv::Op::OpExtInst)
-        {
-            uint32_t set_id              = program_words_[current_word + 3];
-            uint32_t instruction_literal = program_words_[current_word + 4];
-
-            if (verbose_)
-            {
-                std::cout << execIndent << "Found OpExtInst instruction with set ID: " << set_id
-                          << ", instruction literal: " << instruction_literal << std::endl;
-            }
-        }
-
-        current_word += word_count;
-    }
-
-    if (!unimplemented_opcodes.empty())
-    {
-        std::cout << "SPIRV simulator: Unimplemented OpCodes detected:" << std::endl;
-        for (auto it = unimplemented_opcodes.begin(); it != unimplemented_opcodes.end(); ++it)
-        {
-            std::cout << execIndent << spv::OpToString(*it) << std::endl;
-            unsupported_opcodes.insert(spv::OpToString(*it));
-        }
-    }
 }
 
 void SPIRVSimulator::Validate()
@@ -329,12 +135,31 @@ void SPIRVSimulator::ParseAll()
     }
 
     bool in_function = false;
+    std::set<spv::Op> unimplemented_opcodes;
 
     while (!stream_.empty())
     {
         Instruction instruction;
         DecodeInstruction(stream_, instruction);
         instructions_.push_back(instruction);
+
+        bool is_implemented = ExecuteInstruction(instruction, true);
+        if (!is_implemented)
+        {
+            unimplemented_opcodes.insert(instruction.opcode);
+        }
+
+        if ((spv::Op)instruction.opcode == spv::Op::OpExtInst)
+        {
+            uint32_t set_id              = instruction.words[3];
+            uint32_t instruction_literal = instruction.words[4];
+
+            if (verbose_)
+            {
+                std::cout << execIndent << "Found OpExtInst instruction with set ID: " << set_id
+                          << ", instruction literal: " << instruction_literal << std::endl;
+            }
+        }
 
         bool has_result = false;
         bool has_type   = false;
@@ -355,6 +180,16 @@ void SPIRVSimulator::ParseAll()
         }
 
         instruction_index += 1;
+    }
+
+    if (!unimplemented_opcodes.empty())
+    {
+        std::cout << "SPIRV simulator: Unimplemented OpCodes detected:" << std::endl;
+        for (auto it = unimplemented_opcodes.begin(); it != unimplemented_opcodes.end(); ++it)
+        {
+            std::cout << execIndent << spv::OpToString(*it) << std::endl;
+            unsupported_opcodes.insert(spv::OpToString(*it));
+        }
     }
 
     // Preinitialize to max result ID
@@ -471,7 +306,10 @@ void SPIRVSimulator::ExecuteInstructions(){
             PrintInstruction(instruction);
         }
 
-        ExecuteInstruction(instruction);
+        if (!ExecuteInstruction(instruction))
+        {
+            HandleUnimplementedOpcode(instruction);
+        }
     }
 
     if (verbose_)
@@ -534,17 +372,146 @@ void SPIRVSimulator::WriteOutputs()
     assertx("SPIRV simulator: Value writeout not implemented yet");
 }
 
-void SPIRVSimulator::ExecuteInstruction(const Instruction& instruction)
+bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dummy_exec)
 {
-    auto dispatcher = opcode_dispatchers_.find(instruction.opcode);
-    if (dispatcher == opcode_dispatchers_.end())
+    #define R(OPF) { if (!dummy_exec) { OPF(instruction); } return true; }
+
+    switch (instruction.opcode)
     {
-        HandleUnimplementedOpcode(instruction);
+        case spv::Op::OpTypeVoid: R(T_Void)
+        case spv::Op::OpTypeBool: R(T_Bool)
+        case spv::Op::OpTypeInt: R(T_Int)
+        case spv::Op::OpTypeFloat: R(T_Float)
+        case spv::Op::OpTypeVector: R(T_Vector)
+        case spv::Op::OpTypeMatrix: R(T_Matrix)
+        case spv::Op::OpTypeArray: R(T_Array)
+        case spv::Op::OpTypeStruct: R(T_Struct)
+        case spv::Op::OpTypePointer: R(T_Pointer)
+        case spv::Op::OpTypeForwardPointer: R(T_ForwardPointer)
+        case spv::Op::OpTypeRuntimeArray: R(T_RuntimeArray)
+        case spv::Op::OpTypeFunction: R(T_Function)
+        case spv::Op::OpTypeImage: R(T_Image)
+        case spv::Op::OpTypeSampler: R(T_Sampler)
+        case spv::Op::OpTypeSampledImage: R(T_SampledImage)
+        case spv::Op::OpTypeOpaque: R(T_Opaque)
+        case spv::Op::OpTypeNamedBarrier: R(T_NamedBarrier)
+        case spv::Op::OpEntryPoint: R(Op_EntryPoint)
+        case spv::Op::OpExtInstImport: R(Op_ExtInstImport)
+        case spv::Op::OpConstant: R(Op_Constant)
+        case spv::Op::OpConstantComposite: R(Op_ConstantComposite)
+        case spv::Op::OpCompositeConstruct: R(Op_CompositeConstruct)
+        case spv::Op::OpVariable: R(Op_Variable)
+        case spv::Op::OpImageTexelPointer: R(Op_ImageTexelPointer)
+        case spv::Op::OpLoad: R(Op_Load)
+        case spv::Op::OpStore: R(Op_Store)
+        case spv::Op::OpAccessChain: R(Op_AccessChain)
+        case spv::Op::OpInBoundsAccessChain: R(Op_AccessChain)
+        case spv::Op::OpFunction: R(Op_Function)
+        case spv::Op::OpFunctionEnd: R(Op_FunctionEnd)
+        case spv::Op::OpFunctionCall: R(Op_FunctionCall)
+        case spv::Op::OpLabel: R(Op_Label)
+        case spv::Op::OpBranch: R(Op_Branch)
+        case spv::Op::OpBranchConditional: R(Op_BranchConditional)
+        case spv::Op::OpReturn: R(Op_Return)
+        case spv::Op::OpReturnValue: R(Op_ReturnValue)
+        case spv::Op::OpINotEqual: R(Op_INotEqual)
+        case spv::Op::OpFAdd: R(Op_FAdd)
+        case spv::Op::OpExtInst: R(Op_ExtInst)
+        case spv::Op::OpSelectionMerge: R(Op_SelectionMerge)
+        case spv::Op::OpFMul: R(Op_FMul)
+        case spv::Op::OpLoopMerge: R(Op_LoopMerge)
+        case spv::Op::OpIAdd: R(Op_IAdd)
+        case spv::Op::OpISub: R(Op_ISub)
+        case spv::Op::OpLogicalNot: R(Op_LogicalNot)
+        case spv::Op::OpCapability: R(Op_Capability)
+        case spv::Op::OpExtension: R(Op_Extension)
+        case spv::Op::OpMemoryModel: R(Op_MemoryModel)
+        case spv::Op::OpExecutionMode: R(Op_ExecutionMode)
+        case spv::Op::OpSource: R(Op_Source)
+        case spv::Op::OpSourceExtension: R(Op_SourceExtension)
+        case spv::Op::OpName: R(Op_Name)
+        case spv::Op::OpMemberName: R(Op_MemberName)
+        case spv::Op::OpDecorate: R(Op_Decorate)
+        case spv::Op::OpMemberDecorate: R(Op_MemberDecorate)
+        case spv::Op::OpArrayLength: R(Op_ArrayLength)
+        case spv::Op::OpSpecConstant: R(Op_SpecConstant)
+        case spv::Op::OpSpecConstantOp: R(Op_SpecConstantOp)
+        case spv::Op::OpSpecConstantComposite: R(Op_SpecConstantComposite)
+        case spv::Op::OpUGreaterThanEqual: R(Op_UGreaterThanEqual)
+        case spv::Op::OpPhi: R(Op_Phi)
+        case spv::Op::OpConvertUToF: R(Op_ConvertUToF)
+        case spv::Op::OpConvertSToF: R(Op_ConvertSToF)
+        case spv::Op::OpFDiv: R(Op_FDiv)
+        case spv::Op::OpFSub: R(Op_FSub)
+        case spv::Op::OpVectorTimesScalar: R(Op_VectorTimesScalar)
+        case spv::Op::OpSLessThan: R(Op_SLessThan)
+        case spv::Op::OpDot: R(Op_Dot)
+        case spv::Op::OpFOrdGreaterThan: R(Op_FOrdGreaterThan)
+        case spv::Op::OpFOrdGreaterThanEqual: R(Op_FOrdGreaterThanEqual)
+        case spv::Op::OpFOrdEqual: R(Op_FOrdEqual)
+        case spv::Op::OpFOrdNotEqual: R(Op_FOrdNotEqual)
+        case spv::Op::OpCompositeExtract: R(Op_CompositeExtract)
+        case spv::Op::OpBitcast: R(Op_Bitcast)
+        case spv::Op::OpIMul: R(Op_IMul)
+        case spv::Op::OpConvertUToPtr: R(Op_ConvertUToPtr)
+        case spv::Op::OpUDiv: R(Op_UDiv)
+        case spv::Op::OpUMod: R(Op_UMod)
+        case spv::Op::OpULessThan: R(Op_ULessThan)
+        case spv::Op::OpConstantTrue: R(Op_ConstantTrue)
+        case spv::Op::OpConstantFalse: R(Op_ConstantFalse)
+        case spv::Op::OpConstantNull: R(Op_ConstantNull)
+        case spv::Op::OpAtomicIAdd: R(Op_AtomicIAdd)
+        case spv::Op::OpAtomicISub: R(Op_AtomicISub)
+        case spv::Op::OpSelect: R(Op_Select)
+        case spv::Op::OpIEqual: R(Op_IEqual)
+        case spv::Op::OpVectorShuffle: R(Op_VectorShuffle)
+        case spv::Op::OpCompositeInsert: R(Op_CompositeInsert)
+        case spv::Op::OpTranspose: R(Op_Transpose)
+        case spv::Op::OpSampledImage: R(Op_SampledImage)
+        case spv::Op::OpImageSampleImplicitLod: R(Op_ImageSampleImplicitLod)
+        case spv::Op::OpImageSampleExplicitLod: R(Op_ImageSampleExplicitLod)
+        case spv::Op::OpImageFetch: R(Op_ImageFetch)
+        case spv::Op::OpImageGather: R(Op_ImageGather)
+        case spv::Op::OpImageRead: R(Op_ImageRead)
+        case spv::Op::OpImageWrite: R(Op_ImageWrite)
+        case spv::Op::OpImageQuerySize: R(Op_ImageQuerySize)
+        case spv::Op::OpImageQuerySizeLod: R(Op_ImageQuerySizeLod)
+        case spv::Op::OpFNegate: R(Op_FNegate)
+        case spv::Op::OpMatrixTimesVector: R(Op_MatrixTimesVector)
+        case spv::Op::OpUGreaterThan: R(Op_UGreaterThan)
+        case spv::Op::OpFOrdLessThan: R(Op_FOrdLessThan)
+        case spv::Op::OpFOrdLessThanEqual: R(Op_FOrdLessThanEqual)
+        case spv::Op::OpShiftRightLogical: R(Op_ShiftRightLogical)
+        case spv::Op::OpShiftLeftLogical: R(Op_ShiftLeftLogical)
+        case spv::Op::OpBitwiseOr: R(Op_BitwiseOr)
+        case spv::Op::OpBitwiseAnd: R(Op_BitwiseAnd)
+        case spv::Op::OpSwitch: R(Op_Switch)
+        case spv::Op::OpAll: R(Op_All)
+        case spv::Op::OpAny: R(Op_Any)
+        case spv::Op::OpBitCount: R(Op_BitCount)
+        case spv::Op::OpKill: R(Op_Kill)
+        case spv::Op::OpUnreachable: R(Op_Unreachable)
+        case spv::Op::OpUndef: R(Op_Undef)
+        case spv::Op::OpVectorTimesMatrix: R(Op_VectorTimesMatrix)
+        case spv::Op::OpULessThanEqual: R(Op_ULessThanEqual)
+        case spv::Op::OpSLessThanEqual: R(Op_SLessThanEqual)
+        case spv::Op::OpSGreaterThanEqual: R(Op_SGreaterThanEqual)
+        case spv::Op::OpSGreaterThan: R(Op_SGreaterThan)
+        case spv::Op::OpSDiv: R(Op_SDiv)
+        case spv::Op::OpSNegate: R(Op_SNegate)
+        case spv::Op::OpLogicalOr: R(Op_LogicalOr)
+        case spv::Op::OpLogicalAnd: R(Op_LogicalAnd)
+        case spv::Op::OpMatrixTimesMatrix: R(Op_MatrixTimesMatrix)
+        case spv::Op::OpIsNan: R(Op_IsNan)
+        case spv::Op::OpFunctionParameter: R(Op_FunctionParameter)
+        case spv::Op::OpEmitVertex: R(Op_EmitVertex)
+        case spv::Op::OpEndPrimitive: R(Op_EndPrimitive)
+        case spv::Op::OpFConvert: R(Op_FConvert)
+        case spv::Op::OpImage: R(Op_Image)
+        default: { return false; }
     }
-    else
-    {
-        dispatcher->second(instruction);
-    }
+
+    #undef R
 }
 
 void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
@@ -554,8 +521,6 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
     //       active stack frame (aka. it is executing a shader) and copy only the execution state
     //       and not the full program words etc.
     *this = source;
-
-    RegisterOpcodeHandlers();
 
     for (auto& value : values_){
         value = CopyValue(value);

@@ -552,12 +552,8 @@ class SPIRVSimulator
     std::vector<Value> values_;
     std::vector<Value> function_heap_;
 
-    // storage_class -> heao:ubdex -> Heap Value for all non-function storage classes
+    // storage_class -> heap_index -> Heap Value for all non-function storage classes
     std::unordered_map<uint32_t, std::vector<Value>> heaps_;
-
-    // Dispatcher
-    using DispatcherType = std::function<void(const Instruction&)>;
-    std::unordered_map<spv::Op, DispatcherType> opcode_dispatchers_;
 
     // Handlers used by the OpExtInst handler
     // Implementation of the operations in the GLSL extended set
@@ -570,11 +566,9 @@ class SPIRVSimulator
     // TODO: Many more of these can be const, fix
     virtual void        DecodeHeader();
     virtual void        ParseAll();
-    virtual void        RegisterOpcodeHandlers();
-    virtual void        CheckOpcodeSupport();
     virtual void        Validate();
     virtual bool        CanEarlyOut();
-    virtual void        ExecuteInstruction(const Instruction&);
+    virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec=false);
     virtual void        ExecuteInstructions();
     virtual void        CreateExecutionFork(const SPIRVSimulator& source);
     virtual std::string GetValueString(const Value&);
