@@ -31,5 +31,5 @@ add_custom_target(run_tests
 file(GLOB SPIRV_FILES ${PROJECT_SOURCE_DIR}/test_shaders/*.spv ${PROJECT_SOURCE_DIR}/test_shaders/*.spirv)
 foreach(X ${SPIRV_FILES})
 	get_filename_component(TESTNAME ${X} NAME_WLE)
-	add_test(NAME ${TESTNAME} COMMAND ${CMAKE_BINARY_DIR}/spirv_simulator ${X})
+	add_test(NAME ${TESTNAME} COMMAND ${PROJECT_BINARY_DIR}/spirv_simulator ${X})
 endforeach()
