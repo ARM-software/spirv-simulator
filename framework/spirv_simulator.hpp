@@ -298,9 +298,12 @@ using Value = std::variant<std::monostate,
 struct PointerV
 {
     // Always the index of the value that this pointer points to
-    uint32_t obj_id;
-    // The TypeID of this pointer
+    uint32_t heap_index;
+    // The TypeID of this pointer (not the pointee)
     uint32_t type_id;
+    // The result ID of the instruction that made this pointer (if appliccable, this can be 0)
+    uint32_t result_id;
+
     uint32_t storage_class;
 
     // Optional value, holds the raw pointer value when applicable
@@ -313,7 +316,7 @@ struct PointerV
 
 inline bool operator==(const PointerV& a, const PointerV& b)
 {
-    return a.obj_id == b.obj_id && a.type_id == b.type_id && a.storage_class == b.storage_class &&
+    return a.heap_index == b.heap_index && a.type_id == b.type_id && a.result_id == b.result_id && a.storage_class == b.storage_class &&
            a.raw_pointer == b.raw_pointer && a.idx_path == b.idx_path;
 }
 
@@ -482,10 +485,8 @@ class SPIRVSimulator
   protected:
     SPIRVSimulator() = default;
 
-    // Used to create object id's for entries not created by a spirv instruction
-    // These are guaranteed to not overlap with any result ID's mapping to spirv instructions
-    uint32_t next_external_id_ = 0;
     uint32_t num_result_ids_ = 0;
+    uint32_t current_heap_index_ = 0;
 
     // Parsing artefacts
     InputData input_data_;
@@ -541,21 +542,18 @@ class SPIRVSimulator
     {
         size_t   pc;
         uint32_t result_id;
-
-        // result_id -> Value
-        std::vector<Value> locals;
-
-        // obj_id -> Heap Value
-        std::unordered_map<uint32_t, Value> func_heap;
+        uint32_t func_heap_index;
     };
+
     std::vector<Frame> call_stack_;
 
     // result_id -> Value
     //std::unordered_map<uint32_t, Value> globals_;
-    std::vector<Value> globals_;
+    std::vector<Value> values_;
+    std::vector<Value> function_heap_;
 
-    // storage_class -> obj_id -> Heap Value
-    std::unordered_map<uint32_t, std::unordered_map<uint32_t, Value>> heaps_;
+    // storage_class -> heao:ubdex -> Heap Value for all non-function storage classes
+    std::unordered_map<uint32_t, std::vector<Value>> heaps_;
 
     // Dispatcher
     using DispatcherType = std::function<void(const Instruction&)>;
@@ -602,16 +600,46 @@ class SPIRVSimulator
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0);
     virtual uint32_t
     GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0);
-    virtual uint32_t GetNextExternalID()
-    {
-        uint32_t new_id = next_external_id_;
-        next_external_id_ += 1;
-        return new_id;
-    }
     virtual bool  ValueIsArbitrary(uint32_t result_id) const { return arbitrary_values_.contains(result_id); };
     virtual void  SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
     virtual Value CopyValue(const Value& value) const;
-    virtual std::unordered_map<uint32_t, Value>& Heap(uint32_t sc) { return heaps_[sc]; }
+    virtual std::vector<Value>& Heap(uint32_t sc) {
+        if (sc == spv::StorageClass::StorageClassFunction)
+        {
+            return function_heap_;
+        }
+        else
+        {
+            return heaps_[sc];
+        }
+    };
+
+    virtual uint32_t HeapAllocate(uint32_t sc, const Value& init) {
+        auto& heap = Heap(sc);
+
+        uint32_t return_index = heap.size();
+        if (sc == spv::StorageClass::StorageClassFunction)
+        {
+            return_index = current_heap_index_;
+
+            if (heap.size() <= current_heap_index_)
+            {
+                heap.push_back(init);
+            }
+            else
+            {
+                heap[return_index] = init;
+            }
+
+            current_heap_index_ += 1;
+        }
+        else
+        {
+            heap.push_back(init);
+        }
+
+        return return_index;
+    }
 
     // Opcode handlers, 96/498 implemented for SPIRV 1.6
     void T_Void(const Instruction&);
