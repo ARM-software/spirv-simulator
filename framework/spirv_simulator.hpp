@@ -14,6 +14,7 @@
 #include <variant>
 #include <vector>
 #include <type_traits>
+#include <cassert>
 
 //  Flip SPIRV_HEADERS_PRESENT to 1 to auto‑pull the SPIR‑V-Headers from the environment.
 #define SPV_ENABLE_UTILITY_CODE 1
@@ -178,7 +179,9 @@ struct Type
         Sampler,
         SampledImage,
         Opaque,
-        NamedBarrier
+        NamedBarrier,
+        AccelerationStructureKHR,
+        RayQueryKHR
     } kind;
 
     struct ScalarTypeData
@@ -238,7 +241,7 @@ struct Type
     };
     Type() : kind(Kind::Void) { scalar = { 0, false }; }
 
-    static Type Bool()
+    static Type BoolT()
     {
         Type t;
         t.kind   = Kind::BoolT;
@@ -446,6 +449,38 @@ void extract_bytes(std::vector<std::byte>& output, T input, size_t num_bits)
     }
 }
 
+template <typename T>
+T ReverseBits(T value, unsigned bitWidth) {
+    assert(std::is_unsigned<T>::value && "SPIRV simulator: Can only reverse the bits in unsigned integer types, cast first");
+    T result = 0;
+    for (unsigned i = 0; i < bitWidth; ++i) {
+        result <<= 1;
+        result |= (value & 1);
+        value >>= 1;
+    }
+    return result;
+}
+
+template<typename T>
+T ArithmeticRightShiftUnsigned(T value, unsigned shift, unsigned bitWidth) {
+    assert(std::is_unsigned<T>::value && "SPIRV simulator: Can only arith shift the bits in unsigned integer types, cast first");
+
+    if (shift == 0 || shift >= bitWidth)
+        return value;
+
+    T msb = (value >> (bitWidth - 1)) & 1;
+    T shifted = value >> shift;
+
+    if (msb) {
+        T mask = ((T(1) << shift) - 1) << (bitWidth - shift);
+        shifted |= mask;
+    }
+
+    return shifted;
+}
+
+size_t CountBitsUInt(uint64_t value);
+
 // Bitcast can be very annoying to import on certain platforms, even if c++20 is supported
 // Just do this for now, and we can replace this with the std::bit_cast version in the future
 template <class To, class From>
@@ -570,7 +605,7 @@ class SPIRVSimulator
     virtual bool        CanEarlyOut();
     virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec=false);
     virtual void        ExecuteInstructions();
-    virtual void        CreateExecutionFork(const SPIRVSimulator& source);
+    virtual void        CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value);
     virtual std::string GetValueString(const Value&);
     virtual std::string GetTypeString(const Type&);
     virtual void        PrintInstruction(const Instruction&);
@@ -583,8 +618,9 @@ class SPIRVSimulator
     virtual Type        GetTypeByTypeId(uint32_t type_id) const;
     virtual Type        GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t    GetTypeID(uint32_t result_id) const;
-    virtual void ExtractWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
+    virtual void        ExtractWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
     virtual uint64_t                    GetPointerOffset(const PointerV& pointer_value);
+    virtual size_t                      CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
     virtual size_t                      GetBitizeOfType(uint32_t type_id);
     virtual size_t                      GetBitizeOfTargetType(const PointerV& pointer);
     virtual void                        GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
@@ -595,6 +631,7 @@ class SPIRVSimulator
     virtual uint32_t
     GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0);
     virtual bool  ValueIsArbitrary(uint32_t result_id) const { return arbitrary_values_.contains(result_id); };
+    virtual bool  PointeeValueIsArbitrary(const PointerV& pointer) const { (void)pointer; return false; };
     virtual void  SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
     virtual Value CopyValue(const Value& value) const;
     virtual std::vector<Value>& Heap(uint32_t sc) {
@@ -653,6 +690,8 @@ class SPIRVSimulator
     void T_SampledImage(const Instruction&);
     void T_Opaque(const Instruction&);
     void T_NamedBarrier(const Instruction&);
+    void T_AccelerationStructureKHR(const Instruction&);
+    void T_RayQueryKHR(const Instruction&);
     void Op_EntryPoint(const Instruction&);
     void Op_ExtInstImport(const Instruction&);
     void Op_Constant(const Instruction&);
@@ -765,6 +804,42 @@ class SPIRVSimulator
     void Op_EndPrimitive(const Instruction&);
     void Op_FConvert(const Instruction&);
     void Op_Image(const Instruction&);
+    void Op_ConvertFToS(const Instruction&);
+    void Op_ConvertFToU(const Instruction&);
+    void Op_FRem(const Instruction&);
+    void Op_AtomicOr(const Instruction&);
+    void Op_AtomicUMax(const Instruction&);
+    void Op_AtomicUMin(const Instruction&);
+    void Op_BitReverse(const Instruction&);
+    void Op_BitwiseXor(const Instruction&);
+    void Op_ControlBarrier(const Instruction&);
+    void Op_ShiftRightArithmetic(const Instruction&);
+    void Op_GroupNonUniformAll(const Instruction&);
+    void Op_GroupNonUniformAny(const Instruction&);
+    void Op_GroupNonUniformBallot(const Instruction&);
+    void Op_GroupNonUniformBallotBitCount(const Instruction&);
+    void Op_GroupNonUniformBroadcastFirst(const Instruction&);
+    void Op_GroupNonUniformElect(const Instruction&);
+    void Op_GroupNonUniformFMax(const Instruction&);
+    void Op_GroupNonUniformFMin(const Instruction&);
+    void Op_GroupNonUniformIAdd(const Instruction&);
+    void Op_GroupNonUniformShuffle(const Instruction&);
+    void Op_GroupNonUniformUMax(const Instruction&);
+    void Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionGeometryIndexKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionInstanceCustomIndexKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionInstanceIdKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionPrimitiveIndexKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionTKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionTypeKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionWorldToObjectKHR(const Instruction&);
+    void Op_RayQueryGetWorldRayDirectionKHR(const Instruction&);
+    void Op_RayQueryInitializeKHR(const Instruction&);
+    void Op_RayQueryProceedKHR(const Instruction&);
+    void Op_DecorateString(const Instruction&);
+
 };
 
 } // namespace SPIRVSimulator

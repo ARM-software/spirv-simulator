@@ -38,6 +38,9 @@ TEST_P(ArithmeticsTests, ParametrizedArithmeticOperation)
 
     this->ExecuteInstruction(inst);
 
+    std::cout << "Captured value was: " << captured_value << std::endl;
+    std::cout << "Expected value was: " << parameters.operands[0] << std::endl;
+
     EXPECT_EQ(captured_value, parameters.operands[0]);
 }
 
@@ -130,6 +133,20 @@ std::vector<TestParameters> test_cases = {
         .set_op_n(0, uint64_t(1), Type::u64)
         .set_op_n(1, uint64_t(13), Type::u64)
         .set_op_n(2, uint64_t(6), Type::u64)
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpShiftRightArithmetic)
+        .set_operands_size(3)
+        .set_op_n(0, uint64_t(0xffffffffffffffff), Type::u64)
+        .set_op_n(1, uint64_t(0x8000000000000000), Type::u64)
+        .set_op_n(2, uint64_t(63), Type::u64)
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpShiftRightArithmetic)
+        .set_operands_size(3)
+        .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 0xffffffffffffffff, 0xffffffffffffffff }), Type::uvec2)
+        .set_op_n(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 0x8000000000000000, 0x8000000000000000 }), Type::uvec2)
+        .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 63, 63 }), Type::uvec2)
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)

@@ -114,7 +114,7 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     {
         types_ = {
             { Type::void_t, ::SPIRVSimulator::Type() },
-            { Type::boolean, ::SPIRVSimulator::Type::Bool() },
+            { Type::boolean, ::SPIRVSimulator::Type::BoolT() },
             { Type::i64, ::SPIRVSimulator::Type::Int(64, true) },
             { Type::u64, ::SPIRVSimulator::Type::Int(64, false) },
             { Type::f64, ::SPIRVSimulator::Type::Float(32) },

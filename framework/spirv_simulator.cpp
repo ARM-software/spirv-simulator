@@ -395,6 +395,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
         case spv::Op::OpTypeSampledImage: R(T_SampledImage)
         case spv::Op::OpTypeOpaque: R(T_Opaque)
         case spv::Op::OpTypeNamedBarrier: R(T_NamedBarrier)
+        case spv::Op::OpTypeAccelerationStructureKHR: R(T_AccelerationStructureKHR)
+        case spv::Op::OpTypeRayQueryKHR: R(T_RayQueryKHR)
         case spv::Op::OpEntryPoint: R(Op_EntryPoint)
         case spv::Op::OpExtInstImport: R(Op_ExtInstImport)
         case spv::Op::OpConstant: R(Op_Constant)
@@ -508,21 +510,58 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
         case spv::Op::OpEndPrimitive: R(Op_EndPrimitive)
         case spv::Op::OpFConvert: R(Op_FConvert)
         case spv::Op::OpImage: R(Op_Image)
+        case spv::Op::OpConvertFToS: R(Op_ConvertFToS)
+        case spv::Op::OpConvertFToU: R(Op_ConvertFToU)
+        case spv::Op::OpFRem: R(Op_FRem)
+        case spv::Op::OpAtomicOr: R(Op_AtomicOr)
+        case spv::Op::OpAtomicUMax: R(Op_AtomicUMax)
+        case spv::Op::OpAtomicUMin: R(Op_AtomicUMin)
+        case spv::Op::OpBitReverse: R(Op_BitReverse)
+        case spv::Op::OpBitwiseXor: R(Op_BitwiseXor)
+        case spv::Op::OpControlBarrier: R(Op_ControlBarrier)
+        case spv::Op::OpShiftRightArithmetic: R(Op_ShiftRightArithmetic)
+        case spv::Op::OpGroupNonUniformAll: R(Op_GroupNonUniformAll)
+        case spv::Op::OpGroupNonUniformAny: R(Op_GroupNonUniformAny)
+        case spv::Op::OpGroupNonUniformBallot: R(Op_GroupNonUniformBallot)
+        case spv::Op::OpGroupNonUniformBallotBitCount: R(Op_GroupNonUniformBallotBitCount)
+        case spv::Op::OpGroupNonUniformBroadcastFirst: R(Op_GroupNonUniformBroadcastFirst)
+        case spv::Op::OpGroupNonUniformElect: R(Op_GroupNonUniformElect)
+        case spv::Op::OpGroupNonUniformFMax: R(Op_GroupNonUniformFMax)
+        case spv::Op::OpGroupNonUniformFMin: R(Op_GroupNonUniformFMin)
+        case spv::Op::OpGroupNonUniformIAdd: R(Op_GroupNonUniformIAdd)
+        case spv::Op::OpGroupNonUniformShuffle: R(Op_GroupNonUniformShuffle)
+        case spv::Op::OpGroupNonUniformUMax: R(Op_GroupNonUniformUMax)
+        case spv::Op::OpRayQueryGetIntersectionBarycentricsKHR: R(Op_RayQueryGetIntersectionBarycentricsKHR)
+        case spv::Op::OpRayQueryGetIntersectionFrontFaceKHR: R(Op_RayQueryGetIntersectionFrontFaceKHR)
+        case spv::Op::OpRayQueryGetIntersectionGeometryIndexKHR: R(Op_RayQueryGetIntersectionGeometryIndexKHR)
+        case spv::Op::OpRayQueryGetIntersectionInstanceCustomIndexKHR: R(Op_RayQueryGetIntersectionInstanceCustomIndexKHR)
+        case spv::Op::OpRayQueryGetIntersectionInstanceIdKHR: R(Op_RayQueryGetIntersectionInstanceIdKHR)
+        case spv::Op::OpRayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR: R(Op_RayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR)
+        case spv::Op::OpRayQueryGetIntersectionPrimitiveIndexKHR: R(Op_RayQueryGetIntersectionPrimitiveIndexKHR)
+        case spv::Op::OpRayQueryGetIntersectionTKHR: R(Op_RayQueryGetIntersectionTKHR)
+        case spv::Op::OpRayQueryGetIntersectionTypeKHR: R(Op_RayQueryGetIntersectionTypeKHR)
+        case spv::Op::OpRayQueryGetIntersectionWorldToObjectKHR: R(Op_RayQueryGetIntersectionWorldToObjectKHR)
+        case spv::Op::OpRayQueryGetWorldRayDirectionKHR: R(Op_RayQueryGetWorldRayDirectionKHR)
+        case spv::Op::OpRayQueryInitializeKHR: R(Op_RayQueryInitializeKHR)
+        case spv::Op::OpRayQueryProceedKHR: R(Op_RayQueryProceedKHR)
+        case spv::Op::OpDecorateString: R(Op_DecorateString)
         default: { return false; }
     }
 
     #undef R
 }
 
-void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
+void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value)
 {
     // Do a shallow copy
-    // TODO: We probably want to be more specific here, check that the SPIRVSimulator we are copying has an
-    //       active stack frame (aka. it is executing a shader) and copy only the execution state
-    //       and not the full program words etc.
     *this = source;
 
+    // Then duplicate the values
     for (auto& value : values_){
+        value = CopyValue(value);
+    }
+
+    for (auto& value : function_heap_){
         value = CopyValue(value);
     }
 
@@ -532,6 +571,13 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source)
         }
     }
 
+    auto& stack_frame = call_stack_.back();
+    stack_frame.pc -= 1;
+
+    // Then read the branching value, and modify its value chain so that the alternate branch is taken
+    assertx("SPIRV simulator: CreateExecutionFork incomplete, finish it to suport execution forking");
+
+    ExecuteInstructions();
 }
 
 void SPIRVSimulator::HandleUnimplementedOpcode(const Instruction& instruction)
@@ -883,6 +929,107 @@ Type SPIRVSimulator::GetTypeByTypeId(uint32_t type_id) const
 // ---------------------------------------------------------------------------
 //  Value creation and inspect helpers
 // ---------------------------------------------------------------------------
+
+size_t CountBitsUInt(uint64_t value, size_t max_bits) {
+    size_t count = 0;
+
+    while (max_bits) {
+        count += value & 1;
+        value >>= 1;
+        max_bits -= 1;
+    }
+    return count;
+}
+
+size_t SPIRVSimulator::CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary)
+{
+    assertm(types_.find(type_id) != types_.end(), "SPIRV simulator: No valid type for the given ID was found");
+
+    const Type& type = GetTypeByTypeId(type_id);
+
+    assertm(type.kind != Type::Kind::Void, "SPIRV simulator: Attempt to extract set bits of a void type value");
+
+    *is_arbitrary = false;
+    size_t bitcount = 0;
+    if (type.kind == Type::Kind::BoolT)
+    {
+        bitcount += CountBitsUInt(std::get<uint64_t>(value), type.scalar.width);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        if (!type.scalar.is_signed)
+        {
+            bitcount += CountBitsUInt(std::get<uint64_t>(value), type.scalar.width);
+        }
+        else
+        {
+            bitcount += CountBitsUInt(bit_cast<uint64_t>(std::get<int64_t>(value)), type.scalar.width);
+        }
+    }
+    else if (type.kind == Type::Kind::Float)
+    {
+        bitcount += CountBitsUInt(bit_cast<uint64_t>(std::get<double>(value)), type.scalar.width);
+    }
+    else if (type.kind == Type::Kind::Vector)
+    {
+        uint32_t elem_type_id = type.vector.elem_type_id;
+        const std::shared_ptr<VectorV>& vec = std::get<std::shared_ptr<VectorV>>(value);
+
+        for (size_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            bitcount += CountSetBits(vec->elems[i], elem_type_id, is_arbitrary);
+        }
+    }
+    else if (type.kind == Type::Kind::Matrix)
+    {
+        uint32_t col_type_id = type.matrix.col_type_id;
+        const std::shared_ptr<MatrixV>& mat = std::get<std::shared_ptr<MatrixV>>(value);
+
+        for (size_t i = 0; i < type.matrix.col_count; ++i)
+        {
+            bitcount += CountSetBits(mat->cols[i], col_type_id, is_arbitrary);
+        }
+    }
+    else if (type.kind == Type::Kind::Array)
+    {
+        uint32_t elem_type_id = type.vector.elem_type_id;
+        uint64_t array_len    = std::get<uint64_t>(GetValue(type.array.length_id));
+        const std::shared_ptr<AggregateV>& agg = std::get<std::shared_ptr<AggregateV>>(value);
+
+        for (size_t i = 0; i < array_len; ++i)
+        {
+            bitcount += CountSetBits(agg->elems[i], elem_type_id, is_arbitrary);
+        }
+    }
+    else if (type.kind == Type::Kind::RuntimeArray)
+    {
+        assertx("SPIRV simulator: Fetching bitsize of RuntimeArray, this is currently not implemented");
+
+        // uint32_t elem_type_id = type.vector.elem_type_id;
+        // uint64_t array_len = std::get<uint64_t>(GetValue(type.array.length_id));
+        // bitcount += GetBitizeOfType(elem_type_id);
+    }
+    else if (type.kind == Type::Kind::Struct)
+    {
+        assertm(struct_members_.find(type_id) != struct_members_.end(), "SPIRV simulator: Struct has no members");
+        const std::shared_ptr<AggregateV>& agg = std::get<std::shared_ptr<AggregateV>>(value);
+
+        uint32_t member_index = 0;
+        for (uint32_t member_type_id : struct_members_.at(type_id))
+        {
+            bitcount += CountSetBits(agg->elems[member_index], member_type_id, is_arbitrary);
+            member_index += 1;
+        }
+    }
+    else if (type.kind == Type::Kind::Pointer)
+    {
+        // This makes the result arbitrary
+        *is_arbitrary = true;
+        bitcount += 8 * 8;
+    }
+
+    return bitcount;
+}
 
 size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
 {
@@ -2293,6 +2440,28 @@ void SPIRVSimulator::T_NamedBarrier(const Instruction& instruction)
     types_[result_id] = type;
 }
 
+void SPIRVSimulator::T_AccelerationStructureKHR(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpTypeAccelerationStructureKHR);
+
+    uint32_t result_id = instruction.words[1];
+
+    Type type;
+    type.kind         = Type::Kind::AccelerationStructureKHR;
+    types_[result_id] = type;
+}
+
+void SPIRVSimulator::T_RayQueryKHR(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpTypeRayQueryKHR);
+
+    uint32_t result_id = instruction.words[1];
+
+    Type type;
+    type.kind         = Type::Kind::RayQueryKHR;
+    types_[result_id] = type;
+}
+
 // ---------------------------------------------------------------------------
 //  Oparation implementations
 // ---------------------------------------------------------------------------
@@ -2933,6 +3102,14 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
 
     uint64_t condition    = std::get<uint64_t>(GetValue(instruction.words[1]));
     call_stack_.back().pc = result_id_to_inst_index_.at(condition ? instruction.words[2] : instruction.words[3]);
+
+    // We need to diverge and execute both branches here
+    if (ValueIsArbitrary(instruction.words[1])){
+        SPIRVSimulator fork;
+        fork.CreateExecutionFork(*this, instruction.words[1]);
+
+        // TODO: Copy the results, this can be complex if output pointer values diverge between branches
+    }
 }
 
 void SPIRVSimulator::Op_Return(const Instruction& instruction)
@@ -3949,6 +4126,10 @@ void SPIRVSimulator::Op_Phi(const Instruction& instruction)
         if (block_id == prev_block_id_)
         {
             SetValue(result_id, GetValue(variable_id));
+
+            if (ValueIsArbitrary(variable_id)){
+                SetIsArbitrary(result_id);
+            }
             return;
         }
     }
@@ -6883,32 +7064,36 @@ void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
 
     uint32_t base_type_id = GetTypeID(base_id);
 
-    // TODO: This is currently wrong, counts all bits but should only count set bits
-
+    bool is_arbitrary = ValueIsArbitrary(instruction.words[3]);
     if (type.kind == Type::Kind::Vector)
     {
         const Type&                    base_type  = GetTypeByTypeId(base_type_id);
         const std::shared_ptr<VectorV> vec        = std::get<std::shared_ptr<VectorV>>(base_val);
+
         std::shared_ptr<VectorV>       result_vec = std::make_shared<VectorV>();
 
+        bool ab_val = false;
         for (const Value& val : vec->elems)
         {
-            (void)val;
-            result_vec->elems.push_back(GetBitizeOfType(base_type.vector.elem_type_id));
+            result_vec->elems.push_back((uint64_t)CountSetBits(val, base_type.vector.elem_type_id, &ab_val));
         }
+
+        is_arbitrary |= ab_val;
 
         SetValue(result_id, result_vec);
     }
     else if (type.kind == Type::Kind::Int)
     {
-        SetValue(result_id, (uint64_t)GetBitizeOfType(base_type_id));
+        bool ab_val = false;
+        SetValue(result_id, (uint64_t)CountSetBits(base_val, base_type_id, &ab_val));
+        is_arbitrary |= ab_val;
     }
     else
     {
         assertx("SPIRV simulator: Invalid result value, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3])){
+    if (is_arbitrary){
         SetIsArbitrary(result_id);
     }
 }
@@ -8635,7 +8820,1495 @@ void SPIRVSimulator::Op_Image(const Instruction& instruction)
     SetValue(result_id, GetValue(std::get<SampledImageV>(sampled_image).image_id));
 }
 
-#undef assertx
-#undef assertm
+void SPIRVSimulator::Op_ConvertFToS(const Instruction& instruction)
+{
+    /*
+
+    OpConvertFToS
+
+    Convert value numerically from floating point to signed integer, with round toward 0.0.
+
+    Result Type must be a scalar or vector of integer type. Behavior is undefined if Result Type is not wide enough to hold the converted value.
+
+    Float Value must be a scalar or vector of floating-point type. It must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpConvertFToS);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t operand_id  = instruction.words[3];
+
+    Value operand = GetValue(operand_id);
+    const Type& type = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                "SPIRV simulator: Operand is set to be vector type, but it is not, illegal input parameters");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+        assertm((vec->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operand vector length does not match result type");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec->elems[i]), "SPIRV simulator: Non-float operand detected in vector operand for Op_ConvertFToS");
+            int64_t elem_result = std::trunc(std::get<double>(vec->elems[i]));
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Float)
+    {
+        assertm(std::holds_alternative<double>(operand), "SPIRV simulator: Non-float operand detected in Op_ConvertFToS");
+
+        int64_t result = std::trunc(std::get<double>(operand));
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(operand_id)){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
+{
+    /*
+    OpConvertFToU
+
+    Convert value numerically from floating point to unsigned integer, with round toward 0.0.
+
+    Result Type must be a scalar or vector of integer type, whose Signedness operand is 0. Behavior is undefined if Result Type is not wide enough to hold the converted value.
+
+    Float Value must be a scalar or vector of floating-point type. It must have the same number of components as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpConvertFToU);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t operand_id  = instruction.words[3];
+
+    Value operand = GetValue(operand_id);
+    const Type& type = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                "SPIRV simulator: Operand is set to be vector type, but it is not, illegal input parameters");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+        assertm((vec->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operand vector length does not match result type");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec->elems[i]), "SPIRV simulator: Non-float operand detected in vector operand for Op_ConvertFToU");
+            int64_t elem_result = std::trunc(std::get<double>(vec->elems[i]));
+            elem_result = elem_result < 0 ? 0 : elem_result;
+            result_vec->elems.push_back((uint64_t)elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Float)
+    {
+        assertm(std::holds_alternative<double>(operand), "SPIRV simulator: Non-float operand detected in Op_ConvertFToU");
+
+        int64_t result = std::trunc(std::get<double>(operand));
+        result = result < 0 ? 0 : result;
+        SetValue(result_id,(uint64_t) result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(operand_id)){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_FRem(const Instruction& instruction)
+{
+    /*
+    OpFRem
+
+    The floating-point remainder whose sign matches the sign of Operand 1.
+
+    Result Type must be a scalar or vector of floating-point type.
+
+    The types of Operand 1 and Operand 2 both must be the same as Result Type.
+
+    Results are computed per component. The resulting value is undefined if Operand 2 is 0.
+    Otherwise, the result is the remainder r of Operand 1 divided by Operand 2 where if r ≠ 0,
+    the sign of r is the same as the sign of Operand 1.
+    */
+    assert(instruction.opcode == spv::Op::OpFRem);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t operand_1_id  = instruction.words[3];
+    uint32_t operand_2_id  = instruction.words[4];
+
+    Value operand_1 = GetValue(operand_1_id);
+    Value operand_2 = GetValue(operand_2_id);
+    const Type& type = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1),
+                "SPIRV simulator: First operand is set to be vector type, but it is not, illegal input parameters");
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                "SPIRV simulator: Second operand is set to be vector type, but it is not, illegal input parameters");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(operand_1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+        assertm(((vec1->elems.size() == type.vector.elem_count) && (vec1->elems.size() == vec2->elems.size())),
+                "SPIRV simulator: Operand vector lengths do not match");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec1->elems[i]), "SPIRV simulator: Non-float operand detected in first vector operand for Op_FRem");
+            assertm(std::holds_alternative<double>(vec2->elems[i]), "SPIRV simulator: Non-float operand detected in second vector operand for Op_FRem");
+
+            double val_1 = std::get<double>(vec1->elems[i]);
+            double val_2 = std::get<double>(vec2->elems[i]);
+
+            double elem_result = std::fmod(val_1, val_2);
+
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Float)
+    {
+        assertm(std::holds_alternative<double>(operand_1), "SPIRV simulator: First operand is non-float in Op_FRem");
+        assertm(std::holds_alternative<double>(operand_2), "SPIRV simulator: Second operand is non-float in Op_FRem");
+
+        double val_1 = std::get<double>(operand_1);
+        double val_2 = std::get<double>(operand_2);
+
+        double result = std::fmod(val_1, val_2);
+
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(operand_1_id) || ValueIsArbitrary(operand_2_id)){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
+{
+    /*
+    OpAtomicOr
+
+    Perform the following steps atomically with respect to any other atomic accesses within Memory to the same location:
+    1) load through Pointer to get an Original Value,
+    2) get a New Value by the bitwise OR of Original Value and Value, and
+    3) store the New Value back through Pointer.
+
+    The instruction’s result is the Original Value.
+
+    Result Type must be an integer type scalar.
+
+    The type of Value must be the same as Result Type. The type of the value pointed to by Pointer must be the same as Result Type.
+
+    Memory is a memory Scope.
+    */
+    assert(instruction.opcode == spv::Op::OpAtomicOr);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t pointer_id    = instruction.words[3];
+    uint32_t scope_id      = instruction.words[4];
+    uint32_t sem_id        = instruction.words[5];
+    uint32_t value_id      = instruction.words[6];
+
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Value& pointer_val = GetValue(pointer_id);
+    const Value& value       = GetValue(value_id);
+
+    assertm(std::holds_alternative<PointerV>(pointer_val), "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicOr");
+    assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicOr");
+
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const Value& pointee_val = Deref(pointer);
+
+    assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val), "SPIRV simulator: Operand type is not int in Op_AtomicOr");
+
+    SetValue(result_id, pointee_val);
+
+    if (ValueIsArbitrary(pointer_id) || PointeeValueIsArbitrary(pointer)){
+        SetIsArbitrary(result_id);
+    }
+
+    if (std::holds_alternative<uint64_t>(pointee_val))
+    {
+        Value result = (uint64_t)(std::get<uint64_t>(pointee_val) | std::get<uint64_t>(value));
+        Deref(pointer) = result;
+    }
+    else
+    {
+        Value result = (int64_t)(std::get<int64_t>(pointee_val) | std::get<int64_t>(value));
+        Deref(pointer) = result;
+    }
+}
+
+void SPIRVSimulator::Op_AtomicUMax(const Instruction& instruction)
+{
+    /*
+    OpAtomicUMax
+
+    Perform the following steps atomically with respect to any other atomic accesses within Memory to the same location:
+    1) load through Pointer to get an Original Value,
+    2) get a New Value by finding the largest unsigned integer of Original Value and Value, and
+    3) store the New Value back through Pointer.
+
+    The instruction’s result is the Original Value.
+
+    Result Type must be an integer type scalar.
+
+    The type of Value must be the same as Result Type. The type of the value pointed to by Pointer must be the same as Result Type.
+
+    Memory is a memory Scope.
+    */
+    assert(instruction.opcode == spv::Op::OpAtomicUMax);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t pointer_id    = instruction.words[3];
+    uint32_t scope_id      = instruction.words[4];
+    uint32_t sem_id        = instruction.words[5];
+    uint32_t value_id      = instruction.words[6];
+
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Value& pointer_val = GetValue(pointer_id);
+    const Value& value       = GetValue(value_id);
+
+    assertm(std::holds_alternative<PointerV>(pointer_val), "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMax");
+    assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMax");
+
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const Value& pointee_val = Deref(pointer);
+
+    assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val), "SPIRV simulator: Operand type is not int in Op_AtomicUMax");
+
+    SetValue(result_id, pointee_val);
+
+    if (ValueIsArbitrary(pointer_id) || PointeeValueIsArbitrary(pointer)){
+        SetIsArbitrary(result_id);
+    }
+
+    if (std::holds_alternative<uint64_t>(pointee_val))
+    {
+        Value result = (uint64_t)std::max(std::get<uint64_t>(pointee_val), std::get<uint64_t>(value));
+        Deref(pointer) = result;
+    }
+    else
+    {
+        Value result = (int64_t)std::max(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
+        Deref(pointer) = result;
+    }
+}
+
+void SPIRVSimulator::Op_AtomicUMin(const Instruction& instruction)
+{
+    /*
+
+    OpAtomicUMin
+
+    Perform the following steps atomically with respect to any other atomic accesses within Memory to the same location:
+    1) load through Pointer to get an Original Value,
+    2) get a New Value by finding the smallest unsigned integer of Original Value and Value, and
+    3) store the New Value back through Pointer.
+
+    The instruction’s result is the Original Value.
+
+    Result Type must be an integer type scalar.
+
+    The type of Value must be the same as Result Type. The type of the value pointed to by Pointer must be the same as Result Type.
+
+    Memory is a memory Scope.
+    */
+    assert(instruction.opcode == spv::Op::OpAtomicUMin);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t pointer_id    = instruction.words[3];
+    //uint32_t scope_id      = instruction.words[4];
+    //uint32_t sem_id        = instruction.words[5];
+    uint32_t value_id      = instruction.words[6];
+
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Value& pointer_val = GetValue(pointer_id);
+    const Value& value       = GetValue(value_id);
+
+    assertm(std::holds_alternative<PointerV>(pointer_val), "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMin");
+    assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMin");
+
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const Value& pointee_val = Deref(pointer);
+
+    assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val), "SPIRV simulator: Operand type is not int in Op_AtomicUMin");
+
+    SetValue(result_id, pointee_val);
+
+    if (ValueIsArbitrary(pointer_id) || PointeeValueIsArbitrary(pointer)){
+        SetIsArbitrary(result_id);
+    }
+
+    if (std::holds_alternative<uint64_t>(pointee_val))
+    {
+        Value result = (uint64_t)std::min(std::get<uint64_t>(pointee_val), std::get<uint64_t>(value));
+        Deref(pointer) = result;
+    }
+    else
+    {
+        Value result = (int64_t)std::min(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
+        Deref(pointer) = result;
+    }
+}
+
+void SPIRVSimulator::Op_BitReverse(const Instruction& instruction)
+{
+    /*
+    OpBitReverse
+
+    Reverse the bits in an object.
+
+    Results are computed per component.
+
+    Result Type must be a scalar or vector of integer type.
+
+    The type of Base must be the same as Result Type.
+
+    The bit-number n of the result is taken from bit-number Width - 1 - n of Base, where Width is the OpTypeInt operand of the Result Type.
+    */
+    assert(instruction.opcode == spv::Op::OpBitReverse);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t base_id       = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Non-integer type in Op_BitReverse result type");
+
+    Value operand = GetValue(base_id);
+
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand), "SPIRV simulator: Non-vector type found in Op_BitReverse operand");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        const auto& vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+        assertm((vec->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operand vector length do not match result type");
+
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<uint64_t>(vec->elems[i]), "SPIRV simulator: Non-integer type in Op_BitReverse operand");
+
+            uint64_t operand_val;
+            if (std::holds_alternative<uint64_t>(vec->elems[i]))
+            {
+                operand_val = std::get<uint64_t>(vec->elems[i]);
+            }
+            else
+            {
+                operand_val = bit_cast<uint64_t>(std::get<int64_t>(vec->elems[i]));
+            }
+
+            uint64_t elem_result = ReverseBits(operand_val, type.scalar.width);
+
+            if (elem_type.scalar.is_signed)
+            {
+                result_vec->elems.push_back(bit_cast<int64_t>(elem_result));
+            }
+            else
+            {
+                result_vec->elems.push_back(elem_result);
+            }
+        }
+
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertm(std::holds_alternative<uint64_t>(operand) || std::holds_alternative<int64_t>(operand), "SPIRV simulator: Non-integer type in Op_BitReverse operand");
+
+        uint64_t operand_val;
+        if (std::holds_alternative<uint64_t>(operand))
+        {
+            operand_val = std::get<uint64_t>(operand);
+        }
+        else
+        {
+            operand_val = bit_cast<uint64_t>(std::get<int64_t>(operand));
+        }
+
+        uint64_t result = ReverseBits(operand_val, type.scalar.width);
+
+        if (type.scalar.is_signed)
+        {
+            SetValue(result_id, bit_cast<int64_t>(result));
+        }
+        else
+        {
+            SetValue(result_id, result);
+        }
+    }
+
+    if (ValueIsArbitrary(base_id))
+    {
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_BitwiseXor(const Instruction& instruction)
+{
+    /*
+    OpBitwiseXor
+
+    Result is 1 if exactly one of Operand 1 or Operand 2 is 1. Result is 0 if Operand 1 and Operand 2 have the same value.
+
+    Results are computed per component, and within each component, per bit.
+
+    Result Type must be a scalar or vector of integer type.
+    The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
+    They must have the same number of components as Result Type.
+    They must have the same component width as Result Type.
+    */
+    assert(instruction.opcode == spv::Op::OpBitwiseXor);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op1_id    = instruction.words[3];
+    uint32_t op2_id    = instruction.words[4];
+
+    const Type&  type    = GetTypeByTypeId(type_id);
+    const Value& val_op1 = GetValue(op1_id);
+    const Value& val_op2 = GetValue(op2_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
+                "SPIRV simulator: Operands set to be vector type, but they are not, illegal input parameters");
+
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+
+        assertm(elem_type.kind == Type::Kind::Int, "SPIRV simulator: Vector element type is not int in Op_BitwiseXor");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(val_op2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length");
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            uint64_t val1;
+            if (std::holds_alternative<int64_t>(vec1->elems[i]))
+            {
+                val1 = bit_cast<uint64_t>(std::get<int64_t>(vec1->elems[i]));
+            }
+            else
+            {
+                val1 = std::get<uint64_t>(vec1->elems[i]);
+            }
+
+            uint64_t val2;
+            if (std::holds_alternative<int64_t>(vec2->elems[i]))
+            {
+                val2 = bit_cast<uint64_t>(std::get<int64_t>(vec2->elems[i]));
+            }
+            else
+            {
+                val2 = std::get<uint64_t>(vec2->elems[i]);
+            }
+
+            Value elem_result;
+            if (elem_type.scalar.is_signed)
+            {
+                elem_result = (int64_t)(val1 ^ val2);
+            }
+            else
+            {
+                elem_result = (uint64_t)(val1 ^ val2);
+            }
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        uint64_t val1;
+        if (std::holds_alternative<int64_t>(val_op1))
+        {
+            val1 = bit_cast<uint64_t>(std::get<int64_t>(val_op1));
+        }
+        else
+        {
+            val1 = std::get<uint64_t>(val_op1);
+        }
+
+        uint64_t val2;
+        if (std::holds_alternative<int64_t>(val_op2))
+        {
+            val2 = bit_cast<uint64_t>(std::get<int64_t>(val_op2));
+        }
+        else
+        {
+            val2 = std::get<uint64_t>(val_op2);
+        }
+
+        Value result;
+        if (type.scalar.is_signed)
+        {
+            result = (int64_t)(val1 ^ val2);
+        }
+        else
+        {
+            result = (uint64_t)(val1 ^ val2);
+        }
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or int");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_ControlBarrier(const Instruction& instruction)
+{
+    /*
+    OpControlBarrier
+
+    Wait for all invocations in the scope restricted tangle to reach the current point of execution before executing further instructions.
+
+    Execution is the scope defining the scope restricted tangle affected by this command.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope restricted tangle
+    have executed all dynamic instances that are program-ordered before X'.
+
+    An invocation will not execute dynamic instances that are program-ordered after a dynamic instance of this instruction (X')
+    until all invocations in its scope restricted tangle have executed X'.
+
+    When Execution is Workgroup or larger, behavior is undefined unless all invocations within Execution execute the same
+    dynamic instance of this instruction.
+
+    If Semantics is not None, this instruction also serves as an OpMemoryBarrier instruction,
+    and also performs and adheres to the description and semantics of an OpMemoryBarrier instruction with the same Memory
+    and Semantics operands. This allows atomically specifying both a control barrier and a
+    memory barrier (that is, without needing two instructions). If Semantics is None, Memory is ignored.
+
+    Before version 1.3, it is only valid to use this instruction with TessellationControl, GLCompute,
+    or Kernel execution models. There is no such restriction starting with version 1.3.
+
+    If used with the TessellationControl execution model, it also implicitly synchronizes the
+    Output Storage Class: Writes to Output variables performed by any invocation executed prior to a
+    OpControlBarrier are visible to any other invocation proceeding beyond that OpControlBarrier.
+    */
+    assert(instruction.opcode == spv::Op::OpControlBarrier);
+
+    // This is a nop in our current implementation
+}
+
+void SPIRVSimulator::Op_ShiftRightArithmetic(const Instruction& instruction)
+{
+    /*
+    OpShiftRightArithmetic
+
+    Shift the bits in Base right by the number of bits specified in Shift.
+    The most-significant bits are filled with the most-significant bit from Base.
+
+    Result Type must be a scalar or vector of integer type.
+
+    The type of each Base and Shift must be a scalar or vector of integer type.
+    Base and Shift must have the same number of components.
+    The number of components and bit width of the type of Base must be the same as in Result Type.
+
+    Shift is treated as unsigned. The resulting value is undefined if Shift is greater than or equal to the bit
+    width of the components of Base.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpShiftRightArithmetic);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t base_id   = instruction.words[3];
+    uint32_t shift_id  = instruction.words[4];
+
+    const Type& type        = GetTypeByTypeId(type_id);
+    const Type& base_type   = GetTypeByResultId(base_id);
+    const Value& base_val   = GetValue(base_id);
+    const Value& shift_val  = GetValue(shift_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec = std::get<std::shared_ptr<VectorV>>(base_val);
+        auto svec = std::get<std::shared_ptr<VectorV>>(shift_val);
+
+        assertm((vec->elems.size() == type.vector.elem_count) && (svec->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Vector size mismatch in Op_ShiftRightArithmetic");
+
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Int, "SPIRV simulator: Element type of vector operand is not int in Op_ShiftRightArithmetic");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            uint64_t shift;
+            if (std::holds_alternative<uint64_t>(svec->elems[i]))
+            {
+                shift = std::get<uint64_t>(svec->elems[i]);
+            }
+            else
+            {
+                int64_t s_shift = std::get<int64_t>(svec->elems[i]);
+                assertm(s_shift >= 0, "SPIRV simulator: Shift value is less than zero, this is undefined behaviour");
+                shift = (uint64_t)s_shift;
+            }
+
+            assertm(shift <= elem_type.scalar.width, "SPIRV simulator: Shift operand is greater than the bit width of base. This is undefined behaviour");
+
+            uint64_t elem_result;
+            if (std::holds_alternative<uint64_t>(vec->elems[i]))
+            {
+                elem_result = std::get<uint64_t>(vec->elems[i]);
+            }
+            else if (std::holds_alternative<int64_t>(vec->elems[i]))
+            {
+                elem_result = bit_cast<uint64_t>(std::get<int64_t>(vec->elems[i]));
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid operand types in Op_ShiftRightArithmetic vector");
+            }
+
+            elem_result = ArithmeticRightShiftUnsigned(elem_result, shift, elem_type.scalar.width);
+
+            if (elem_type.scalar.is_signed)
+            {
+                result_vec->elems.push_back(bit_cast<int64_t>(elem_result));
+            }
+            else
+            {
+                result_vec->elems.push_back(elem_result);
+            }
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        uint64_t shift;
+        if (std::holds_alternative<uint64_t>(shift_val))
+        {
+            shift = std::get<uint64_t>(shift_val);
+        }
+        else
+        {
+            int64_t s_shift = std::get<int64_t>(shift_val);
+            assertm(s_shift >= 0, "SPIRV simulator: Shift value is less than zero, this is undefined behaviour");
+            shift = (uint64_t)s_shift;
+        }
+
+        assertm(shift <= base_type.scalar.width, "SPIRV simulator: Shift operand is greater than the bit width of base. This is undefined behaviour");
+
+        uint64_t result;
+        if (std::holds_alternative<uint64_t>(base_val))
+        {
+            result = ArithmeticRightShiftUnsigned(std::get<uint64_t>(base_val), shift, base_type.scalar.width);
+        }
+        else if (std::holds_alternative<int64_t>(base_val))
+        {
+            result = ArithmeticRightShiftUnsigned(bit_cast<uint64_t>(std::get<int64_t>(base_val)), shift, base_type.scalar.width);
+        }
+        else
+        {
+            assertx("SPIRV simulator: Invalid operand types in Op_ShiftRightArithmetic");
+        }
+
+        if (type.scalar.is_signed)
+        {
+            SetValue(result_id, bit_cast<int64_t>(result));
+        }
+        else
+        {
+            SetValue(result_id, result);
+        }
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in Op_ShiftRightArithmetic, must be vector or int");
+    }
+
+    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_GroupNonUniformAll(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformAll
+
+    Evaluates a predicate for all tangled invocations within the Execution scope,
+    resulting in true if predicate evaluates to true for all tangled invocations within the Execution scope, otherwise the result is false.
+
+    Result Type must be a Boolean type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    Predicate must be a Boolean type.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all
+    invocations in its scope restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformAll);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t exec_id       = instruction.words[3];
+    uint32_t predicate_id  = instruction.words[4];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(predicate_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformAny(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformAny
+
+    Evaluates a predicate for all tangled invocations within the Execution scope, resulting in
+    true if predicate evaluates to true for any tangled invocations within the Execution scope, otherwise the result is false.
+
+    Result Type must be a Boolean type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    Predicate must be a Boolean type.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope
+    restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformAny);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t exec_id       = instruction.words[3];
+    uint32_t predicate_id  = instruction.words[4];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(predicate_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformBallot(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformBallot
+
+    Result is a bitfield value combining the Predicate value from all tangled invocations within the Execution scope that
+    execute the same dynamic instance of this instruction. The bit is set to 1 if the corresponding invocation is
+    part of the tangled invocations within the Execution scope and the Predicate for that invocation evaluated to true;
+    otherwise, it is set to 0.
+
+    Result Type must be a vector of four components of integer type scalar, whose Width operand is 32 and whose Signedness operand is 0.
+
+    Result is a set of bitfields where the first invocation is represented in the lowest bit of the first vector component
+    and the last (up to the size of the scope) is the higher bit number of the last bitmask needed to represent all bits
+    of the invocations in the scope restricted tangle.
+
+    Execution is the scope defining the scope restricted tangle affected by this command.
+
+    Predicate must be a Boolean type.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope
+    restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformBallot);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t exec_id       = instruction.words[3];
+    uint32_t predicate_id  = instruction.words[4];
+
+    // TODO: Group op warnings
+
+    const Type& type = GetTypeByTypeId(type_id);
+    assertm(type.kind == Type::Kind::Vector, "SPIRV simulator: Op_GroupNonUniformBallot output must be a vector");
+    assertm(type.vector.elem_count == 4, "SPIRV simulator: Op_GroupNonUniformBallot output vector must have 4 elements");
+
+    const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+    assertm(elem_type.kind == Type::Kind::Int, "SPIRV simulator: Op_GroupNonUniformBallot output vector element type must be int");
+    assertm(!elem_type.scalar.is_signed, "SPIRV simulator: Op_GroupNonUniformBallot output vector element type must be unsigned");
+    assertm(elem_type.scalar.width == 32, "SPIRV simulator: Op_GroupNonUniformBallot output vector element type have 32 bit width");
+
+    const Value& predicate_val = GetValue(predicate_id);
+    assertm(std::holds_alternative<uint64_t>(predicate_val), "SPIRV simulator: Invalid type for boolean predicate");
+
+    Value result = MakeDefault(type_id);
+    auto& vec = std::get<std::shared_ptr<VectorV>>(result);
+    vec->elems[3] = std::get<uint64_t>(predicate_val);
+
+    SetValue(result_id, result);
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GroupNonUniformBallotBitCount(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformBallotBitCount
+
+    Result is the number of bits that are set to 1 in Value, considering only the bits in Value required to represent all
+    bits of the scope restricted tangle.
+
+    Result Type must be a scalar of integer type, whose Signedness operand is 0.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The identity I for Operation is 0.
+
+    Value must be a vector of four components of integer type scalar, whose Width operand is 32 and whose Signedness operand is 0.
+
+    Value is a set of bitfields where the first invocation is represented in the lowest bit of the first vector component and the
+    last (up to the size of the scope) is the higher bit number of the last bitmask needed to represent all bits of the invocations
+    in the scope restricted tangle.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope restricted
+    tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformBallotBitCount);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t exec_id       = instruction.words[3];
+    uint32_t group_op_id   = instruction.words[4];
+    uint32_t value_id      = instruction.words[5];
+
+    // TODO: Group op warnings
+
+    const Value& value = GetValue(value_id);
+    const Type& type = GetTypeByTypeId(type_id);
+    const Type& val_type = GetTypeByResultId(value_id);
+
+    bool arb_count = false;
+    SetValue(result_id, (uint64_t)CountSetBits(value, GetTypeID(value_id), &arb_count));
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GroupNonUniformBroadcastFirst(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformBroadcastFirst
+
+    Result is the Value of the invocation from the tangled invocations with the lowest id within the Execution scope
+    to all tangled invocations within the Execution scope.
+
+    Result Type must be a scalar or vector of floating-point type, integer type, or Boolean type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The type of Value must be the same as Result Type.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope
+    restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformBroadcastFirst);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t exec_id       = instruction.words[3];
+    uint32_t value_id      = instruction.words[4];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformElect(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformElect
+
+    Result is true only in the tangled invocation with the lowest id within the Execution scope, otherwise result is false.
+
+    Result Type must be a Boolean type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope
+    restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformElect);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t exec_id       = instruction.words[3];
+    uint32_t value_id      = instruction.words[4];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, (uint64_t)1);
+}
+
+void SPIRVSimulator::Op_GroupNonUniformFMax(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformFMax
+
+    A floating point maximum group operation of all Value operands contributed by all tangled invocations within the Execution scope.
+
+    Result Type must be a scalar or vector of floating-point type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The identity I for Operation is -INF. If Operation is ClusteredReduce, ClusterSize must be present.
+
+    The type of Value must be the same as Result Type. The method used to perform the group operation on the contributed Value(s)
+    from the tangled invocations is implementation defined. From the set of Value(s) provided by the tangled invocations within a subgroup,
+    if for any two Values one of them is a NaN, the other is chosen. If all Value(s) that are used by the current invocation are NaN,
+    then the result is an undefined value.
+
+    ClusterSize is the size of cluster to use. ClusterSize must be a scalar of integer type, whose Signedness operand is 0.
+    ClusterSize must come from a constant instruction. Behavior is undefined unless ClusterSize is at least 1 and a power of 2.
+    If ClusterSize is greater than the size of the scope, executing this instruction results in undefined behavior.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its
+    scope restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformFMax);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t Operation      = instruction.words[4];
+    uint32_t value_id       = instruction.words[5];
+    uint32_t clustersize_id = instruction.words[6];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformFMin(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformFMin
+
+    A floating point minimum group operation of all Value operands contributed by all tangled invocations within the Execution scope.
+
+    Result Type must be a scalar or vector of floating-point type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The identity I for Operation is +INF. If Operation is ClusteredReduce, ClusterSize must be present.
+
+    The type of Value must be the same as Result Type. The method used to perform the group operation on the contributed Value(s)
+    from the tangled invocations is implementation defined. From the set of Value(s) provided by the tangled invocations within a subgroup, if for any two Values one of them is a NaN, the other is chosen. If all Value(s) that are used by the current invocation are NaN, then the result is an undefined value.
+
+    ClusterSize is the size of cluster to use. ClusterSize must be a scalar of integer type, whose Signedness operand is 0.
+    ClusterSize must come from a constant instruction. Behavior is undefined unless ClusterSize is at least 1 and a power of 2.
+    If ClusterSize is greater than the size of the scope, executing this instruction results in undefined behavior.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope restricted
+    tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformFMin);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t Operation      = instruction.words[4];
+    uint32_t value_id       = instruction.words[5];
+    uint32_t clustersize_id = instruction.words[6];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformIAdd(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformIAdd
+
+    An integer add group operation of all Value operands contributed by all tangled invocations within the Execution scope.
+
+    Result Type must be a scalar or vector of integer type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The identity I for Operation is 0. If Operation is ClusteredReduce, ClusterSize must be present.
+
+    The type of Value must be the same as Result Type.
+
+    ClusterSize is the size of cluster to use. ClusterSize must be a scalar of integer type, whose Signedness operand is 0.
+    ClusterSize must come from a constant instruction. Behavior is undefined unless ClusterSize is at least 1 and a power of 2. If ClusterSize is greater than the size of the scope, executing this instruction results in undefined behavior.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope restricted
+    tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformIAdd);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t Operation      = instruction.words[4];
+    uint32_t value_id       = instruction.words[5];
+    uint32_t clustersize_id = instruction.words[6];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformShuffle(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformShuffle
+
+    Result is the Value of the invocation identified by the id Id.
+
+    Result Type must be a scalar or vector of floating-point type, integer type, or Boolean type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command.
+
+    The type of Value must be the same as Result Type.
+
+    Id must be a scalar of integer type, whose Signedness operand is 0.
+
+    The resulting value is undefined if Id is not part of the scope restricted tangle, or is greater than or equal to the size of the scope.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope
+    restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformShuffle);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t value_id       = instruction.words[4];
+    uint32_t id_id          = instruction.words[5];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformUMax
+
+    An unsigned integer maximum group operation of all Value operands contributed by all tangled invocations within the Execution scope.
+
+    Result Type must be a scalar or vector of integer type, whose Signedness operand is 0.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The identity I for Operation is 0. If Operation is ClusteredReduce, ClusterSize must be present.
+
+    The type of Value must be the same as Result Type.
+
+    ClusterSize is the size of cluster to use. ClusterSize must be a scalar of integer type, whose Signedness operand is 0.
+    ClusterSize must come from a constant instruction. Behavior is undefined unless ClusterSize is at least 1 and a power of 2.
+    If ClusterSize is greater than the size of the scope, executing this instruction results in undefined behavior.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope restricted
+    tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformUMax);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t Operation      = instruction.words[4];
+    uint32_t value_id       = instruction.words[5];
+    uint32_t clustersize_id = instruction.words[6];
+
+    // TODO: Group op warnings
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, GetValue(value_id));
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionBarycentricsKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionBarycentricsKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionBarycentricsKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionFrontFaceKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionFrontFaceKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionFrontFaceKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionGeometryIndexKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionGeometryIndexKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionGeometryIndexKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionGeometryIndexKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceCustomIndexKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionInstanceCustomIndexKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionInstanceCustomIndexKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionInstanceCustomIndexKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceIdKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionInstanceIdKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionInstanceIdKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionInstanceIdKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionPrimitiveIndexKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionPrimitiveIndexKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionPrimitiveIndexKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionPrimitiveIndexKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionTKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionTKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionTKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionTKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionTypeKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionTypeKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionTypeKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionTypeKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionWorldToObjectKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionWorldToObjectKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionWorldToObjectKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+    uint32_t intersection_id  = instruction.words[4];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionWorldToObjectKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryGetWorldRayDirectionKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetWorldRayDirectionKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetWorldRayDirectionKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetWorldRayDirectionKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_RayQueryInitializeKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryInitializeKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryInitializeKHR);
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryInitializeKHR is pass-through, treating as NOP" << std::endl;
+    }
+}
+
+void SPIRVSimulator::Op_RayQueryProceedKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryProceedKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryProceedKHR);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t ray_query_id  = instruction.words[3];
+
+    if (verbose_){
+        std::cout << "SPIRV simulator: Ray Op_RayQueryProceedKHR is pass-through, creating arbitrary dummy value" << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetIsArbitrary(result_id);
+    SetValue(result_id, result);
+}
+
+void SPIRVSimulator::Op_DecorateString(const Instruction& instruction)
+{
+    /*
+    OpDecorateString (OpDecorateStringGOOGLE)
+
+    Add a string Decoration to another <id>.
+
+    Target is the <id> to decorate. It can potentially be any <id> that is a forward reference,
+    except it must not be the <id> of an OpDecorationGroup.
+
+    Decoration is a decoration that takes at least one Literal operand, and has only Literal string operands.
+    */
+    assert(instruction.opcode == spv::Op::OpDecorateString);
+
+    uint32_t type_id       = instruction.words[1];
+    uint32_t decoration    = instruction.words[2];
+    uint32_t literal       = instruction.words[3];
+    //uint32_t literal_opt       = instruction.words[4];
+
+    // This is currently a nop, but can be used for debugging later
+}
+
 
 } // namespace SPIRVSimulator
