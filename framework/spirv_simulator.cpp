@@ -574,6 +574,8 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t 
         }
     }
 
+    current_fork_index_ += 1;
+
     auto& stack_frame = call_stack_.back();
     stack_frame.pc -= 1;
 
@@ -3335,9 +3337,8 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         {
             auto physical_address_data = fork.GetPhysicalAddressData();
             std::cout << "SPIRV simulator: Execution fork complete, got: " << physical_address_data.size() << " fork results" << std::endl;
+            std::cout << "SPIRV simulator: WARNING: Execution fork executed at level: " << current_fork_index_ << " but implementation is not complete, this may lead to pbuffers pointers not being found" << std::endl;
         }
-
-        std::cout << "SPIRV simulator: WARNING: Execution fork executed but implementation is not complete, this may lead to pbuffers pointers not being found" << std::endl;
     }
 }
 

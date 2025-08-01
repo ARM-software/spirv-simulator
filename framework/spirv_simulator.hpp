@@ -564,6 +564,8 @@ class SPIRVSimulator
     uint32_t num_result_ids_     = 0;
     uint32_t current_heap_index_ = 0;
 
+    uint64_t current_fork_index_ = 0
+
     // Parsing artefacts
     InputData input_data_;
     // Contains entry point ID -> entry point OpName labels (labels may be
