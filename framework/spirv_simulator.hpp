@@ -320,13 +320,14 @@ struct PointerV
 
 inline bool operator==(const PointerV& a, const PointerV& b)
 {
-    return a.heap_index == b.heap_index && a.type_id == b.type_id && a.result_id == b.result_id && a.storage_class == b.storage_class &&
-           a.raw_pointer == b.raw_pointer && a.idx_path == b.idx_path;
+    return a.heap_index == b.heap_index && a.type_id == b.type_id && a.result_id == b.result_id &&
+           a.storage_class == b.storage_class && a.raw_pointer == b.raw_pointer && a.idx_path == b.idx_path;
 }
 
-struct SampledImageV{
-     uint32_t image_id;
-     uint32_t sampler_id;
+struct SampledImageV
+{
+    uint32_t image_id;
+    uint32_t sampler_id;
 };
 
 inline bool operator==(const SampledImageV& a, const SampledImageV& b)
@@ -352,7 +353,18 @@ struct VectorV
 
 inline bool operator==(const VectorV& a, const VectorV& b)
 {
-    return a.elems == b.elems;
+    if (a.elems.size() != b.elems.size())
+    {
+        return false;
+    }
+    for (size_t i = 0; i < a.elems.size(); ++i)
+    {
+        if (!(a.elems[i] == b.elems[i]))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 struct MatrixV
@@ -367,7 +379,24 @@ struct MatrixV
 
 inline bool operator==(const MatrixV& a, const MatrixV& b)
 {
-    return a.cols == b.cols;
+    if (a.cols.size() != b.cols.size())
+    {
+        return false;
+    }
+    for (size_t i = 0; i < a.cols.size(); ++i)
+    {
+        const auto& a_c = std::get<std::shared_ptr<VectorV>>(a.cols[i]);
+        const auto& b_c = std::get<std::shared_ptr<VectorV>>(b.cols[i]);
+        if (!(a_c && b_c))
+        {
+            return false;
+        }
+        if (!(*a_c == *b_c))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 struct AggregateV
@@ -377,7 +406,18 @@ struct AggregateV
 
 inline bool operator==(const AggregateV& a, const AggregateV& b)
 {
-    return a.elems == b.elems;
+    if (a.elems.size() != b.elems.size())
+    {
+        return false;
+    }
+    for (size_t i = 0; i < a.elems.size(); ++i)
+    {
+        if (!(a.elems[i] == b.elems[i]))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 template <typename T>
@@ -392,7 +432,7 @@ concept ValueT = !PointerT<T>;
 struct ValueComparator
 {
     template <ValueT T>
-    bool operator()(T const& a, T const& b) const
+    bool operator()(const T& a, const T& b) const
     {
         return a == b;
     }
@@ -406,7 +446,7 @@ struct ValueComparator
     }
 
     template <typename A, typename B>
-    bool operator()(A const&, B const&) const
+    bool operator()(const A&, const B&) const
     {
         return false;
     }
@@ -521,7 +561,7 @@ class SPIRVSimulator
   protected:
     SPIRVSimulator() = default;
 
-    uint32_t num_result_ids_ = 0;
+    uint32_t num_result_ids_     = 0;
     uint32_t current_heap_index_ = 0;
 
     // Parsing artefacts
@@ -584,7 +624,7 @@ class SPIRVSimulator
     std::vector<Frame> call_stack_;
 
     // result_id -> Value
-    //std::unordered_map<uint32_t, Value> globals_;
+    // std::unordered_map<uint32_t, Value> globals_;
     std::vector<Value> values_;
     std::vector<Value> function_heap_;
 
@@ -604,7 +644,7 @@ class SPIRVSimulator
     virtual void        ParseAll();
     virtual void        Validate();
     virtual bool        CanEarlyOut();
-    virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec=false);
+    virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void        ExecuteInstructions();
     virtual void        CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value);
     virtual std::string GetValueString(const Value&);
@@ -635,7 +675,8 @@ class SPIRVSimulator
     virtual bool  PointeeValueIsArbitrary(const PointerV& pointer) const { (void)pointer; return false; };
     virtual void  SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
     virtual Value CopyValue(const Value& value) const;
-    virtual std::vector<Value>& Heap(uint32_t sc) {
+    virtual std::vector<Value>& Heap(uint32_t sc)
+    {
         if (sc == spv::StorageClass::StorageClassFunction)
         {
             return function_heap_;
@@ -646,7 +687,8 @@ class SPIRVSimulator
         }
     };
 
-    virtual uint32_t HeapAllocate(uint32_t sc, const Value& init) {
+    virtual uint32_t HeapAllocate(uint32_t sc, const Value& init)
+    {
         auto& heap = Heap(sc);
 
         uint32_t return_index = heap.size();
