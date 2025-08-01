@@ -8044,15 +8044,15 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
     std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
     if (result_elem_type.kind == Type::Kind::Float)
     {
-        result_value->elems.resize(4, double(0));
+        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
     }
     else if (result_elem_type.scalar.is_signed)
     {
-        result_value->elems.resize(4, int64_t(0));
+        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
     }
     else
     {
-        result_value->elems.resize(4, uint64_t(0));
+        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
     }
 
     SetValue(result_id, result_value);
@@ -8125,15 +8125,15 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
     std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
     if (result_elem_type.kind == Type::Kind::Float)
     {
-        result_value->elems.resize(4, double(0));
+        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
     }
     else if (result_elem_type.scalar.is_signed)
     {
-        result_value->elems.resize(4, int64_t(0));
+        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
     }
     else
     {
-        result_value->elems.resize(4, uint64_t(0));
+        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
     }
 
     SetValue(result_id, result_value);
@@ -8199,15 +8199,15 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
     if (result_elem_type.kind == Type::Kind::Float)
     {
-        result_value->elems.resize(4, double(0));
+        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
     }
     else if (result_elem_type.scalar.is_signed)
     {
-        result_value->elems.resize(4, int64_t(0));
+        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
     }
     else
     {
-        result_value->elems.resize(4, uint64_t(0));
+        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
     }
 
     SetValue(result_id, result_value);
@@ -8295,15 +8295,15 @@ void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
     std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
     if (result_elem_type.kind == Type::Kind::Float)
     {
-        result_value->elems.resize(4, double(0));
+        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
     }
     else if (result_elem_type.scalar.is_signed)
     {
-        result_value->elems.resize(4, int64_t(0));
+        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
     }
     else
     {
-        result_value->elems.resize(4, uint64_t(0));
+        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
     }
 
     SetValue(result_id, result_value);
@@ -8377,11 +8377,11 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
         assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == Type::Kind::Int);
         if (result_type.scalar.is_signed)
         {
-            SetValue(result_id, int64_t(0));
+            SetValue(result_id, int64_t(std::numeric_limits<int64_t>::max()));
         }
         else
         {
-            SetValue(result_id, uint64_t(0));
+            SetValue(result_id, uint64_t(std::numeric_limits<uint64_t>::max()));
         }
     }
     if (result_type.kind == Type::Kind::Float)
@@ -8397,15 +8397,15 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
         std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
         if (result_elem_type.kind == Type::Kind::Float)
         {
-            result_value->elems.resize(result_type.vector.elem_count, double(0));
+            result_value->elems.resize(result_type.vector.elem_count, double(std::numeric_limits<double>::max()));
         }
         else if (result_elem_type.scalar.is_signed)
         {
-            result_value->elems.resize(result_type.vector.elem_count, int64_t(0));
+            result_value->elems.resize(result_type.vector.elem_count, int64_t(std::numeric_limits<int64_t>::max()));
         }
         else
         {
-            result_value->elems.resize(result_type.vector.elem_count, uint64_t(0));
+            result_value->elems.resize(result_type.vector.elem_count, uint64_t(std::numeric_limits<uint64_t>::max()));
         }
 
         SetValue(result_id, result_value);

@@ -15,6 +15,7 @@
 #include <vector>
 #include <type_traits>
 #include <cassert>
+#include <limits>
 
 //  Flip SPIRV_HEADERS_PRESENT to 1 to auto‑pull the SPIR‑V-Headers from the environment.
 #define SPV_ENABLE_UTILITY_CODE 1

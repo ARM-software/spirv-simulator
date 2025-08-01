@@ -149,6 +149,20 @@ std::vector<TestParameters> test_cases = {
         .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 63, 63 }), Type::uvec2)
         .build(),
     TestParametersBuilder()
+        .set_opcode(spv::Op::OpBitwiseXor)
+        .set_operands_size(3)
+        .set_op_n(0, uint64_t(0x0000000000000000), Type::u64)
+        .set_op_n(1, uint64_t(0x8000000000000000), Type::u64)
+        .set_op_n(2, uint64_t(0x8000000000000000), Type::u64)
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpBitwiseXor)
+        .set_operands_size(3)
+        .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 0x8000000000000000, 0xffffffffffffffff }), Type::uvec2)
+        .set_op_n(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 0x8000000000000000, 0x0000000000000000 }), Type::uvec2)
+        .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 0x0000000000000000, 0xffffffffffffffff }), Type::uvec2)
+        .build(),
+    TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
         .set_operands_size(3)
         .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 4, 4 }), Type::ivec2)
