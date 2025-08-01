@@ -8842,8 +8842,9 @@ void SPIRVSimulator::Op_ConvertFToS(const Instruction& instruction)
 
     Value operand = GetValue(operand_id);
     const Type& type = GetTypeByTypeId(type_id);
+    const Type& operand_type = GetTypeByResultId(operand_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (operand_type.kind == Type::Kind::Vector)
     {
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
                 "SPIRV simulator: Operand is set to be vector type, but it is not, illegal input parameters");
@@ -8865,7 +8866,7 @@ void SPIRVSimulator::Op_ConvertFToS(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
-    else if (type.kind == Type::Kind::Float)
+    else if (operand_type.kind == Type::Kind::Float)
     {
         assertm(std::holds_alternative<double>(operand), "SPIRV simulator: Non-float operand detected in Op_ConvertFToS");
 
@@ -8889,7 +8890,8 @@ void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
 
     Convert value numerically from floating point to unsigned integer, with round toward 0.0.
 
-    Result Type must be a scalar or vector of integer type, whose Signedness operand is 0. Behavior is undefined if Result Type is not wide enough to hold the converted value.
+    Result Type must be a scalar or vector of integer type, whose Signedness operand is 0.
+    Behavior is undefined if Result Type is not wide enough to hold the converted value.
 
     Float Value must be a scalar or vector of floating-point type. It must have the same number of components as Result Type.
 
@@ -8901,10 +8903,11 @@ void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
     uint32_t result_id = instruction.words[2];
     uint32_t operand_id  = instruction.words[3];
 
-    Value operand = GetValue(operand_id);
-    const Type& type = GetTypeByTypeId(type_id);
+    Value operand            = GetValue(operand_id);
+    const Type& type         = GetTypeByTypeId(type_id);
+    const Type& operand_type = GetTypeByResultId(operand_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (operand_type.kind == Type::Kind::Vector)
     {
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
                 "SPIRV simulator: Operand is set to be vector type, but it is not, illegal input parameters");
@@ -8927,7 +8930,7 @@ void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
-    else if (type.kind == Type::Kind::Float)
+    else if (operand_type.kind == Type::Kind::Float)
     {
         assertm(std::holds_alternative<double>(operand), "SPIRV simulator: Non-float operand detected in Op_ConvertFToU");
 
