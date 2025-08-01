@@ -7853,7 +7853,18 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
             assertm(std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]),
                     "SPIRV simulator: Found non-signed int operand vector operands");
 
-            elem_result = std::get<int64_t>(vec1->elems[i]) / std::get<int64_t>(vec2->elems[i]);
+            int64_t op2 = std::get<int64_t>(vec2->elems[i]);
+            if (op2 == 0)
+            {
+                if (verbose_)
+                {
+                    std::cout << "SPIRV simulator: Divisor in Op_SDiv is 0, this is undefined behaviour, setting to 1" << std::endl;
+                }
+
+                op2 = 1;
+            }
+
+            elem_result = std::get<int64_t>(vec1->elems[i]) / op2;
 
             result_vec->elems.push_back(elem_result);
         }
@@ -7866,7 +7877,18 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
         assertm(std::holds_alternative<int64_t>(val_op1) && std::holds_alternative<int64_t>(val_op2),
                 "SPIRV simulator: Found non-signed int operand");
 
-        Value result = std::get<int64_t>(val_op1) / std::get<int64_t>(val_op2);
+        int64_t op2 = std::get<int64_t>(val_op2);
+        if (op2 == 0)
+        {
+            if (verbose_)
+            {
+                std::cout << "SPIRV simulator: Divisor in Op_SDiv is 0, this is undefined behaviour, setting to 1" << std::endl;
+            }
+
+            op2 = 1;
+        }
+
+        Value result = std::get<int64_t>(val_op1) / op2;
 
         SetValue(result_id, result);
     }
