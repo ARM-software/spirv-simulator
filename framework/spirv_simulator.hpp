@@ -326,13 +326,13 @@ inline bool operator==(const PointerV& a, const PointerV& b)
 
 struct SampledImageV
 {
-    uint32_t image_id;
-    uint32_t sampler_id;
+    uint64_t image_handle;
+    uint64_t sampler_handle;
 };
 
 inline bool operator==(const SampledImageV& a, const SampledImageV& b)
 {
-    return a.image_id == b.image_id && a.sampler_id == b.sampler_id;
+    return a.image_handle == b.image_handle && a.sampler_handle == b.sampler_handle;
 }
 
 struct VectorV

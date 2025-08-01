@@ -16,7 +16,7 @@ namespace SPIRVSimulator
 
 constexpr uint32_t kWordCountShift = 16u;
 constexpr uint32_t kOpcodeMask     = 0xFFFFu;
-const std::string  execIndent      = "                  # ";
+const std::string  execIndent      = "                      # ";
 
 void DecodeInstruction(std::span<const uint32_t>& program_words, Instruction& instruction)
 {
@@ -677,6 +677,35 @@ std::string SPIRVSimulator::GetTypeString(const Type& type)
         return "pointer";
     }
 
+    if (type.kind == Type::Kind::Image)
+    {
+        return "Image";
+    }
+    if (type.kind == Type::Kind::Sampler)
+    {
+        return "Sampler";
+    }
+    if (type.kind == Type::Kind::SampledImage)
+    {
+        return "SampledImage";
+    }
+    if (type.kind == Type::Kind::Opaque)
+    {
+        return "Opaque";
+    }
+    if (type.kind == Type::Kind::NamedBarrier)
+    {
+        return "NamedBarrier";
+    }
+    if (type.kind == Type::Kind::AccelerationStructureKHR)
+    {
+        return "AccelerationStructureKHR";
+    }
+    if (type.kind == Type::Kind::RayQueryKHR)
+    {
+        return "RayQueryKHR";
+    }
+
     return "";
 }
 
@@ -716,7 +745,7 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
         result_and_type << instruction.words[result_offset] << " ";
     }
 
-    std::cout << std::right << std::setw(18) << result_and_type.str() << spv::OpToString(instruction.opcode) << " ";
+    std::cout << std::right << std::setw(22) << result_and_type.str() << spv::OpToString(instruction.opcode) << " ";
 
     if (instruction.opcode == spv::Op::OpExtInstImport)
     {
@@ -1947,7 +1976,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
     switch (instruction_literal)
     {
-    case 13:
+        case 13:
         { // Sin
             const Value& operand = GetValue(operand_words[0]);
 
@@ -1973,6 +2002,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 Value result = (double)std::sin(std::get<double>(operand));
                 SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
             break;
         }
@@ -2003,9 +2036,46 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 Value result = (double)std::cos(std::get<double>(operand));
                 SetValue(result_id, result);
             }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
             break;
         }
-    case 26:
+        case 15:
+        { // Tan
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::sin");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::tan(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::tan(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+            break;
+        }
+        case 26:
         { // Pow
             const Value& base = GetValue(operand_words[0]);
             const Value& exponent = GetValue(operand_words[1]);
@@ -2033,6 +2103,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 Value result = (double)std::pow(std::get<double>(base), std::get<double>(exponent));
                 SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
             break;
         }
@@ -2062,6 +2136,78 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 Value result = (double)std::sqrt(std::get<double>(operand));
                 SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+            break;
+        }
+        case 38:
+        { // UMin
+            const Value& operand_1 = GetValue(operand_words[0]);
+            const Value& operand_2 = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) && std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::umin");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
+                auto operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    uint64_t elem_result;
+                    if (std::holds_alternative<uint64_t>(operand_1_val->elems[i]) && std::holds_alternative<uint64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::min(std::get<uint64_t>(operand_1_val->elems[i]), std::get<uint64_t>(operand_2_val->elems[i]));
+                    }
+                    else if (std::holds_alternative<uint64_t>(operand_1_val->elems[i]) && std::holds_alternative<int64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::min(std::get<uint64_t>(operand_1_val->elems[i]), bit_cast<uint64_t>(std::get<int64_t>(operand_2_val->elems[i])));
+                    }
+                    else if (std::holds_alternative<int64_t>(operand_1_val->elems[i]) && std::holds_alternative<uint64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::min(bit_cast<uint64_t>(std::get<int64_t>(operand_1_val->elems[i])), std::get<uint64_t>(operand_2_val->elems[i]));
+                    }
+                    else if (std::holds_alternative<int64_t>(operand_1_val->elems[i]) && std::holds_alternative<int64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::min(bit_cast<uint64_t>(std::get<int64_t>(operand_1_val->elems[i])), bit_cast<uint64_t>(std::get<int64_t>(operand_2_val->elems[i])));
+                    }
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Int)
+            {
+                Value result;
+                if (std::holds_alternative<uint64_t>(operand_1) && std::holds_alternative<uint64_t>(operand_2))
+                {
+                    result = std::min(std::get<uint64_t>(operand_1), std::get<uint64_t>(operand_2));
+                }
+                else if (std::holds_alternative<uint64_t>(operand_1) && std::holds_alternative<int64_t>(operand_2))
+                {
+                    result = std::min(std::get<uint64_t>(operand_1), bit_cast<uint64_t>(std::get<int64_t>(operand_2)));
+                }
+                else if (std::holds_alternative<int64_t>(operand_1) && std::holds_alternative<uint64_t>(operand_2))
+                {
+                    result = std::min(bit_cast<uint64_t>(std::get<int64_t>(operand_1)), std::get<uint64_t>(operand_2));
+                }
+                else if (std::holds_alternative<int64_t>(operand_1) && std::holds_alternative<int64_t>(operand_2))
+                {
+                    result = std::min(bit_cast<uint64_t>(std::get<int64_t>(operand_1)), bit_cast<uint64_t>(std::get<int64_t>(operand_2)));
+                }
+
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
             break;
         }
@@ -2095,6 +2241,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 Value result = (double)std::clamp(std::get<double>(operand), std::get<double>(min_val), std::get<double>(max_val));
                 SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
             break;
         }
@@ -2135,9 +2285,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 Value result = (double)(x_d * (1 - a_d) + y_d * a_d);
                 SetValue(result_id, result);
             }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
             break;
         }
-    case 66:
+        case 66:
         { // Length
             const Value& operand = GetValue(operand_words[0]);
             const Type& operand_type = GetTypeByResultId(operand_words[0]);
@@ -2185,6 +2339,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 SetValue(result_id, operand);
             }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
             break;
         }
         case 69:
@@ -2221,6 +2379,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 Value result = (double)1.0;
                 SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
             break;
         }
@@ -3141,7 +3303,6 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     uint32_t label_1_id   = instruction.words[2];
     uint32_t label_2_id   = instruction.words[3];
 
-    std::cout << GetValueString(GetValue(condition_id)) << std::endl;
     uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
     call_stack_.back().pc = result_id_to_inst_index_.at(condition ? label_1_id : label_2_id);
 
@@ -8124,7 +8285,7 @@ void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
 
     assert(result_type.sampled_image.image_type_id == GetTypeID(image_id));
 
-    SampledImageV new_si{image_id, sampler_id};
+    SampledImageV new_si{std::get<uint64_t>(GetValue(image_id)), std::get<uint64_t>(GetValue(sampler_id))};
     SetValue(result_id, new_si);
 }
 
@@ -8972,7 +9133,8 @@ void SPIRVSimulator::Op_Image(const Instruction& instruction)
     Value sampled_image = GetValue(sampled_image_id);
     assertm(std::holds_alternative<SampledImageV>(sampled_image), "SPIRV simulator: Input value is not a SampledImage");
 
-    SetValue(result_id, GetValue(std::get<SampledImageV>(sampled_image).image_id));
+    uint64_t result_image = (uint64_t)(std::get<SampledImageV>(sampled_image).image_handle);
+    SetValue(result_id, result_image);
 }
 
 void SPIRVSimulator::Op_ConvertFToS(const Instruction& instruction)
