@@ -3330,11 +3330,14 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         fork.CreateExecutionFork(*this, instruction.words[1]);
 
         // TODO: Copy the results, this can be complex if output pointer values diverge between branches
+
         if (verbose_)
         {
             auto physical_address_data = fork.GetPhysicalAddressData();
             std::cout << "SPIRV simulator: Execution fork complete, got: " << physical_address_data.size() << " fork results" << std::endl;
         }
+
+        std::cout << "SPIRV simulator: WARNING: Execution fork executed but implementation is not complete, this may lead to pbuffers pointers not being found" << std::endl;
     }
 }
 
@@ -8258,8 +8261,7 @@ void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
     uint32_t result_id = instruction.words[2];
     uint32_t x_id      = instruction.words[3];
 
-    std::cout << execIndent << "WARNING: OpIsNan executed, keep this in mind if you see broken behaviour here"
-              << std::endl;
+    std::cout << "SPIRV simulator: WARNING: OpIsNan executed, keep this in mind if you see broken behaviour here" << std::endl;
 
     const Type&  type  = GetTypeByTypeId(type_id);
     const Value& x_val = GetValue(x_id);
