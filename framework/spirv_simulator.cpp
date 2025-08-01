@@ -7194,9 +7194,13 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
             {
                 val1 = bit_cast<uint64_t>(std::get<int64_t>(vec1->elems[i]));
             }
-            else
+            else if (std::holds_alternative<uint64_t>(vec1->elems[i]))
             {
                 val1 = std::get<uint64_t>(vec1->elems[i]);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid vector element type encountered in Op_BitwiseAnd operands");
             }
 
             uint64_t val2;
@@ -7204,9 +7208,13 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
             {
                 val2 = bit_cast<uint64_t>(std::get<int64_t>(vec2->elems[i]));
             }
-            else
+            else if (std::holds_alternative<uint64_t>(vec2->elems[i]))
             {
                 val2 = std::get<uint64_t>(vec2->elems[i]);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid vector element type encountered in Op_BitwiseAnd operands");
             }
 
             Value elem_result;
@@ -7237,8 +7245,7 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
         }
         else
         {
-            std::cout << GetValueString(val_op1) << std::endl;
-
+            assertx("SPIRV simulator: Invalid type encountered in Op_BitwiseAnd operands");
         }
 
         uint64_t val2;
@@ -7246,9 +7253,13 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
         {
             val2 = bit_cast<uint64_t>(std::get<int64_t>(val_op2));
         }
-        else
+        else if (std::holds_alternative<uint64_t>(val_op2))
         {
             val2 = std::get<uint64_t>(val_op2);
+        }
+        else
+        {
+            assertx("SPIRV simulator: Invalid type encountered in Op_BitwiseAnd operands");
         }
 
         Value result;
