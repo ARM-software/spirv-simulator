@@ -439,6 +439,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
         case spv::Op::OpSpecConstant: R(Op_SpecConstant)
         case spv::Op::OpSpecConstantOp: R(Op_SpecConstantOp)
         case spv::Op::OpSpecConstantComposite: R(Op_SpecConstantComposite)
+        case spv::Op::OpSpecConstantFalse: R(Op_SpecConstantFalse)
+        case spv::Op::OpSpecConstantTrue: R(Op_SpecConstantTrue)
         case spv::Op::OpUGreaterThanEqual: R(Op_UGreaterThanEqual)
         case spv::Op::OpPhi: R(Op_Phi)
         case spv::Op::OpConvertUToF: R(Op_ConvertUToF)
@@ -2503,9 +2505,13 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
 {
     /*
     OpConstant
+
     Declare a new integer-type or floating-point-type scalar constant.
+
     Result Type must be a scalar integer type or floating-point type.
+
     Value is the bit pattern for the constant. Types 32 bits wide or smaller take one word.
+
     Larger types take multiple words, with low-order words appearing first.
     */
     assert(instruction.opcode == spv::Op::OpConstant || instruction.opcode == spv::Op::OpSpecConstant);
@@ -3083,6 +3089,7 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     OpBranchConditional
 
     If Condition is true, branch to True Label, otherwise branch to False Label.
+
     Condition must be a Boolean type scalar.
 
     True Label must be an OpLabel in the current function.
@@ -3100,8 +3107,13 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpBranchConditional);
 
-    uint64_t condition    = std::get<uint64_t>(GetValue(instruction.words[1]));
-    call_stack_.back().pc = result_id_to_inst_index_.at(condition ? instruction.words[2] : instruction.words[3]);
+    uint32_t condition_id = instruction.words[1];
+    uint32_t label_1_id   = instruction.words[2];
+    uint32_t label_2_id   = instruction.words[3];
+
+    std::cout << GetValueString(GetValue(condition_id)) << std::endl;
+    uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
+    call_stack_.back().pc = result_id_to_inst_index_.at(condition ? label_1_id : label_2_id);
 
     // We need to diverge and execute both branches here
     if (ValueIsArbitrary(instruction.words[1])){
@@ -3923,6 +3935,70 @@ void SPIRVSimulator::Op_SpecConstant(const Instruction& instruction)
             "SPIRV simulator: Op_SpecConstant type is not decorated with SpecId");
 
     Op_Constant(instruction);
+}
+
+void SPIRVSimulator::Op_SpecConstantFalse(const Instruction& instruction)
+{
+    /*
+    OpSpecConstantFalse
+
+    Declare a Boolean-type scalar specialization constant with a default value of false.
+
+    This instruction can be specialized to become either an OpConstantTrue or OpConstantFalse instruction.
+
+    Result Type must be the scalar Boolean type.
+
+    See Specialization.
+    */
+    assert(instruction.opcode == spv::Op::OpSpecConstantFalse);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+
+    assertm(HasDecorator(result_id, spv::Decoration::DecorationSpecId),
+            "SPIRV simulator: Op_SpecConstantFalse type is not decorated with SpecId");
+
+    uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
+    if (input_data_.specialization_constant_offsets.find(spec_id) != input_data_.specialization_constant_offsets.end())
+    {
+        assertx("SPIRV simulator: Specialized Op_SpecConstantFalse branch not implemented yet, extract the instruction and execute");
+    }
+    else
+    {
+        SetValue(result_id, (uint64_t)0);
+    }
+}
+
+void SPIRVSimulator::Op_SpecConstantTrue(const Instruction& instruction)
+{
+    /*
+    OpSpecConstantTrue
+
+    Declare a Boolean-type scalar specialization constant with a default value of true.
+
+    This instruction can be specialized to become either an OpConstantTrue or OpConstantFalse instruction.
+
+    Result Type must be the scalar Boolean type.
+
+    See Specialization.
+    */
+    assert(instruction.opcode == spv::Op::OpSpecConstantTrue);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+
+    assertm(HasDecorator(result_id, spv::Decoration::DecorationSpecId),
+            "SPIRV simulator: Op_SpecConstantFalse type is not decorated with SpecId");
+
+    uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
+    if (input_data_.specialization_constant_offsets.find(spec_id) != input_data_.specialization_constant_offsets.end())
+    {
+        assertx("SPIRV simulator: Specialized Op_SpecConstantTrue branch not implemented yet, extract the instruction and execute");
+    }
+    else
+    {
+        SetValue(result_id, (uint64_t)1);
+    }
 }
 
 void SPIRVSimulator::Op_SpecConstantOp(const Instruction& instruction)
@@ -5388,7 +5464,18 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
                         std::holds_alternative<uint64_t>(vec2->elems[i]),
                     "SPIRV simulator: Found non-unsigned int operand vector operands");
 
-            elem_result = std::get<uint64_t>(vec1->elems[i]) / std::get<uint64_t>(vec2->elems[i]);
+            uint64_t op2 = std::get<uint64_t>(vec2->elems[i]);
+            if (op2 == 0)
+            {
+                if (verbose_)
+                {
+                    std::cout << "SPIRV simulator: Divisor in OpUDiv is 0, this is undefined behaviour, setting to 1" << std::endl;
+                }
+
+                op2 = 1;
+            }
+
+            elem_result = std::get<uint64_t>(vec1->elems[i]) / op2;
 
             result_vec->elems.push_back(elem_result);
         }
@@ -5401,7 +5488,18 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
         assertm(std::holds_alternative<uint64_t>(val_op1) && std::holds_alternative<uint64_t>(val_op2),
                 "SPIRV simulator: Found non-unsigned int operand");
 
-        Value result = std::get<uint64_t>(val_op1) / std::get<uint64_t>(val_op2);
+        uint64_t op2 = std::get<uint64_t>(val_op2);
+        if (op2 == 0)
+        {
+            if (verbose_)
+            {
+                std::cout << "SPIRV simulator: Divisor in OpUDiv is 0, this is undefined behaviour, setting to 1" << std::endl;
+            }
+
+            op2 = 1;
+        }
+
+        Value result = std::get<uint64_t>(val_op1) / op2;
 
         SetValue(result_id, result);
     }
@@ -6536,12 +6634,17 @@ void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
     /*
     OpShiftRightLogical
 
-    Shift the bits in Base right by the number of bits specified in Shift. The most-significant bits are zero filled.
+    Shift the bits in Base right by the number of bits specified in Shift.The most-significant bits are zero filled.
+
     Result Type must be a scalar or vector of integer type.
+
     The type of each Base and Shift must be a scalar or vector of integer type. Base and Shift must have the same number
-    of components. The number of components and bit width of the type of Base must be the same as in Result Type. Shift
-    is consumed as an unsigned integer. The resulting value is undefined if Shift is greater than or equal to the bit
-    width of the components of Base. Results are computed per component.
+    of components. The number of components and bit width of the type of Base must be the same as in Result Type.
+
+    Shift is consumed as an unsigned integer. The resulting value is undefined if Shift is greater than or equal to the bit
+    width of the components of Base.
+
+    Results are computed per component.
     */
     assert(instruction.opcode == spv::Op::OpShiftRightLogical);
 
@@ -6571,11 +6674,19 @@ void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
             {
                 result_vec->elems.push_back(std::get<uint64_t>(vec1->elems[i]) >> std::get<uint64_t>(vec2->elems[i]));
             }
+            else if (std::holds_alternative<uint64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
+            {
+                result_vec->elems.push_back(std::get<uint64_t>(vec1->elems[i]) >> std::get<int64_t>(vec2->elems[i]));
+            }
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) &&
                      std::holds_alternative<uint64_t>(vec2->elems[i]))
             {
                 result_vec->elems.push_back((uint64_t)std::get<int64_t>(vec1->elems[i]) >>
                                             std::get<uint64_t>(vec2->elems[i]));
+            }
+            else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
+            {
+                result_vec->elems.push_back(std::get<int64_t>(vec1->elems[i]) >> std::get<int64_t>(vec2->elems[i]));
             }
             else
             {
@@ -6591,9 +6702,17 @@ void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
         {
             result = std::get<uint64_t>(op1) >> std::get<uint64_t>(op2);
         }
+        else if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<int64_t>(op2))
+        {
+            result = (uint64_t)std::get<uint64_t>(op1) >> std::get<int64_t>(op2);
+        }
         else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<uint64_t>(op2))
         {
             result = (uint64_t)std::get<int64_t>(op1) >> std::get<uint64_t>(op2);
+        }
+        else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<int64_t>(op2))
+        {
+            result = (uint64_t)std::get<int64_t>(op1) >> std::get<int64_t>(op2);
         }
         else
         {
@@ -6844,6 +6963,7 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
     Results are computed per component, and within each component, per bit.
 
     Result Type must be a scalar or vector of integer type.
+
     The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
     They must have the same number of components as Result Type. They must have the same component width as Result Type.
     */
@@ -6920,9 +7040,14 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
         {
             val1 = bit_cast<uint64_t>(std::get<int64_t>(val_op1));
         }
-        else
+        else if (std::holds_alternative<uint64_t>(val_op1))
         {
             val1 = std::get<uint64_t>(val_op1);
+        }
+        else
+        {
+            std::cout << GetValueString(val_op1) << std::endl;
+
         }
 
         uint64_t val2;

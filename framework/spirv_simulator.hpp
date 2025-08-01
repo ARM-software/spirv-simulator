@@ -733,6 +733,8 @@ class SPIRVSimulator
     void Op_SpecConstant(const Instruction&);
     void Op_SpecConstantOp(const Instruction&);
     void Op_SpecConstantComposite(const Instruction&);
+    void Op_SpecConstantFalse(const Instruction&);
+    void Op_SpecConstantTrue(const Instruction&);
     void Op_ArrayLength(const Instruction&);
     void Op_UGreaterThanEqual(const Instruction&);
     void Op_Phi(const Instruction&);
