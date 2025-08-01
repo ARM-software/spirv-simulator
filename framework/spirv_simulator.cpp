@@ -515,6 +515,7 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
         case spv::Op::OpConvertFToS: R(Op_ConvertFToS)
         case spv::Op::OpConvertFToU: R(Op_ConvertFToU)
         case spv::Op::OpFRem: R(Op_FRem)
+        case spv::Op::OpFMod: R(Op_FMod)
         case spv::Op::OpAtomicOr: R(Op_AtomicOr)
         case spv::Op::OpAtomicUMax: R(Op_AtomicUMax)
         case spv::Op::OpAtomicUMin: R(Op_AtomicUMin)
@@ -1946,6 +1947,35 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
     switch (instruction_literal)
     {
+    case 13:
+        { // Sin
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::sin");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::sin(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::sin(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            break;
+        }
         case 14:
         { // Cos
             const Value& operand = GetValue(operand_words[0]);
@@ -9139,6 +9169,93 @@ void SPIRVSimulator::Op_FRem(const Instruction& instruction)
         double val_2 = std::get<double>(operand_2);
 
         double result = std::fmod(val_1, val_2);
+
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or float");
+    }
+
+    if (ValueIsArbitrary(operand_1_id) || ValueIsArbitrary(operand_2_id)){
+        SetIsArbitrary(result_id);
+    }
+}
+
+void SPIRVSimulator::Op_FMod(const Instruction& instruction)
+{
+    /*
+    OpFMod
+
+    The floating-point remainder whose sign matches the sign of Operand 2.
+
+    Result Type must be a scalar or vector of floating-point type.
+
+    The types of Operand 1 and Operand 2 both must be the same as Result Type.
+
+    Results are computed per component. The resulting value is undefined if Operand 2 is 0.
+    Otherwise, the result is the remainder r of Operand 1 divided by Operand 2 where if r ≠ 0,
+    the sign of r is the same as the sign of Operand 2.
+    */
+    assert(instruction.opcode == spv::Op::OpFMod);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t operand_1_id  = instruction.words[3];
+    uint32_t operand_2_id  = instruction.words[4];
+
+    Value operand_1 = GetValue(operand_1_id);
+    Value operand_2 = GetValue(operand_2_id);
+    const Type& type = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1),
+                "SPIRV simulator: First operand is set to be vector type, but it is not, illegal input parameters");
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                "SPIRV simulator: Second operand is set to be vector type, but it is not, illegal input parameters");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(operand_1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+        assertm(((vec1->elems.size() == type.vector.elem_count) && (vec1->elems.size() == vec2->elems.size())),
+                "SPIRV simulator: Operand vector lengths do not match");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec1->elems[i]), "SPIRV simulator: Non-float operand detected in first vector operand for Op_FMod");
+            assertm(std::holds_alternative<double>(vec2->elems[i]), "SPIRV simulator: Non-float operand detected in second vector operand for Op_FMod");
+
+            double val_1 = std::get<double>(vec1->elems[i]);
+            double val_2 = std::get<double>(vec2->elems[i]);
+
+            double elem_result = std::fmod(val_1, val_2);
+
+            if ((elem_result != 0.0) && (std::signbit(elem_result) != std::signbit(val_2))) {
+                elem_result += val_2;
+            }
+
+            result_vec->elems.push_back(elem_result);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Float)
+    {
+        assertm(std::holds_alternative<double>(operand_1), "SPIRV simulator: First operand is non-float in Op_FMod");
+        assertm(std::holds_alternative<double>(operand_2), "SPIRV simulator: Second operand is non-float in Op_FMod");
+
+        double val_1 = std::get<double>(operand_1);
+        double val_2 = std::get<double>(operand_2);
+
+        double result = std::fmod(val_1, val_2);
+
+        if ((result != 0.0) && (std::signbit(result) != std::signbit(val_2))) {
+            result += val_2;
+        }
 
         SetValue(result_id, result);
     }

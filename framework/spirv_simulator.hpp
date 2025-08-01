@@ -852,6 +852,7 @@ class SPIRVSimulator
     void Op_ConvertFToS(const Instruction&);
     void Op_ConvertFToU(const Instruction&);
     void Op_FRem(const Instruction&);
+    void Op_FMod(const Instruction&);
     void Op_AtomicOr(const Instruction&);
     void Op_AtomicUMax(const Instruction&);
     void Op_AtomicUMin(const Instruction&);
