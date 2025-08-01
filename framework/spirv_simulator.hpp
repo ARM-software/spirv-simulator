@@ -674,6 +674,7 @@ class SPIRVSimulator
     virtual bool  ValueIsArbitrary(uint32_t result_id) const { return arbitrary_values_.contains(result_id); };
     virtual bool  PointeeValueIsArbitrary(const PointerV& pointer) const { (void)pointer; return false; };
     virtual void  SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
+    virtual void  ClearIsArbitrary(uint32_t result_id) { arbitrary_values_.erase(result_id); };
     virtual Value CopyValue(const Value& value) const;
     virtual std::vector<Value>& Heap(uint32_t sc)
     {

@@ -554,7 +554,7 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
     #undef R
 }
 
-void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value)
+void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id)
 {
     // Do a shallow copy
     *this = source;
@@ -578,7 +578,25 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t 
     stack_frame.pc -= 1;
 
     // Then read the branching value, and modify its value chain so that the alternate branch is taken
-    assertx("SPIRV simulator: CreateExecutionFork incomplete, finish it to suport execution forking");
+    if (verbose_)
+    {
+        std::cout << "SPIRV simulator: CreateExecutionFork incomplete, finish it to properly support execution forking results" << std::endl;
+    }
+
+    // For now, just invert the value, this allows us to continue execution in release builds for some more testing
+    const Value& branch_val = GetValue(branching_value_id);
+    uint64_t branch_bool = std::get<uint64_t>(branch_val);
+
+    if (branch_bool)
+    {
+        SetValue(branching_value_id, (uint64_t)(0));
+    }
+    else
+    {
+        SetValue(branching_value_id, (uint64_t)(1));
+    }
+
+    ClearIsArbitrary(branching_value_id);
 
     ExecuteInstructions();
 }
@@ -3312,6 +3330,11 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         fork.CreateExecutionFork(*this, instruction.words[1]);
 
         // TODO: Copy the results, this can be complex if output pointer values diverge between branches
+        if (verbose_)
+        {
+            auto physical_address_data = fork.GetPhysicalAddressData();
+            std::cout << "SPIRV simulator: Execution fork complete, got: " << physical_address_data.size() << " fork results" << std::endl;
+        }
     }
 }
 
