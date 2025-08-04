@@ -109,8 +109,8 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     MOCK_METHOD(void, SetValue, (uint32_t id, const ::SPIRVSimulator::Value& value), (override));
     MOCK_METHOD(::SPIRVSimulator::Value&, GetValue, (uint32_t id), (override));
 
-    MOCK_METHOD(::SPIRVSimulator::Type, GetTypeByTypeId, (uint32_t id), (const override));
-    MOCK_METHOD(::SPIRVSimulator::Type, GetTypeByResultId, (uint32_t id), (const override));
+    MOCK_METHOD(const ::SPIRVSimulator::Type&, GetTypeByTypeId, (uint32_t id), (const override));
+    MOCK_METHOD(const ::SPIRVSimulator::Type&, GetTypeByResultId, (uint32_t id), (const override));
 
     SPIRVSimulatorMockBase()
     {
@@ -143,7 +143,7 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
         };
         for (const auto& [id, type] : types_)
         {
-            EXPECT_CALL(*this, GetTypeByTypeId(id)).WillRepeatedly(Return(type));
+            EXPECT_CALL(*this, GetTypeByTypeId(id)).WillRepeatedly(ReturnRef(type));
         }
     }
     ~SPIRVSimulatorMockBase() = default;

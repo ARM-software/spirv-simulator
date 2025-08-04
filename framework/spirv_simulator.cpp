@@ -42,6 +42,10 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const
 {
     stream_     = program_words_;
     input_data_ = input_data;
+
+    void_type_.kind   = Type::Kind::Void;
+    void_type_.scalar = { 0, false };
+
     DecodeHeader();
 
     assertm(unsupported_opcodes.size() == 0, "SPIRV simulator: Unhandled opcodes detected, implement them to run!");
@@ -939,7 +943,7 @@ uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t        result_id,
     return 0;
 }
 
-Type SPIRVSimulator::GetTypeByResultId(uint32_t result_id) const
+const Type& SPIRVSimulator::GetTypeByResultId(uint32_t result_id) const
 {
     /*
     Returns the type struct mapping to a given result_id.
@@ -963,14 +967,11 @@ Type SPIRVSimulator::GetTypeByResultId(uint32_t result_id) const
     }
     else
     {
-        Type void_type;
-        void_type.kind   = Type::Kind::Void;
-        void_type.scalar = { 0, false };
-        return void_type;
+        return void_type_;
     }
 }
 
-Type SPIRVSimulator::GetTypeByTypeId(uint32_t type_id) const
+const Type& SPIRVSimulator::GetTypeByTypeId(uint32_t type_id) const
 {
     /*
     Returns the type struct mapping to a given type_id.
@@ -1373,15 +1374,16 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value)
     */
     uint64_t offset  = 0;
     uint32_t type_id = pointer_value.type_id;
-    Type     type    = GetTypeByTypeId(type_id);
-    type_id          = type.pointer.pointee_type_id;
-    type             = GetTypeByTypeId(type_id);
 
-    assertm(type.kind != Type::Kind::Void, "SPIRV simulator: Attempt to extract a void type offset");
+    const Type& pointer_type = GetTypeByTypeId(type_id);
+    type_id                  = pointer_type.pointer.pointee_type_id;
+    const Type* type         = &GetTypeByTypeId(type_id);
+
+    assertm(type->kind != Type::Kind::Void, "SPIRV simulator: Attempt to extract a void type offset");
 
     for (uint32_t indirection_index : pointer_value.idx_path)
     {
-        if (type.kind == Type::Kind::Struct)
+        if (type->kind == Type::Kind::Struct)
         {
             // They must have offset decorators
             assertm(HasDecorator(type_id, indirection_index, spv::Decoration::DecorationOffset),
@@ -1389,9 +1391,9 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value)
 
             offset += GetDecoratorLiteral(type_id, indirection_index, spv::Decoration::DecorationOffset);
             type_id = struct_members_.at(type_id)[indirection_index];
-            type    = GetTypeByTypeId(type_id);
+            type    = &GetTypeByTypeId(type_id);
         }
-        else if (type.kind == Type::Kind::Array || type.kind == Type::Kind::RuntimeArray)
+        else if (type->kind == Type::Kind::Array || type->kind == Type::Kind::RuntimeArray)
         {
             // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
             assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
@@ -1399,10 +1401,10 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value)
 
             uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
             offset += indirection_index * array_stride;
-            type_id = type.array.elem_type_id;
-            type    = GetTypeByTypeId(type_id);
+            type_id = type->array.elem_type_id;
+            type    = &GetTypeByTypeId(type_id);
         }
-        else if (type.kind == Type::Kind::Matrix)
+        else if (type->kind == Type::Kind::Matrix)
         {
             assertm(HasDecorator(type_id, spv::Decoration::DecorationColMajor),
                     "SPIRV simulator: Attempt to get pointer offset to row-major matrix, this is illegal and violates "
@@ -1410,14 +1412,14 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value)
 
             uint32_t matrix_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
             offset += indirection_index * matrix_stride;
-            type_id = type.matrix.col_type_id;
-            type    = GetTypeByTypeId(type_id);
+            type_id = type->matrix.col_type_id;
+            type    = &GetTypeByTypeId(type_id);
         }
-        else if (type.kind == Type::Kind::Vector)
+        else if (type->kind == Type::Kind::Vector)
         {
-            type_id = type.vector.elem_type_id;
-            type    = GetTypeByTypeId(type.vector.elem_type_id);
-            offset += indirection_index * std::ceil(type.scalar.width / 8.0);
+            type_id = type->vector.elem_type_id;
+            type    = &GetTypeByTypeId(type->vector.elem_type_id);
+            offset += indirection_index * std::ceil(type->scalar.width / 8.0);
         }
         else
         {
@@ -2926,8 +2928,9 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
                     << "No push constant initialization data mapped in the inputs, setting to defaults, this may crash"
                     << std::endl;
             }
-            Value init             = MakeDefault(type.pointer.pointee_type_id);
-            new_pointer.heap_index = HeapAllocate(storage_class, init);
+            Value init              = MakeDefault(type.pointer.pointee_type_id);
+            new_pointer.heap_index  = HeapAllocate(storage_class, init);
+            new_pointer.raw_pointer = bit_cast<uint64_t>(input_data_.push_constants);
         }
         else
         {
@@ -2973,6 +2976,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
             }
             Value init                     = MakeDefault(type.pointer.pointee_type_id);
             new_pointer.heap_index         = HeapAllocate(storage_class, init);
+            new_pointer.raw_pointer        = bit_cast<uint64_t>(external_pointer);
         }
         else
         {
@@ -3004,7 +3008,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
             init = MakeDefault(type.pointer.pointee_type_id);
         }
 
-        new_pointer.heap_index = HeapAllocate(storage_class, init);
+        new_pointer.heap_index  = HeapAllocate(storage_class, init);
     }
 
     const Type& pointee_type = GetTypeByTypeId(type.pointer.pointee_type_id);
@@ -4120,17 +4124,63 @@ void SPIRVSimulator::Op_ArrayLength(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpArrayLength);
 
-    // uint32_t type_id = instruction.words[1];
+    uint32_t type_id = instruction.words[1];
     uint32_t result_id = instruction.words[2];
-    // uint32_t structure_id = instruction.words[3];
-    // uint32_t literal_array_member = instruction.words[4];
+    uint32_t structure_pointer_id = instruction.words[3];
+    uint32_t literal_array_member = instruction.words[4];
 
-    // TODO: Must query input data here to find the length
-    //       Should be enough to check the binding of the result_id and the size of
-    //       the mapped data vector (in number of elements encoded)
-    assertx("SPIRV simulator: Op_ArrayLength is unimplemented! Fix this.");
+    const Value& structure_pointer_val = GetValue(structure_pointer_id);
+    assertm(std::holds_alternative<PointerV>(structure_pointer_val), "SPIRV simulator: OpArrayLength called on non-pointer type");
 
-    SetValue(result_id, 0);
+    PointerV pointer = std::get<PointerV>(structure_pointer_val);
+
+    // Add the array index to the indirection path
+    pointer.idx_path.push_back(literal_array_member);
+
+    // Must (and should) be present for any pointer to buffers containing runtime arrays
+    uint64_t array_pointer = pointer.raw_pointer;
+    size_t array_offset = GetPointerOffset(pointer);
+
+    if (array_pointer)
+    {
+        if (input_data_.rt_array_lengths.find(array_pointer) != input_data_.rt_array_lengths.end())
+        {
+            if (input_data_.rt_array_lengths[array_pointer].find(array_offset) != input_data_.rt_array_lengths[array_pointer].end())
+            {
+                SetValue(result_id, (uint64_t)input_data_.rt_array_lengths[array_pointer][array_offset]);
+            }
+            else
+            {
+                if (verbose_)
+                {
+                    std::cout << "SPIRV simulator: WARNING: Op_ArrayLength called on pointer with no input size set, the user must provide this for correct behaviour" << std::endl;
+                    std::cout << "SPIRV simulator: Pointer:" << array_pointer << ", offset: " << array_offset << std::endl;
+                }
+
+                SetValue(result_id, (uint64_t)1);
+            }
+        }
+        else
+        {
+            if (verbose_)
+            {
+                std::cout << "SPIRV simulator: WARNING: Op_ArrayLength called on pointer with no input size set for the given offset, the user must provide this for correct behaviour" << std::endl;
+                std::cout << "SPIRV simulator: Pointer:" << array_pointer << ", offset: " << array_offset << std::endl;
+            }
+
+            SetValue(result_id, (uint64_t)1);
+        }
+    }
+    else {
+        if (verbose_)
+        {
+            std::cout << "SPIRV simulator: WARNING: Op_ArrayLength called on pointer with no raw_pointer value set" << std::endl;
+            std::cout << "SPIRV simulator: Pointer:" << array_pointer << ", offset: " << array_offset << std::endl;
+        }
+
+        SetValue(result_id, (uint64_t)1);
+    }
+
 }
 
 void SPIRVSimulator::Op_SpecConstant(const Instruction& instruction)
@@ -5353,19 +5403,19 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         {
             if (elem_type.kind == Type::Kind::Float)
             {
-                double value;
+                double value = 0.0;
                 std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
                 vec->elems.push_back(value);
             }
             else if ((elem_type.kind == Type::Kind::Int) && !elem_type.scalar.is_signed)
             {
-                uint64_t value;
+                uint64_t value = 0;
                 std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
                 vec->elems.push_back(value);
             }
             else if ((elem_type.kind == Type::Kind::Int) && elem_type.scalar.is_signed)
             {
-                int64_t value;
+                int64_t value = 0;
                 std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
                 vec->elems.push_back(value);
             }
@@ -5381,20 +5431,23 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     }
     else if (type.kind == Type::Kind::Float)
     {
-        double value;
+        double value = 0.0;
         std::memcpy(&value, bytes.data(), type.scalar.width / 8);
+
         result = value;
     }
     else if ((type.kind == Type::Kind::Int) && !type.scalar.is_signed)
     {
-        uint64_t value;
+        uint64_t value = 0;
         std::memcpy(&value, bytes.data(), type.scalar.width / 8);
+
         result = value;
     }
     else if ((type.kind == Type::Kind::Int) && type.scalar.is_signed)
     {
-        int64_t value;
-        std::memcpy(&value, bytes.data(), type.scalar.width / 8);
+        int64_t value = 0;
+        std::memcpy(reinterpret_cast<std::byte*>(&value), bytes.data(), type.scalar.width / 8);
+
         result = value;
     }
     else if (type.kind == Type::Kind::Pointer)
@@ -5407,7 +5460,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         assertm(type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer,
                 "SPIRV simulator: Attempt to Op_Bitcast to a non PhysicalStorageBuffer storage class object");
 
-        uint64_t pointer_value;
+        uint64_t pointer_value = 0;
         std::memcpy(&pointer_value, bytes.data(), sizeof(uint64_t));
 
         const std::byte* remapped_pointer = nullptr;

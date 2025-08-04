@@ -65,8 +65,8 @@ struct InputData
     // The OpName label (function name) of the entry point to use, takes priority over entry_point_id if it is set.
     std::string entry_point_op_name = "";
 
-    // Data block pointer -> (byte_offset_to_array, array length)
-    std::unordered_map<uint64_t, std::pair<size_t, size_t>> rt_array_lengths;
+    // Data block pointer -> -> byte_offset_to_array -> array length
+    std::unordered_map<uint64_t, std::unordered_map<size_t, size_t>> rt_array_lengths;
 
     // SpecId -> byte offset
     std::unordered_map<uint32_t, size_t> specialization_constant_offsets;
@@ -564,7 +564,7 @@ class SPIRVSimulator
     uint32_t num_result_ids_     = 0;
     uint32_t current_heap_index_ = 0;
 
-    uint64_t current_fork_index_= 0;
+    uint64_t current_fork_index_ = 0;
 
     // Parsing artefacts
     InputData input_data_;
@@ -586,6 +586,7 @@ class SPIRVSimulator
     // Any result ID or pointer object ID in this set, can be treated as if it has any valid value for
     // the given type
     std::set<uint32_t> arbitrary_values_;
+    Type void_type_;
 
     // This maps the result ID of pointers to the result ID of values stored
     // through them
@@ -658,8 +659,8 @@ class SPIRVSimulator
     virtual Value&      Deref(const PointerV& ptr);
     virtual Value&      GetValue(uint32_t result_id);
     virtual void        SetValue(uint32_t result_id, const Value& value);
-    virtual Type        GetTypeByTypeId(uint32_t type_id) const;
-    virtual Type        GetTypeByResultId(uint32_t result_id) const;
+    virtual const Type& GetTypeByTypeId(uint32_t type_id) const;
+    virtual const Type& GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t    GetTypeID(uint32_t result_id) const;
     virtual void        ExtractWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
     virtual uint64_t                    GetPointerOffset(const PointerV& pointer_value);

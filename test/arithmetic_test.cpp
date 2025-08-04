@@ -26,7 +26,7 @@ TEST_P(ArithmeticsTests, ParametrizedArithmeticOperation)
         const uint32_t op_id = NextId();
         words.push_back(op_id);
         EXPECT_CALL(*this, GetValue(op_id)).WillRepeatedly(ReturnRefOfCopy(parameters.operands[op]));
-        EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(Return(types_[parameters.operand_types[op]]));
+        EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(ReturnRef(types_[parameters.operand_types[op]]));
     }
 
     ::SPIRVSimulator::Instruction inst{ .opcode     = parameters.opcode,
@@ -310,7 +310,7 @@ TEST_P(ArithmeticsDeathTests, ParametrizedDeathTest)
         const uint32_t op_id = NextId();
         words.push_back(op_id);
         EXPECT_CALL(*this, GetValue(op_id)).WillRepeatedly(ReturnRefOfCopy(parameters.operands[op]));
-        EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(Return(types_[parameters.operand_types[op]]));
+        EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(ReturnRef(types_[parameters.operand_types[op]]));
     }
 
     ::SPIRVSimulator::Instruction inst{ .opcode     = parameters.opcode,
