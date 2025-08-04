@@ -66,21 +66,25 @@ struct InputData
     std::string entry_point_op_name = "";
 
     // Data block pointer -> byte_offset_to_array -> array length (in number of elements)
+    // The Data block pointer should be the void* -> uint64_t bitcast of a pointer matching one of
+    // the bound buffers/data blocks in bindings, push_constants, specialization_constants or physical_address_buffers
     std::unordered_map<uint64_t, std::unordered_map<size_t, size_t>> rt_array_lengths;
 
     // SpecId -> byte offset
+    // For each SpecID this should give the offset (in bytes) to the given specialization constant in specialization_constants
     std::unordered_map<uint32_t, size_t> specialization_constant_offsets;
     const void*                          specialization_constants = nullptr;
 
-    // The full binary push_constant block
+    // The full binary push_constant Data block
     const void* push_constants = nullptr;
 
-    // DescriptorSet -> Binding -> data
+    // DescriptorSet -> Binding -> Data block
     std::unordered_map<uint64_t, std::unordered_map<uint64_t, void*>> bindings;
 
     // These can be provided by the user in order to properly initialize PhysicalStorageBuffer storage class values.
-    // The keys here are uint64_t values who contain the bits in the physical address pointers
-    // The value pair is the size of the buffer (in bytes) followed by the pointer to the host side data
+    // The keys here are uint64_t values who contain the bits in the physical address pointers seen on the GPU.
+    // The value pair is the size of the buffer (in bytes) followed by the pointer to the Data block on the host side
+    // (which should be a copy of the GPU side data)
     std::unordered_map<uint64_t, std::pair<size_t, void*>> physical_address_buffers;
 
     // Optional map of buffers to pbuffer candidates in said buffers.
