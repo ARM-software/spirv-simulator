@@ -65,7 +65,7 @@ struct InputData
     // The OpName label (function name) of the entry point to use, takes priority over entry_point_id if it is set.
     std::string entry_point_op_name = "";
 
-    // Data block pointer -> -> byte_offset_to_array -> array length
+    // Data block pointer -> byte_offset_to_array -> array length (in number of elements)
     std::unordered_map<uint64_t, std::unordered_map<size_t, size_t>> rt_array_lengths;
 
     // SpecId -> byte offset
