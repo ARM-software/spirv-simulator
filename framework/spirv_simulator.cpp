@@ -3327,9 +3327,6 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     uint32_t label_1_id   = instruction.words[2];
     uint32_t label_2_id   = instruction.words[3];
 
-    uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
-    call_stack_.back().pc = result_id_to_inst_index_.at(condition ? label_1_id : label_2_id);
-
     // We need to diverge and execute both branches here
     if (ValueIsArbitrary(instruction.words[1])){
         SPIRVSimulator fork;
@@ -3344,6 +3341,9 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
             std::cout << "SPIRV simulator: WARNING: Execution fork executed at level: " << current_fork_index_ << " but implementation is not complete, this may lead to pbuffers pointers not being found" << std::endl;
         }
     }
+
+    uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
+    call_stack_.back().pc = result_id_to_inst_index_.at(condition ? label_1_id : label_2_id);
 }
 
 void SPIRVSimulator::Op_Return(const Instruction& instruction)
