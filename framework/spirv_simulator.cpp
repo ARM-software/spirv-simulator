@@ -2233,6 +2233,74 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
             break;
         }
+        case 41:
+        { // UMax
+            const Value& operand_1 = GetValue(operand_words[0]);
+            const Value& operand_2 = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) && std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::umin");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
+                auto operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    uint64_t elem_result;
+                    if (std::holds_alternative<uint64_t>(operand_1_val->elems[i]) && std::holds_alternative<uint64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::max(std::get<uint64_t>(operand_1_val->elems[i]), std::get<uint64_t>(operand_2_val->elems[i]));
+                    }
+                    else if (std::holds_alternative<uint64_t>(operand_1_val->elems[i]) && std::holds_alternative<int64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::max(std::get<uint64_t>(operand_1_val->elems[i]), bit_cast<uint64_t>(std::get<int64_t>(operand_2_val->elems[i])));
+                    }
+                    else if (std::holds_alternative<int64_t>(operand_1_val->elems[i]) && std::holds_alternative<uint64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::max(bit_cast<uint64_t>(std::get<int64_t>(operand_1_val->elems[i])), std::get<uint64_t>(operand_2_val->elems[i]));
+                    }
+                    else if (std::holds_alternative<int64_t>(operand_1_val->elems[i]) && std::holds_alternative<int64_t>(operand_2_val->elems[i]))
+                    {
+                        elem_result = std::max(bit_cast<uint64_t>(std::get<int64_t>(operand_1_val->elems[i])), bit_cast<uint64_t>(std::get<int64_t>(operand_2_val->elems[i])));
+                    }
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Int)
+            {
+                Value result;
+                if (std::holds_alternative<uint64_t>(operand_1) && std::holds_alternative<uint64_t>(operand_2))
+                {
+                    result = std::max(std::get<uint64_t>(operand_1), std::get<uint64_t>(operand_2));
+                }
+                else if (std::holds_alternative<uint64_t>(operand_1) && std::holds_alternative<int64_t>(operand_2))
+                {
+                    result = std::max(std::get<uint64_t>(operand_1), bit_cast<uint64_t>(std::get<int64_t>(operand_2)));
+                }
+                else if (std::holds_alternative<int64_t>(operand_1) && std::holds_alternative<uint64_t>(operand_2))
+                {
+                    result = std::max(bit_cast<uint64_t>(std::get<int64_t>(operand_1)), std::get<uint64_t>(operand_2));
+                }
+                else if (std::holds_alternative<int64_t>(operand_1) && std::holds_alternative<int64_t>(operand_2))
+                {
+                    result = std::max(bit_cast<uint64_t>(std::get<int64_t>(operand_1)), bit_cast<uint64_t>(std::get<int64_t>(operand_2)));
+                }
+
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+            break;
+        }
         case 43:
         { // FClamp
             const Value& operand = GetValue(operand_words[0]);
@@ -2262,6 +2330,80 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             else if (type.kind == Type::Kind::Float)
             {
                 Value result = (double)std::clamp(std::get<double>(operand), std::get<double>(min_val), std::get<double>(max_val));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+            break;
+        }
+        case 44:
+        { // UClamp
+            const Value& operand = GetValue(operand_words[0]);
+            const Value& min_val = GetValue(operand_words[1]);
+            const Value& max_val = GetValue(operand_words[2]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand) && std::holds_alternative<std::shared_ptr<VectorV>>(min_val) && std::holds_alternative<std::shared_ptr<VectorV>>(max_val),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fclamp");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+                auto min_vec = std::get<std::shared_ptr<VectorV>>(min_val);
+                auto max_vec = std::get<std::shared_ptr<VectorV>>(max_val);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (uint64_t)std::clamp(std::get<uint64_t>(vec->elems[i]), std::get<uint64_t>(min_vec->elems[i]), std::get<uint64_t>(max_vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (uint64_t)std::clamp(std::get<uint64_t>(operand), std::get<uint64_t>(min_val), std::get<uint64_t>(max_val));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+            break;
+        }
+        case 45:
+        { // SClamp
+            const Value& operand = GetValue(operand_words[0]);
+            const Value& min_val = GetValue(operand_words[1]);
+            const Value& max_val = GetValue(operand_words[2]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand) && std::holds_alternative<std::shared_ptr<VectorV>>(min_val) && std::holds_alternative<std::shared_ptr<VectorV>>(max_val),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fclamp");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+                auto min_vec = std::get<std::shared_ptr<VectorV>>(min_val);
+                auto max_vec = std::get<std::shared_ptr<VectorV>>(max_val);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (int64_t)std::clamp(std::get<int64_t>(vec->elems[i]), std::get<int64_t>(min_vec->elems[i]), std::get<int64_t>(max_vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (int64_t)std::clamp(std::get<int64_t>(operand), std::get<int64_t>(min_val), std::get<int64_t>(max_val));
                 SetValue(result_id, result);
             }
             else
@@ -2305,6 +2447,43 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 double y_d = std::get<double>(y);
                 double a_d = std::get<double>(a);
                 Value result = (double)(x_d * (1 - a_d) + y_d * a_d);
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+            break;
+        }
+        case 50:
+        { // Fma
+            const Value& a_val = GetValue(operand_words[0]);
+            const Value& b_val = GetValue(operand_words[1]);
+            const Value& c_val = GetValue(operand_words[2]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(a_val) && std::holds_alternative<std::shared_ptr<VectorV>>(b_val) && std::holds_alternative<std::shared_ptr<VectorV>>(c_val),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fclamp");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto a_vec = std::get<std::shared_ptr<VectorV>>(a_val);
+                auto b_vec = std::get<std::shared_ptr<VectorV>>(b_val);
+                auto c_vec = std::get<std::shared_ptr<VectorV>>(c_val);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)(std::get<double>(a_vec->elems[i]) * std::get<double>(b_vec->elems[i]) + std::get<double>(c_vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)(std::get<double>(a_val) * std::get<double>(b_val) + std::get<double>(c_val));
                 SetValue(result_id, result);
             }
             else
