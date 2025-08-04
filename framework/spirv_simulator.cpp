@@ -578,6 +578,8 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t 
         }
     }
 
+    is_execution_fork = true;
+
     current_fork_index_ += 1;
 
     auto& stack_frame = call_stack_.back();
@@ -3461,6 +3463,12 @@ void SPIRVSimulator::Op_Label(const Instruction& instruction)
     uint32_t result_id = instruction.words[1];
     prev_block_id_     = current_block_id_;
     current_block_id_  = result_id;
+
+    if ((current_block_id_ == current_merge_block_id_) && is_execution_fork)
+    {
+        // We are done, merge back and communicate fork info to the callee
+        call_stack_.clear();
+    }
 }
 
 void SPIRVSimulator::Op_Branch(const Instruction& instruction)
@@ -3690,8 +3698,49 @@ void SPIRVSimulator::Op_ExtInst(const Instruction& instruction)
 
 void SPIRVSimulator::Op_SelectionMerge(const Instruction& instruction)
 {
-    // This is a NOP in our design
+    /*
+    OpSelectionMerge
+
+    Declare a structured selection.
+
+    This instruction must immediately precede either an OpBranchConditional or OpSwitch instruction.
+    That is, it must be the second-to-last instruction in its block.
+
+    Merge Block is the label of the merge block for this structured selection.
+
+    See Structured Control Flow for more detail.
+    */
     assert(instruction.opcode == spv::Op::OpSelectionMerge);
+
+    uint32_t merge_block_id = instruction.words[1];
+
+    current_merge_block_id_ = merge_block_id;
+}
+
+void SPIRVSimulator::Op_LoopMerge(const Instruction& instruction)
+{
+    /*
+    OpLoopMerge
+
+    Declare a structured loop.
+
+    This instruction must immediately precede either an OpBranch or OpBranchConditional instruction.
+    That is, it must be the second-to-last instruction in its block.
+
+    Merge Block is the label of the merge block for this structured loop.
+
+    Continue Target is the label of a block targeted for processing a loop "continue".
+
+    Loop Control Parameters appear in Loop Control-table order for any Loop Control setting that requires such a parameter.
+
+    See Structured Control Flow for more detail.
+    */
+    assert(instruction.opcode == spv::Op::OpLoopMerge);
+
+    uint32_t merge_block_id     = instruction.words[1];
+    uint32_t continue_target_id = instruction.words[2];
+
+    current_merge_block_id_ = merge_block_id;
 }
 
 void SPIRVSimulator::Op_FMul(const Instruction& instruction)
@@ -3763,12 +3812,6 @@ void SPIRVSimulator::Op_FMul(const Instruction& instruction)
     }
 }
 
-void SPIRVSimulator::Op_LoopMerge(const Instruction& instruction)
-{
-    // This is a NOP in our design
-    // TODO: Double check this
-    assert(instruction.opcode == spv::Op::OpLoopMerge);
-}
 
 void SPIRVSimulator::Op_INotEqual(const Instruction& instruction)
 {

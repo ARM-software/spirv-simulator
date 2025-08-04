@@ -565,6 +565,8 @@ class SPIRVSimulator
   protected:
     SPIRVSimulator() = default;
 
+    bool is_execution_fork = false;
+
     uint32_t num_result_ids_     = 0;
     uint32_t current_heap_index_ = 0;
 
@@ -617,8 +619,9 @@ class SPIRVSimulator
     uint32_t                                   prev_defined_func_id_;
     std::unordered_map<uint32_t, FunctionInfo> funcs_;
 
-    uint32_t prev_block_id_    = 0;
-    uint32_t current_block_id_ = 0;
+    uint32_t prev_block_id_          = 0;
+    uint32_t current_block_id_       = 0;
+    uint32_t current_merge_block_id_ = 0;
 
     // Heaps & frames
     struct Frame
