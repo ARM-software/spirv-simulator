@@ -7380,10 +7380,11 @@ void SPIRVSimulator::Op_All(const Instruction& instruction)
     uint32_t result_id = instruction.words[2];
     uint32_t vector_id = instruction.words[3];
 
-    const Type&  type       = GetTypeByTypeId(type_id);
-    const Value& vector_val = GetValue(vector_id);
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Type& operand_type = GetTypeByResultId(vector_id);
+    const Value& vector_val  = GetValue(vector_id);
 
-    assertm(type.kind == Type::Kind::Vector, "SPIRV simulator: Operand is not of vector type");
+    assertm(operand_type.kind == Type::Kind::Vector, "SPIRV simulator: Operand is not of vector type");
     assertm(std::holds_alternative<std::shared_ptr<VectorV>>(vector_val),
             "SPIRV simulator: Operand is of vector type but does not hold a vector");
 
@@ -7420,10 +7421,11 @@ void SPIRVSimulator::Op_Any(const Instruction& instruction)
     uint32_t result_id = instruction.words[2];
     uint32_t vector_id = instruction.words[3];
 
-    const Type&  type       = GetTypeByTypeId(type_id);
-    const Value& vector_val = GetValue(vector_id);
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Type& operand_type = GetTypeByResultId(vector_id);
+    const Value& vector_val  = GetValue(vector_id);
 
-    assertm(type.kind == Type::Kind::Vector, "SPIRV simulator: Operand is not of vector type");
+    assertm(operand_type.kind == Type::Kind::Vector, "SPIRV simulator: Operand is not of vector type");
     assertm(std::holds_alternative<std::shared_ptr<VectorV>>(vector_val),
             "SPIRV simulator: Operand is of vector type but does not hold a vector");
 
