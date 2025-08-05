@@ -569,7 +569,6 @@ class SPIRVSimulator
 
     uint32_t num_result_ids_     = 0;
     uint32_t current_heap_index_ = 0;
-
     uint64_t current_fork_index_ = 0;
 
     // Parsing artefacts
@@ -622,6 +621,14 @@ class SPIRVSimulator
     uint32_t prev_block_id_          = 0;
     uint32_t current_block_id_       = 0;
     uint32_t current_merge_block_id_ = 0;
+    uint32_t current_continue_block_id_ = 0;
+
+    // Execution fork data, used to prevent infinte loops in SPIRV loop constructs
+    // If we encounter a conditional that branches to the target ID based on the trigger ID, we assume completion and return from the fork.
+    // The result ID of the boolean value that triggered the fork
+    uint32_t fork_abort_trigger_id_ = 0;
+    // The result ID of the label we would have branched to, but diverged away from, when creating the fork
+    uint64_t fork_abort_target_id_ = 0;
 
     // Heaps & frames
     struct Frame
@@ -656,7 +663,7 @@ class SPIRVSimulator
     virtual bool        CanEarlyOut();
     virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void        ExecuteInstructions();
-    virtual void        CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value);
+    virtual void        CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
     virtual std::string GetValueString(const Value&);
     virtual std::string GetTypeString(const Type&);
     virtual void        PrintInstruction(const Instruction&);
@@ -896,7 +903,6 @@ class SPIRVSimulator
     void Op_RayQueryInitializeKHR(const Instruction&);
     void Op_RayQueryProceedKHR(const Instruction&);
     void Op_DecorateString(const Instruction&);
-
 };
 
 } // namespace SPIRVSimulator

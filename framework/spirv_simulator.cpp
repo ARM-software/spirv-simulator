@@ -559,7 +559,7 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
     #undef R
 }
 
-void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id)
+void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id)
 {
     // Do a shallow copy
     *this = source;
@@ -580,8 +580,10 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t 
     }
 
     is_execution_fork = true;
-
     current_fork_index_ += 1;
+
+    fork_abort_trigger_id_ = branching_value_id;
+    fork_abort_target_id_ = target_block_id;
 
     auto& stack_frame = call_stack_.back();
     stack_frame.pc -= 1;
@@ -3766,10 +3768,24 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     uint32_t label_1_id   = instruction.words[2];
     uint32_t label_2_id   = instruction.words[3];
 
-    // We need to diverge and execute both branches here
-    if (ValueIsArbitrary(instruction.words[1])){
+    uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
+    uint32_t target_label = condition ? label_1_id : label_2_id;
+
+    // We may need to diverge and execute both branches here.
+    // Only do it if the conditional is arbitrary, and if we are looping, only do so if we are skipping the loop
+    // (eg. target id is not the continue)
+    if (ValueIsArbitrary(condition_id) && (target_label != current_continue_block_id_)){
+
+        if ((fork_abort_trigger_id_ == condition_id) && (fork_abort_target_id_ == target_label))
+        {
+            // Do not fork again, we are entering an infite loop by creating a fork equal to the one that started this one
+            // If this ever happens, we are done so just return
+            call_stack_.clear();
+            return;
+        }
+
         SPIRVSimulator fork;
-        fork.CreateExecutionFork(*this, instruction.words[1]);
+        fork.CreateExecutionFork(*this, condition_id, target_label);
 
         const auto& fork_results = fork.GetPhysicalAddressData();
 
@@ -3785,8 +3801,7 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         }
     }
 
-    uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
-    call_stack_.back().pc = result_id_to_inst_index_.at(condition ? label_1_id : label_2_id);
+    call_stack_.back().pc = result_id_to_inst_index_.at(target_label);
 }
 
 void SPIRVSimulator::Op_Return(const Instruction& instruction)
@@ -3996,7 +4011,8 @@ void SPIRVSimulator::Op_LoopMerge(const Instruction& instruction)
     uint32_t merge_block_id     = instruction.words[1];
     uint32_t continue_target_id = instruction.words[2];
 
-    current_merge_block_id_ = merge_block_id;
+    current_merge_block_id_    = merge_block_id;
+    current_continue_block_id_ = continue_target_id;
 }
 
 void SPIRVSimulator::Op_FMul(const Instruction& instruction)
