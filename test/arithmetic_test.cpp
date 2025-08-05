@@ -293,12 +293,11 @@ INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsTests, ValuesIn(test_cases));
 
 // Death tests cannot work without Debug build, as they rely on program crashing with certain message in stderr
 // Also, they are slow
-#ifndef NDEBUG
 
-class ArithmeticsDeathTests : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
+class ArithmeticsCrashTests : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
 {};
 
-TEST_P(ArithmeticsDeathTests, ParametrizedDeathTest)
+TEST_P(ArithmeticsCrashTests, ParametrizedCrashTest)
 {
     const auto& parameters = GetParam();
 
@@ -317,10 +316,21 @@ TEST_P(ArithmeticsDeathTests, ParametrizedDeathTest)
                                         .word_count = static_cast<uint16_t>(words.size()),
                                         .words      = words };
 
+#ifndef NDEBUG
     EXPECT_DEATH({ this->ExecuteInstruction(inst); }, parameters.death_message);
+#else
+    try
+    {
+        this->ExecuteInstruction(inst);
+    }
+    catch (std::runtime_error e)
+    {
+        EXPECT_THAT(e.what(), HasSubstr(parameters.death_message));
+    }
+#endif
 }
 
-std::vector<TestParameters> death_tests = {
+std::vector<TestParameters> throw_tests = {
     TestParametersBuilder()
         .set_opcode(spv::Op::OpSNegate)
         .set_operands_size(2)
@@ -422,7 +432,8 @@ std::vector<TestParameters> death_tests = {
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
         .set_operands_size(3)
-        .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0, 3.0 }), Type::vec3)
+        .set_op_n(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0, 3.0 }), Type::vec3)
         .set_op_n(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), Type::vec2)
         .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }), Type::vec2)
         .set_death_message("Operands not of equal/correct length in Op_FAdd")
@@ -431,7 +442,8 @@ std::vector<TestParameters> death_tests = {
         .set_opcode(spv::Op::OpFAdd)
         .set_operands_size(3)
         .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0 }), Type::vec2)
-        .set_op_n(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }), Type::vec3)
+        .set_op_n(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }), Type::vec3)
         .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }), Type::vec2)
         .set_death_message("Operands not of equal/correct length in Op_FAdd")
         .build(),
@@ -518,7 +530,8 @@ std::vector<TestParameters> death_tests = {
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
         .set_operands_size(3)
-        .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }), Type::vec3)
+        .set_op_n(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }), Type::vec3)
         .set_op_n(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), Type::vec2)
         .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 0.0, 0.0 }), Type::vec2)
         .set_death_message("Operands are vector type but not of equal length in Op_FSub")
@@ -599,7 +612,8 @@ std::vector<TestParameters> death_tests = {
         .set_opcode(spv::Op::OpFMul)
         .set_operands_size(3)
         .set_op_n(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), Type::vec2)
-        .set_op_n(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }), Type::vec3)
+        .set_op_n(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }), Type::vec3)
         .set_op_n(2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), Type::vec2)
         .set_death_message("Operands not of equal/correct length in Op_FMul")
         .build(),
@@ -629,6 +643,4 @@ std::vector<TestParameters> death_tests = {
         .build(),
 };
 
-INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsDeathTests, ValuesIn(death_tests));
-
-#endif
+INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsCrashTests, ValuesIn(throw_tests));
