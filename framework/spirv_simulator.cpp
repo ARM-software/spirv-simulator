@@ -586,13 +586,11 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source, uint32_t 
     auto& stack_frame = call_stack_.back();
     stack_frame.pc -= 1;
 
-    // Then read the branching value, and modify its value chain so that the alternate branch is taken
-    if (verbose_)
-    {
-        std::cout << "SPIRV simulator: CreateExecutionFork incomplete, finish it to properly support execution forking results" << std::endl;
-    }
-
     // For now, just invert the value, this allows us to continue execution in release builds for some more testing
+    // TODO: If it ever becomes necessary, we should backtrack from the candidate branching boolean and change the operands in the
+    //       instructions resulting in its current value such that the result of its source instruction
+    //       becomes the inverse of its current value
+
     const Value& branch_val = GetValue(branching_value_id);
     uint64_t branch_bool = std::get<uint64_t>(branch_val);
 
@@ -3773,13 +3771,17 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         SPIRVSimulator fork;
         fork.CreateExecutionFork(*this, instruction.words[1]);
 
-        // TODO: Copy the results, this can be complex if output pointer values diverge between branches
+        const auto& fork_results = fork.GetPhysicalAddressData();
 
-        if (verbose_)
+        if (fork_results.size())
         {
-            auto physical_address_data = fork.GetPhysicalAddressData();
-            std::cout << "SPIRV simulator: Execution fork complete, got: " << physical_address_data.size() << " fork results" << std::endl;
-            std::cout << "SPIRV simulator: WARNING: Execution fork executed at level: " << current_fork_index_ << " but implementation is not complete, this may lead to pbuffers pointers not being found" << std::endl;
+            if (verbose_)
+            {
+                std::cout << "SPIRV simulator: Execution fork complete, got: " << fork_results.size() << " fork results at execution level: " << current_fork_index_ << std::endl;
+                std::cout << "                 Note that advanced variable adaptation to the arbitrary branch investigation is not implemented, there is a chance that the pbuffer pointer metadata is incomplete." << std::endl;
+            }
+
+            physical_address_pointer_source_data_.insert(physical_address_pointer_source_data_.end(), fork_results.begin(), fork_results.end());
         }
     }
 
