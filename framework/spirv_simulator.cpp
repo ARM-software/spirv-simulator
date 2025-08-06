@@ -40,6 +40,12 @@ void DecodeInstruction(std::span<const uint32_t>& program_words, Instruction& in
 SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const InputData& input_data, bool verbose) :
     program_words_(std::move(program_words)), verbose_(verbose)
 {
+    if (input_data.shader_id && (input_data_.internal_.uninteresting_shaders_.contains(input_data.shader_id)))
+    {
+        done_ = true;
+        return;
+    }
+
     stream_     = program_words_;
     input_data_ = input_data;
 
@@ -115,18 +121,6 @@ void SPIRVSimulator::Validate()
     }
 
     assertm(sizeof(void*) == 8, "SPIRV simulator: Systems with non 64 bit pointers are not supported");
-}
-
-bool SPIRVSimulator::CanEarlyOut()
-{
-    // If the shader does not write any buffer outputs and does not create any pbuffer pointers we can skip it
-    bool can_early_out = false;
-
-    // TODO: Add checks
-    //for (const Instruction& instruction : instructions_){
-    //}
-
-    return can_early_out;
 }
 
 void SPIRVSimulator::ParseAll()
@@ -247,6 +241,11 @@ void SPIRVSimulator::ParseAll()
 
 bool SPIRVSimulator::Run()
 {
+    if (done_)
+    {
+        return false;
+    }
+
     if (funcs_.empty())
     {
         std::cerr << "SPIRV simulator: No functions defined in the shader, cannot start execution" << std::endl;
@@ -293,9 +292,15 @@ bool SPIRVSimulator::Run()
     }
 
     FunctionInfo& function_info = funcs_[entry_point_function_id];
+
     // We can set the return value to whatever, ignored if the call stack is empty on return
     call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_ });
     ExecuteInstructions();
+
+    if ((!has_buffer_writes_) && (physical_address_pointer_source_data_.size() == 0) && input_data_.shader_id)
+    {
+        input_data_.internal_.uninteresting_shaders_.insert(input_data_.shader_id);
+    }
 
     return false;
 }
@@ -3574,6 +3579,16 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     Deref(pointer)             = GetValue(result_id);
 
     // TODO: Compare pointer with candidates here and track
+
+    // If we are writing to function storage or to an image, we can assume it is not relevant for pbuffer pointer detection
+    if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) && (pointer.storage_class != spv::StorageClass::StorageClassImage))
+    {
+        // If this is a interpolated output value, we can assume it is not relevant for pbuffer pointer detection
+        if (!HasDecorator(pointer.result_id, spv::Decoration::DecorationFlat))
+        {
+            has_buffer_writes_ = true;
+        }
+    }
 
     values_stored_[pointer_id] = result_id;
 }

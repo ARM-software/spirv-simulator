@@ -47,6 +47,14 @@ struct PhysicalAddressCandidate
     bool verified = false;
 };
 
+// Used internally by the simulator, should not be touched or accessed by the user.
+struct InternalPersistentData
+{
+    // Any shader whose InputData shader ID is found here can be safely skipped
+    std::set<uint64_t> uninteresting_shaders_;
+};
+
+
 // ---------------------------------------------------------------------------
 //  Input structure
 //
@@ -94,8 +102,13 @@ struct InputData
     std::unordered_map<const void*, PhysicalAddressCandidate> candidates;
 
     // Optional value, a unique identifier for the input shader.
-    // If provided, this can massively speed up simulation time when used for many consequtive dispatches.
-    uint64_t shader_hash;
+    // If provided, this can allow the simulator to massively speed up simulation time
+    // for cases where the same shader is dispatched multiple times throughout a session.
+    uint64_t shader_id = 0;
+
+    // This should never be touched by the user.
+    // Used for internal optimization between dispatches.
+    InternalPersistentData internal_;
 };
 
 // ---------------------------------------------------------------------------
@@ -569,7 +582,11 @@ class SPIRVSimulator
   protected:
     SPIRVSimulator() = default;
 
+    bool done_ = false;
     bool is_execution_fork = false;
+
+    // If true, the simulated shader wrote something to non-image external memory, or to a non-interpolated output
+    bool has_buffer_writes_ = false;
 
     uint32_t num_result_ids_     = 0;
     uint32_t current_heap_index_ = 0;
@@ -664,7 +681,6 @@ class SPIRVSimulator
     virtual void        DecodeHeader();
     virtual void        ParseAll();
     virtual void        Validate();
-    virtual bool        CanEarlyOut();
     virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void        ExecuteInstructions();
     virtual void        CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
