@@ -8894,19 +8894,6 @@ void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
     uint32_t image_id       = instruction.words[3];
     uint32_t sampler_id     = instruction.words[4];
 
-    const Type& result_type  = GetTypeByTypeId(result_type_id);
-    const Type& image_type   = GetTypeByResultId(image_id);
-    const Type& sampler_type = GetTypeByResultId(sampler_id);
-
-    // TODO: Replace bare asserts
-    assert(result_type.kind == Type::Kind::SampledImage);
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.sampled == 0 || image_type.image.sampled == 1);
-    assert(image_type.image.dim != spv::Dim::DimSubpassData && image_type.image.dim != spv::Dim::DimBuffer);
-    assert(sampler_type.kind == Type::Kind::Sampler);
-
-    assert(result_type.sampled_image.image_type_id == GetTypeID(image_id));
-
     SampledImageV new_si{std::get<uint64_t>(GetValue(image_id)), std::get<uint64_t>(GetValue(sampler_id))};
     SetValue(result_id, new_si);
 }
@@ -8939,7 +8926,7 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpImageSampleImplicitLod);
 
-    uint32_t result_type_id   = instruction.words[1];
+    uint32_t type_id          = instruction.words[1];
     uint32_t result_id        = instruction.words[2];
     uint32_t sampled_image_id = instruction.words[3];
     uint32_t coordinate_id    = instruction.words[4];
@@ -8950,50 +8937,7 @@ void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
         image_operand_mask = instruction.words[5];
     }
 
-    // TODO: Load image operands if they exist
-
-    const Type& result_type        = GetTypeByTypeId(result_type_id);
-    const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
-    const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
-
-    // TODO: Replace bare asserts
-    assert(result_type.kind == Type::Kind::Vector);
-    assert(result_type.vector.elem_count == 4);
-    assert(sampled_image_type.kind == Type::Kind::SampledImage);
-    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Vector);
-
-    const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
-    const Type& image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
-
-    // TODO: Replace bare asserts
-    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.dim != spv::Dim::DimBuffer);
-    assert(image_type.image.multisampled == 0);
-
-    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
-
-    // TODO: Replace bare asserts
-    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
-
-    // TODO: Actually compute coordinates according to image operands
-    // TODO: Actually retrieve data from the image according to format
-
-    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
-    if (result_elem_type.kind == Type::Kind::Float)
-    {
-        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
-    }
-    else if (result_elem_type.scalar.is_signed)
-    {
-        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
-    }
-    else
-    {
-        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
-    }
-
-    SetValue(result_id, result_value);
+    SetValue(result_id, MakeDefault(type_id));
     SetIsArbitrary(result_id);
 }
 
@@ -9021,60 +8965,13 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpImageSampleExplicitLod);
 
-    uint32_t result_type_id     = instruction.words[1];
+    uint32_t type_id     = instruction.words[1];
     uint32_t result_id          = instruction.words[2];
     uint32_t sampled_image_id   = instruction.words[3];
     uint32_t coordinate_id      = instruction.words[4];
     uint32_t image_operand_mask = instruction.words[5];
 
-    // TODO: Load image operands (at least 1)
-
-    // TODO: Replace bare asserts
-    assert((image_operand_mask & spv::ImageOperandsLodMask) || (image_operand_mask & spv::ImageOperandsGradMask));
-
-    const Type& result_type        = GetTypeByTypeId(result_type_id);
-    const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
-    const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
-
-    // TODO: Replace bare asserts
-    assert(result_type.kind == Type::Kind::Vector);
-    assert(result_type.vector.elem_count == 4);
-    assert(sampled_image_type.kind == Type::Kind::SampledImage);
-    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Int ||
-           coordinate_type.kind == Type::Kind::Vector);
-
-    const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
-    const Type& image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
-
-    // TODO: Replace bare asserts
-    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.dim != spv::Dim::DimBuffer);
-    assert(image_type.image.multisampled == 0);
-
-    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
-
-    // TODO: Replace bare asserts
-    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
-
-    // TODO: Actually compute coordinates according to image operands
-    // TODO: Actually retrieve data from the image according to format
-
-    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
-    if (result_elem_type.kind == Type::Kind::Float)
-    {
-        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
-    }
-    else if (result_elem_type.scalar.is_signed)
-    {
-        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
-    }
-    else
-    {
-        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
-    }
-
-    SetValue(result_id, result_value);
+    SetValue(result_id, MakeDefault(type_id));
     SetIsArbitrary(result_id);
 }
 
@@ -9099,7 +8996,7 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpImageFetch);
 
-    uint32_t result_type_id = instruction.words[1];
+    uint32_t type_id        = instruction.words[1];
     uint32_t result_id      = instruction.words[2];
     uint32_t image_id       = instruction.words[3];
     uint32_t coordinate_id  = instruction.words[4];
@@ -9110,45 +9007,7 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
         image_operand_mask = instruction.words[5];
     }
 
-    // TODO: Load image operands if they exist
-
-    const Type& result_type     = GetTypeByTypeId(result_type_id);
-    const Type& image_type      = GetTypeByResultId(image_id);
-    const Type& coordinate_type = GetTypeByResultId(coordinate_id);
-
-    // TODO: Replace bare asserts
-    assert(result_type.kind == Type::Kind::Vector);
-    assert(result_type.vector.elem_count == 4);
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.dim != spv::Dim::DimCube);
-    assert(image_type.image.sampled == 1);
-    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Vector);
-
-    const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
-    const Type& sampled_type     = GetTypeByTypeId(image_type.image.sampled_type_id);
-
-    // TODO: Replace bare asserts
-    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
-    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
-
-    // TODO: Actually compute coordinates according to image operands
-    // TODO: Actually retrieve data from the image according to format
-
-    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
-    if (result_elem_type.kind == Type::Kind::Float)
-    {
-        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
-    }
-    else if (result_elem_type.scalar.is_signed)
-    {
-        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
-    }
-    else
-    {
-        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
-    }
-
-    SetValue(result_id, result_value);
+    SetValue(result_id, MakeDefault(type_id));
     SetIsArbitrary(result_id);
 }
 
@@ -9176,7 +9035,7 @@ void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpImageGather);
 
-    uint32_t result_type_id   = instruction.words[1];
+    uint32_t type_id          = instruction.words[1];
     uint32_t result_id        = instruction.words[2];
     uint32_t sampled_image_id = instruction.words[3];
     uint32_t coordinate_id    = instruction.words[4];
@@ -9188,63 +9047,7 @@ void SPIRVSimulator::Op_ImageGather(const Instruction& instruction)
         image_operand_mask = instruction.words[6];
     }
 
-    // TODO: Load image operands if they exist
-
-    const Type& result_type        = GetTypeByTypeId(result_type_id);
-    const Type& sampled_image_type = GetTypeByResultId(sampled_image_id);
-    const Type& coordinate_type    = GetTypeByResultId(coordinate_id);
-    const Type& component_type     = GetTypeByResultId(component_id);
-
-    // TODO: Replace bare asserts
-    assert(result_type.kind == Type::Kind::Vector);
-    assert(result_type.vector.elem_count == 4);
-    assert(sampled_image_type.kind == Type::Kind::SampledImage);
-    assert(coordinate_type.kind == Type::Kind::Float || coordinate_type.kind == Type::Kind::Vector);
-    assert(component_type.kind == Type::Kind::Int);
-    assert(component_type.scalar.width == 32);
-
-    const Type&  result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
-    const Type&  image_type       = GetTypeByTypeId(sampled_image_type.sampled_image.image_type_id);
-    const Value& component_value  = GetValue(component_id);
-
-    // TODO: Replace bare asserts
-    assert(result_elem_type.kind == Type::Kind::Int || result_elem_type.kind == Type::Kind::Float);
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube ||
-           image_type.image.dim == spv::Dim::DimRect);
-    assert(image_type.image.multisampled == 0);
-
-    if (component_type.scalar.is_signed)
-    {
-        assert(std::get<int64_t>(component_value) >= 0 && std::get<int64_t>(component_value) < 4);
-    }
-    else
-    {
-        assert(std::get<uint64_t>(component_value) < 4);
-    }
-
-    const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
-
-    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
-
-    // TODO: Actually compute coordinates according to image operands
-    // TODO: Actually retrieve data from the image according to format
-
-    std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
-    if (result_elem_type.kind == Type::Kind::Float)
-    {
-        result_value->elems.resize(4, double(std::numeric_limits<double>::max()));
-    }
-    else if (result_elem_type.scalar.is_signed)
-    {
-        result_value->elems.resize(4, int64_t(std::numeric_limits<int64_t>::max()));
-    }
-    else
-    {
-        result_value->elems.resize(4, uint64_t(std::numeric_limits<uint64_t>::max()));
-    }
-
-    SetValue(result_id, result_value);
+    SetValue(result_id, MakeDefault(type_id));
     SetIsArbitrary(result_id);
 }
 
@@ -9290,25 +9093,11 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
 
-    // TODO: Load image operands if they exist
-
     const Type& result_type     = GetTypeByTypeId(result_type_id);
     const Type& image_type      = GetTypeByResultId(image_id);
     const Type& coordinate_type = GetTypeByResultId(coordinate_id);
 
-    // TODO: Replace bare asserts
-    assert(result_type.kind == Type::Kind::Int || result_type.kind == Type::Kind::Float ||
-           result_type.kind == Type::Kind::Vector);
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.dim != spv::Dim::DimCube);
-    assert(image_type.image.sampled == 0 || image_type.image.sampled == 2);
-    assert(coordinate_type.kind == Type::Kind::Int || coordinate_type.kind == Type::Kind::Float ||
-           coordinate_type.kind == Type::Kind::Vector);
-
     const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
-
-    // TODO: Actually compute coordinates according to image operands
-    // TODO: Actually retrieve data from the image according to format
 
     if (result_type.kind == Type::Kind::Int)
     {
@@ -9324,26 +9113,31 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
     }
     if (result_type.kind == Type::Kind::Float)
     {
-        assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == Type::Kind::Float);
-        SetValue(result_id, double(0));
+        SetValue(result_id, std::numeric_limits<double>::max());
     }
     if (result_type.kind == Type::Kind::Vector)
     {
         const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
-        assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == result_elem_type.kind);
 
         std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
         if (result_elem_type.kind == Type::Kind::Float)
         {
-            result_value->elems.resize(result_type.vector.elem_count, double(std::numeric_limits<double>::max()));
+            result_value->elems.resize(result_type.vector.elem_count, std::numeric_limits<double>::max());
         }
-        else if (result_elem_type.scalar.is_signed)
+        else if (result_elem_type.kind == Type::Kind::Int)
         {
-            result_value->elems.resize(result_type.vector.elem_count, int64_t(std::numeric_limits<int64_t>::max()));
+            if (result_elem_type.scalar.is_signed)
+            {
+                result_value->elems.resize(result_type.vector.elem_count, std::numeric_limits<int64_t>::max());
+            }
+            else
+            {
+                result_value->elems.resize(result_type.vector.elem_count, std::numeric_limits<uint64_t>::max());
+            }
         }
         else
         {
-            result_value->elems.resize(result_type.vector.elem_count, uint64_t(std::numeric_limits<uint64_t>::max()));
+            assertx("SPIRV simulator: Invalid type in output vector for OpImageRead");
         }
 
         SetValue(result_id, result_value);
@@ -9384,22 +9178,7 @@ void SPIRVSimulator::Op_ImageWrite(const Instruction& instruction)
     {
         image_operand_mask = instruction.words[5];
     }
-
-    // TODO: Load image operands if they exist
-
-    const Type& image_type      = GetTypeByResultId(image_id);
-    const Type& coordinate_type = GetTypeByResultId(coordinate_id);
-    const Type& texel_type      = GetTypeByResultId(texel_id);
-    const Type& texel_elem_type =
-        (texel_type.kind == Type::Kind::Vector ? GetTypeByTypeId(texel_type.vector.elem_type_id) : texel_type);
-
-    // TODO: Replace bare asserts
-    assert(image_type.kind == Type::Kind::Image);
-    assert(image_type.image.sampled == 0 || image_type.image.sampled == 2);
-    assert(image_type.image.dim != spv::Dim::DimSubpassData);
-    assert(coordinate_type.kind == Type::Kind::Int || coordinate_type.kind == Type::Kind::Float ||
-           coordinate_type.kind == Type::Kind::Vector);
-    assert(texel_elem_type.kind == GetTypeByTypeId(image_type.image.sampled_type_id).kind);
+    // Currently a NOP
 }
 
 void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
@@ -9432,12 +9211,7 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
     const Type& result_type = GetTypeByTypeId(result_type_id);
     const Type& image_type  = GetTypeByResultId(image_id);
 
-    // TODO: Replace bare asserts
-    assert(image_type.kind == Type::Kind::Image);
-
     SetIsArbitrary(result_id);
-
-    // TODO: Retrieve actual size instead of fake size
 
     std::vector<uint64_t> size;
     switch (image_type.image.dim)
