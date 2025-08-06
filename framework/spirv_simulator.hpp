@@ -92,6 +92,10 @@ struct InputData
     // and raise an error if it finds a physical address pointer with no candidate in this list.
     // If the map is empty all candidate related code and functionality will be skipped.
     std::unordered_map<const void*, PhysicalAddressCandidate> candidates;
+
+    // Optional value, a unique identifier for the input shader.
+    // If provided, this can massively speed up simulation time when used for many consequtive dispatches.
+    uint64_t shader_hash;
 };
 
 // ---------------------------------------------------------------------------

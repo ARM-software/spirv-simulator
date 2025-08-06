@@ -3498,7 +3498,30 @@ void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction)
     Behavior is undefined unless it is a valid <id> for the value 0 when the OpTypeImage has MS of 0.
     */
     assert(instruction.opcode == spv::Op::OpImageTexelPointer);
-    assertx("SPIRV simulator: Op_ImageTexelPointer is currently unimplemented");
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t image_id  = instruction.words[3];
+    uint32_t coord_id  = instruction.words[4];
+    uint32_t sample_id = instruction.words[5];
+
+    const Type& type = GetTypeByTypeId(type_id);
+
+    assertm(type.kind == Type::Kind::Pointer, "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
+    assertm(type.pointer.storage_class == spv::StorageClass::StorageClassImage, "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
+
+    Value init = MakeDefault(type.pointer.pointee_type_id);
+    PointerV new_pointer{
+        HeapAllocate(spv::StorageClass::StorageClassImage, init),
+        type_id,
+        result_id,
+        spv::StorageClass::StorageClassImage,
+        0,
+        {}
+    };
+
+    SetValue(result_id, new_pointer);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_Load(const Instruction& instruction)
