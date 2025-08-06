@@ -6303,8 +6303,10 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpUMod);
 
-    uint32_t type_id   = instruction.words[1];
-    uint32_t result_id = instruction.words[2];
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
 
     const Type& type = GetTypeByTypeId(type_id);
 
@@ -6313,8 +6315,8 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
 
-        const Value& val_op1 = GetValue(instruction.words[3]);
-        const Value& val_op2 = GetValue(instruction.words[4]);
+        const Value& val_op1 = GetValue(operand1_id);
+        const Value& val_op2 = GetValue(operand2_id);
 
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
                     std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
@@ -6334,7 +6336,19 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
                         std::holds_alternative<uint64_t>(vec2->elems[i]),
                     "SPIRV simulator: Found non-unsigned int operand in vector operands");
 
-            elem_result = std::get<uint64_t>(vec1->elems[i]) % std::get<uint64_t>(vec2->elems[i]);
+            uint64_t op2_val = std::get<uint64_t>(vec2->elems[i]);
+
+            if (op2_val == 0)
+            {
+                op2_val = 1;
+
+                if (!ValueIsArbitrary(operand2_id))
+                {
+                    std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_UMod, shader has undefined behaviour" << std::endl;
+                }
+            }
+
+            elem_result = std::get<uint64_t>(vec1->elems[i]) % op2_val;
 
             result_vec->elems.push_back(elem_result);
         }
@@ -6343,14 +6357,26 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
     }
     else if (type.kind == Type::Kind::Int)
     {
-        const Value& op1 = GetValue(instruction.words[3]);
-        const Value& op2 = GetValue(instruction.words[4]);
+        const Value& op1 = GetValue(operand1_id);
+        const Value& op2 = GetValue(operand2_id);
 
         Value result;
         assertm(std::holds_alternative<uint64_t>(op1) && std::holds_alternative<uint64_t>(op2),
                 "SPIRV simulator: Found non-unsigned int operand");
 
-        result = std::get<uint64_t>(op1) % std::get<uint64_t>(op2);
+        uint64_t op2_val = std::get<uint64_t>(op2);
+
+        if (op2_val == 0)
+        {
+            op2_val = 1;
+
+            if (!ValueIsArbitrary(operand2_id))
+            {
+                std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_UMod, shader has undefined behaviour" << std::endl;
+            }
+        }
+
+        result = std::get<uint64_t>(op1) % op2_val;
 
         SetValue(result_id, result);
     }
@@ -6359,7 +6385,7 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or unsigned-integer");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4])){
+    if (ValueIsArbitrary(operand1_id) || ValueIsArbitrary(operand2_id)){
         SetIsArbitrary(result_id);
     }
 }
