@@ -40,7 +40,7 @@ void DecodeInstruction(std::span<const uint32_t>& program_words, Instruction& in
 SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const InputData& input_data, bool verbose) :
     program_words_(std::move(program_words)), verbose_(verbose)
 {
-    if (input_data.shader_id && (input_data_.internal_.uninteresting_shaders_.contains(input_data.shader_id)))
+    if (input_data.shader_id && (input_data_.persistent_data.uninteresting_shaders.contains(input_data.shader_id)))
     {
         done_ = true;
         return;
@@ -299,7 +299,7 @@ bool SPIRVSimulator::Run()
 
     if ((!has_buffer_writes_) && (physical_address_pointer_source_data_.size() == 0) && input_data_.shader_id)
     {
-        input_data_.internal_.uninteresting_shaders_.insert(input_data_.shader_id);
+        input_data_.persistent_data.uninteresting_shaders.insert(input_data_.shader_id);
     }
 
     return false;
@@ -3580,14 +3580,19 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
 
     // TODO: Compare pointer with candidates here and track
 
-    // If we are writing to function storage or to an image, we can assume it is not relevant for pbuffer pointer detection
-    if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) && (pointer.storage_class != spv::StorageClass::StorageClassImage))
+    // If this is a non-interpolated output value, the shader may be important for pbuffer pointer detection
+    if (pointer.storage_class == spv::StorageClass::StorageClassOutput)
     {
-        // If this is a interpolated output value, we can assume it is not relevant for pbuffer pointer detection
-        if (!HasDecorator(pointer.result_id, spv::Decoration::DecorationFlat))
+        // TODO: Double check types, if this is a value that cant be interpolated, it may be flat even if not decorated as such
+        if (HasDecorator(pointer.result_id, spv::Decoration::DecorationFlat))
         {
             has_buffer_writes_ = true;
         }
+    }
+    else if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) && (pointer.storage_class != spv::StorageClass::StorageClassImage))
+    {
+        // If we are writing to any storage class that is not function or image, the shader may be important for pbuffer pointer detection
+        has_buffer_writes_ = true;
     }
 
     values_stored_[pointer_id] = result_id;

@@ -47,11 +47,11 @@ struct PhysicalAddressCandidate
     bool verified = false;
 };
 
-// Used internally by the simulator, should not be touched or accessed by the user.
+// Used internally by the simulator, can be passed between invocations by copying it from one invocation to another to enable some optimizations.
 struct InternalPersistentData
 {
     // Any shader whose InputData shader ID is found here can be safely skipped
-    std::set<uint64_t> uninteresting_shaders_;
+    std::set<uint64_t> uninteresting_shaders;
 };
 
 
@@ -106,9 +106,8 @@ struct InputData
     // for cases where the same shader is dispatched multiple times throughout a session.
     uint64_t shader_id = 0;
 
-    // This should never be touched by the user.
     // Used for internal optimization between dispatches.
-    InternalPersistentData internal_;
+    InternalPersistentData persistent_data;
 };
 
 // ---------------------------------------------------------------------------
