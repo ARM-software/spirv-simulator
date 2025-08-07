@@ -321,27 +321,29 @@ using Value = std::variant<std::monostate,
 
 struct PointerV
 {
-    // Always the index of the value that this pointer points to
-    uint32_t heap_index;
-    // The TypeID of this pointer (not the pointee)
-    uint32_t type_id;
-    // The result ID of the instruction that made this pointer (if appliccable, this can be 0)
-    uint32_t result_id;
+    // Either an index (if storage class is function), or the actual pointer value
+    // This always points to host memory, it must be remapped for pbuffer pointers to get the GPU pointer
+    uint64_t pointer_handle;
+
+    // The following two values refer to the base pointers type and result id.
+    // Eg. a pointer created from OpAccessChain will keep these as they were in the base pointer.
+
+    // The TypeID of this pointers base (not the pointee)
+    uint32_t base_type_id;
+    // The result ID of the instruction that made this pointer's base (if appliccable, this can be 0)
+    uint32_t base_result_id;
 
     uint32_t storage_class;
 
-    // Optional value, holds the raw pointer value when applicable
-    uint64_t raw_pointer;
-
-    // If it points to a value inside a composite, aggregate or array value. This is the indirection path within said
-    // value.
+    // If it points to a value inside a composite, aggregate or array value.
+    // This is the indirection path within said value.
     std::vector<uint32_t> idx_path;
 };
 
 inline bool operator==(const PointerV& a, const PointerV& b)
 {
-    return a.heap_index == b.heap_index && a.type_id == b.type_id && a.result_id == b.result_id &&
-           a.storage_class == b.storage_class && a.raw_pointer == b.raw_pointer && a.idx_path == b.idx_path;
+    return a.pointer_handle == b.pointer_handle && a.base_type_id == b.base_type_id && a.base_result_id == b.base_result_id &&
+           a.storage_class == b.storage_class && a.idx_path == b.idx_path;
 }
 
 struct SampledImageV
@@ -677,28 +679,32 @@ class SPIRVSimulator
 
     // Helpers
     // TODO: Many more of these can be const, fix
-    virtual void        DecodeHeader();
-    virtual void        ParseAll();
-    virtual void        Validate();
-    virtual bool        ExecuteInstruction(const Instruction&, bool dummy_exec = false);
-    virtual void        ExecuteInstructions();
-    virtual void        CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
-    virtual std::string GetValueString(const Value&);
-    virtual std::string GetTypeString(const Type&);
-    virtual void        PrintInstruction(const Instruction&);
-    virtual void        HandleUnimplementedOpcode(const Instruction&);
-    virtual Value       MakeScalar(uint32_t type_id, const uint32_t*& words);
-    virtual Value       MakeDefault(uint32_t type_id, const uint32_t** initial_data = nullptr);
-    virtual Value&      Deref(const PointerV& ptr);
-    virtual Value&      GetValue(uint32_t result_id);
-    virtual void        SetValue(uint32_t result_id, const Value& value);
-    virtual const Type& GetTypeByTypeId(uint32_t type_id) const;
-    virtual const Type& GetTypeByResultId(uint32_t result_id) const;
-    virtual uint32_t    GetTypeID(uint32_t result_id) const;
-    virtual void        ExtractWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
+    virtual void         DecodeHeader();
+    virtual void         ParseAll();
+    virtual void         Validate();
+    virtual bool         ExecuteInstruction(const Instruction&, bool dummy_exec = false);
+    virtual void         ExecuteInstructions();
+    virtual void         CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
+    virtual std::string  GetValueString(const Value&);
+    virtual std::string  GetTypeString(const Type&);
+    virtual void         PrintInstruction(const Instruction&);
+    virtual void         HandleUnimplementedOpcode(const Instruction&);
+    virtual Value        MakeScalar(uint32_t type_id, const uint32_t*& words);
+    virtual Value        MakeDefault(uint32_t type_id, const uint32_t** initial_data = nullptr);
+    virtual uint64_t     RemapHostToClientPointer(uint64_t host_pointer) const;
+    virtual void         WritePointer(const PointerV& ptr, const Value& value);
+    virtual Value        ReadPointer(const PointerV& ptr);
+    virtual const Value& GetValue(uint32_t result_id);
+    virtual void         SetValue(uint32_t result_id, const Value& value);
+    virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
+    virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
+    virtual uint32_t     GetTypeID(uint32_t result_id) const;
+    virtual void         WriteWords(std::byte* external_pointer, uint32_t type_id, const Value& value);
+    virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
     virtual uint64_t                    GetPointerOffset(const PointerV& pointer_value);
     virtual size_t                      CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
     virtual size_t                      GetBitizeOfType(uint32_t type_id);
+    virtual uint32_t                    GetTargetPointerType(const PointerV& pointer);
     virtual size_t                      GetBitizeOfTargetType(const PointerV& pointer);
     virtual void                        GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
