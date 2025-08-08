@@ -3768,6 +3768,19 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
 
     // TODO: Compare pointer with candidates here and track
     SetValue(result_id, ReadPointer(pointer));
+
+    if (pointer.storage_class == spv::StorageClass::StorageClassInput || pointer.storage_class == spv::StorageClass::StorageClassOutput)
+    {
+        SetIsArbitrary(result_id);
+    }
+
+    if (values_stored_.find(pointer_id) != values_stored_.end())
+    {
+        if (ValueIsArbitrary(values_stored_[pointer_id]))
+        {
+            SetIsArbitrary(result_id);
+        }
+    }
 }
 
 void SPIRVSimulator::Op_Store(const Instruction& instruction)
@@ -3892,6 +3905,11 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
     }
 
     // TODO: Compare pointer with candidates here and track
+
+    if (ValueIsArbitrary(base_id))
+    {
+        SetIsArbitrary(result_id);
+    }
 
     SetValue(result_id, new_pointer);
 }
