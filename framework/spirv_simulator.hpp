@@ -321,8 +321,8 @@ using Value = std::variant<std::monostate,
 
 struct PointerV
 {
-    // Either an index (if storage class is function), or the actual pointer value
-    // This always points to host memory, it must be remapped for pbuffer pointers to get the GPU pointer
+    // Either an index (if the storage class is stored in internal heaps), or the actual pointer value
+    // If it is a pointer, it always points to host memory, it must be remapped for pbuffer pointers to get the GPU pointer
     uint64_t pointer_handle;
 
     // The following two values refer to the base pointers type and result id.
@@ -699,7 +699,7 @@ class SPIRVSimulator
     virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t     GetTypeID(uint32_t result_id) const;
-    virtual void         WriteWords(std::byte* external_pointer, uint32_t type_id, const Value& value);
+    virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value);
     virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
     virtual uint64_t                    GetPointerOffset(const PointerV& pointer_value);
     virtual size_t                      CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);

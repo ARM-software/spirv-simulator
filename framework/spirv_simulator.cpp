@@ -1406,7 +1406,7 @@ void SPIRVSimulator::ReadWords(const std::byte*       external_pointer,
     }
 }
 
-void SPIRVSimulator::WriteWords(std::byte* external_pointer,
+void SPIRVSimulator::WriteValue(std::byte* external_pointer,
                                 uint32_t type_id,
                                 const Value& value)
 {
@@ -1433,7 +1433,7 @@ void SPIRVSimulator::WriteWords(std::byte* external_pointer,
                 external_pointer + GetDecoratorLiteral(type_id, member_offset_index, spv::Decoration::DecorationOffset);
 
 
-            WriteWords(member_offset_pointer, member_type_id, agg_ptr->elems[member_offset_index]);
+            WriteValue(member_offset_pointer, member_type_id, agg_ptr->elems[member_offset_index]);
             member_offset_index += 1;
         }
     }
@@ -1454,7 +1454,7 @@ void SPIRVSimulator::WriteWords(std::byte* external_pointer,
         for (uint64_t array_index = 0; array_index < array_len; ++array_index)
         {
             std::byte* member_offset_pointer = external_pointer + array_stride * array_index;
-            WriteWords(member_offset_pointer, type.array.elem_type_id, agg_ptr->elems[array_index]);
+            WriteValue(member_offset_pointer, type.array.elem_type_id, agg_ptr->elems[array_index]);
         }
     }
     else if (type.kind == Type::Kind::Matrix)
@@ -1495,7 +1495,7 @@ void SPIRVSimulator::WriteWords(std::byte* external_pointer,
                     member_offset_pointer =
                         external_pointer + col_index * component_stride + row_index * bytes_per_subcomponent;
                 }
-                WriteWords(member_offset_pointer, col_type.vector.elem_type_id, column_val->elems[row_index]);
+                WriteValue(member_offset_pointer, col_type.vector.elem_type_id, column_val->elems[row_index]);
             }
         }
     }
@@ -1511,7 +1511,7 @@ void SPIRVSimulator::WriteWords(std::byte* external_pointer,
         for (uint64_t elem_index = 0; elem_index < type.vector.elem_count; ++elem_index)
         {
             std::byte* member_offset_pointer = external_pointer + scalar_width * elem_index;
-            WriteWords(member_offset_pointer, type.array.elem_type_id, vector_ptr->elems[elem_index]);
+            WriteValue(member_offset_pointer, type.array.elem_type_id, vector_ptr->elems[elem_index]);
         }
     }
     else if (type.kind == Type::Kind::BoolT)
@@ -2108,7 +2108,8 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassOutput)
+        type.pointer.storage_class == spv::StorageClass::StorageClassOutput ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassImage)
     {
         Value* value = &Heap(type.pointer.storage_class)[ptr.pointer_handle];
         for (size_t depth = 0; depth < ptr.idx_path.size(); ++depth)
@@ -2155,7 +2156,7 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
 
         std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
 
-        WriteWords(external_pointer, type.pointer.pointee_type_id, out_value);
+        WriteValue(external_pointer, type.pointer.pointee_type_id, out_value);
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
@@ -2180,12 +2181,13 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
         return MakeDefault(target_type_id);
     }
 
-    // These can have init values, so we cant lazy load them
+    // These are stored on the internal heaps
     if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction  ||
         type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassOutput)
+        type.pointer.storage_class == spv::StorageClass::StorageClassOutput ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassImage)
     {
         Value* value = &Heap(type.pointer.storage_class)[ptr.pointer_handle];
         for (size_t depth = 0; depth < ptr.idx_path.size(); ++depth)
