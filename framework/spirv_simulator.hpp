@@ -590,8 +590,8 @@ class SPIRVSimulator
     bool has_buffer_writes_ = false;
 
     uint32_t num_result_ids_     = 0;
-    uint32_t current_heap_index_ = 0;
     uint64_t current_fork_index_ = 0;
+    uint32_t current_heap_index_ = 1;
 
     // Parsing artefacts
     InputData input_data_;
@@ -733,6 +733,11 @@ class SPIRVSimulator
     virtual uint32_t HeapAllocate(uint32_t sc, const Value& init)
     {
         auto& heap = Heap(sc);
+
+        // Index 0 has special meaning, keep a dummy value there
+        if (heap.size() == 0) {
+            heap.push_back(std::monostate{});
+        }
 
         uint32_t return_index = heap.size();
         if (sc == spv::StorageClass::StorageClassFunction)
