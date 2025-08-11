@@ -1399,7 +1399,7 @@ void SPIRVSimulator::ReadWords(const std::byte*       external_pointer,
             }
 
             size_t output_index = buffer_data.size();
-            buffer_data.reserve(output_index + std::ceil((double)bytes_to_extract / 4.0));
+            buffer_data.resize(output_index + std::ceil((double)bytes_to_extract / 4.0));
             std::memcpy(&(buffer_data[output_index]), external_pointer + ext_ptr_offset, bytes_to_extract);
             ext_ptr_offset += bytes_to_extract;
         }
