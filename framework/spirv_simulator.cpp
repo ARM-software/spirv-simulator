@@ -4089,6 +4089,19 @@ void SPIRVSimulator::Op_Return(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpReturn);
 
+
+#ifdef DEBUG_BUILD
+    // Clear the heap for better error checking
+    uint32_t stack_heap_index = call_stack_.back().func_heap_index;
+    for (auto heap_index = stack_heap_index; heap_index < current_heap_index_;
+         ++heap_index) {
+      function_heap_[heap_index] = std::monostate{};
+    }
+    // TODO: Maybe clear locals as well
+#endif
+
+    current_heap_index_ = call_stack_.back().func_heap_index;
+
     call_stack_.pop_back();
 }
 
@@ -4108,28 +4121,28 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
 
     uint32_t value_id         = instruction.words[1];
     uint32_t result_id        = call_stack_.back().result_id;
-    uint32_t stack_heap_index = call_stack_.back().func_heap_index;
     Value    return_value     = GetValue(value_id);
 
-    // Clear the heap for better error checking, we could disable this to speed things up slightly
+#ifdef DEBUG_BUILD
+    // Clear the heap for better error checking
+    uint32_t stack_heap_index = call_stack_.back().func_heap_index;
     for (auto heap_index = stack_heap_index; heap_index < current_heap_index_; ++ heap_index)
     {
         function_heap_[heap_index] = std::monostate{};
     }
-
     // TODO: Maybe clear locals as well
+#endif
 
-    current_heap_index_ = call_stack_.back().func_heap_index;
+  current_heap_index_ = call_stack_.back().func_heap_index;
 
-    call_stack_.pop_back();
+  call_stack_.pop_back();
 
-    if (call_stack_.size())
-    {
-        SetValue(result_id, return_value);
-        if (ValueIsArbitrary(value_id)){
-            SetIsArbitrary(result_id);
-        }
+  if (call_stack_.size()) {
+    SetValue(result_id, return_value);
+    if (ValueIsArbitrary(value_id)) {
+      SetIsArbitrary(result_id);
     }
+  }
 }
 
 void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
