@@ -47,13 +47,13 @@ struct PhysicalAddressCandidate
     bool verified = false;
 };
 
-// Used internally by the simulator, can be passed between invocations by copying it from one invocation to another to enable some optimizations.
+// Used internally by the simulator, can be passed between invocations by copying it from one invocation to another to
+// enable some optimizations.
 struct InternalPersistentData
 {
     // Any shader whose InputData shader ID is found here can be safely skipped
     std::set<uint64_t> uninteresting_shaders;
 };
-
 
 // ---------------------------------------------------------------------------
 //  Input structure
@@ -79,7 +79,8 @@ struct InputData
     std::unordered_map<uint64_t, std::unordered_map<size_t, size_t>> rt_array_lengths;
 
     // SpecId -> byte offset
-    // For each SpecID this should give the offset (in bytes) to the given specialization constant in specialization_constants
+    // For each SpecID this should give the offset (in bytes) to the given specialization constant in
+    // specialization_constants
     std::unordered_map<uint32_t, size_t> specialization_constant_offsets;
     const void*                          specialization_constants = nullptr;
 
@@ -248,6 +249,10 @@ struct Type
     {
         uint32_t name;
     };
+    struct StructTypeData
+    {
+        uint32_t id; // The issue here is that even having the same data layout, structs are different types
+    };
 
     union
     {
@@ -259,6 +264,7 @@ struct Type
         ImageTypeData        image;
         SampledImageTypeData sampled_image;
         OpaqueTypeData       opaque;
+        StructTypeData       structure;
     };
     Type() : kind(Kind::Void) { scalar = { 0, false }; }
 
@@ -301,6 +307,38 @@ struct Type
         t.matrix = MatrixTypeData{ .col_type_id = column_type_id, .col_count = column_count };
         return t;
     }
+
+    static Type Struct()
+    {
+        Type t;
+        t.kind         = Kind::Struct;
+        t.structure.id = 0;
+        return t;
+    }
+
+    static Type Struct(uint32_t struct_id)
+    {
+        Type t;
+        t.kind         = Kind::Struct;
+        t.structure.id = struct_id;
+        return t;
+    }
+
+    static Type Array(uint32_t elem_type_id, uint32_t length_id)
+    {
+        Type t;
+        t.kind  = Kind::Array;
+        t.array = ArrayTypeData{ .elem_type_id = elem_type_id, .length_id = length_id };
+        return t;
+    }
+
+    static Type RuntimeArray(uint32_t elem_type_id)
+    {
+        Type t;
+        t.kind  = Kind::RuntimeArray;
+        t.array = ArrayTypeData{ .elem_type_id = elem_type_id, .length_id = 0 };
+        return t;
+    }
 };
 
 struct AggregateV;
@@ -322,7 +360,8 @@ using Value = std::variant<std::monostate,
 struct PointerV
 {
     // Either an index (if the storage class is stored in internal heaps), or the actual pointer value
-    // If it is a pointer, it always points to host memory, it must be remapped for pbuffer pointers to get the GPU pointer
+    // If it is a pointer, it always points to host memory, it must be remapped for pbuffer pointers to get the GPU
+    // pointer
     uint64_t pointer_handle;
 
     // The following two values refer to the base pointers type and result id.
@@ -342,8 +381,8 @@ struct PointerV
 
 inline bool operator==(const PointerV& a, const PointerV& b)
 {
-    return a.pointer_handle == b.pointer_handle && a.base_type_id == b.base_type_id && a.base_result_id == b.base_result_id &&
-           a.storage_class == b.storage_class && a.idx_path == b.idx_path;
+    return a.pointer_handle == b.pointer_handle && a.base_type_id == b.base_type_id &&
+           a.base_result_id == b.base_result_id && a.storage_class == b.storage_class && a.idx_path == b.idx_path;
 }
 
 struct SampledImageV
@@ -423,6 +462,10 @@ inline bool operator==(const MatrixV& a, const MatrixV& b)
 
 struct AggregateV
 {
+    AggregateV() = default;
+    explicit AggregateV(std::initializer_list<Value> initializer_list) :
+        elems(initializer_list.begin(), initializer_list.end())
+    {}
     std::vector<Value> elems;
 }; // array or struct
 
@@ -513,10 +556,13 @@ void extract_bytes(std::vector<std::byte>& output, T input, size_t num_bits)
 }
 
 template <typename T>
-T ReverseBits(T value, unsigned bitWidth) {
-    assert(std::is_unsigned<T>::value && "SPIRV simulator: Can only reverse the bits in unsigned integer types, cast first");
+T ReverseBits(T value, unsigned bitWidth)
+{
+    assert(std::is_unsigned<T>::value &&
+           "SPIRV simulator: Can only reverse the bits in unsigned integer types, cast first");
     T result = 0;
-    for (unsigned i = 0; i < bitWidth; ++i) {
+    for (unsigned i = 0; i < bitWidth; ++i)
+    {
         result <<= 1;
         result |= (value & 1);
         value >>= 1;
@@ -524,17 +570,20 @@ T ReverseBits(T value, unsigned bitWidth) {
     return result;
 }
 
-template<typename T>
-T ArithmeticRightShiftUnsigned(T value, unsigned shift, unsigned bitWidth) {
-    assert(std::is_unsigned<T>::value && "SPIRV simulator: Can only arith shift the bits in unsigned integer types, cast first");
+template <typename T>
+T ArithmeticRightShiftUnsigned(T value, unsigned shift, unsigned bitWidth)
+{
+    assert(std::is_unsigned<T>::value &&
+           "SPIRV simulator: Can only arith shift the bits in unsigned integer types, cast first");
 
     if (shift == 0 || shift >= bitWidth)
         return value;
 
-    T msb = (value >> (bitWidth - 1)) & 1;
+    T msb     = (value >> (bitWidth - 1)) & 1;
     T shifted = value >> shift;
 
-    if (msb) {
+    if (msb)
+    {
         T mask = ((T(1) << shift) - 1) << (bitWidth - shift);
         shifted |= mask;
     }
@@ -583,7 +632,7 @@ class SPIRVSimulator
   protected:
     SPIRVSimulator() = default;
 
-    bool done_ = false;
+    bool done_             = false;
     bool is_execution_fork = false;
 
     // If true, the simulated shader wrote something to non-image external memory, or to a non-interpolated output
@@ -613,7 +662,7 @@ class SPIRVSimulator
     // Any result ID or pointer object ID in this set, can be treated as if it has any valid value for
     // the given type
     std::set<uint32_t> arbitrary_values_;
-    Type void_type_;
+    Type               void_type_;
 
     // This maps the result ID of pointers to the result ID of values stored
     // through them
@@ -640,14 +689,14 @@ class SPIRVSimulator
     uint32_t                                   prev_defined_func_id_;
     std::unordered_map<uint32_t, FunctionInfo> funcs_;
 
-    uint32_t prev_block_id_          = 0;
-    uint32_t current_block_id_       = 0;
-    uint32_t current_merge_block_id_ = 0;
+    uint32_t prev_block_id_             = 0;
+    uint32_t current_block_id_          = 0;
+    uint32_t current_merge_block_id_    = 0;
     uint32_t current_continue_block_id_ = 0;
 
     // Execution fork data, used to prevent infinte loops in SPIRV loop constructs
-    // If we encounter a conditional that branches to the target ID based on the trigger ID, we assume completion and return from the fork.
-    // The result ID of the boolean value that triggered the fork
+    // If we encounter a conditional that branches to the target ID based on the trigger ID, we assume completion and
+    // return from the fork. The result ID of the boolean value that triggered the fork
     uint32_t fork_abort_trigger_id_ = 0;
     // The result ID of the label we would have branched to, but diverged away from, when creating the fork
     uint64_t fork_abort_target_id_ = 0;
@@ -679,12 +728,13 @@ class SPIRVSimulator
 
     // Helpers
     // TODO: Many more of these can be const, fix
-    virtual void         DecodeHeader();
-    virtual void         ParseAll();
-    virtual void         Validate();
-    virtual bool         ExecuteInstruction(const Instruction&, bool dummy_exec = false);
-    virtual void         ExecuteInstructions();
-    virtual void         CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
+    virtual void DecodeHeader();
+    virtual void ParseAll();
+    virtual void Validate();
+    virtual bool ExecuteInstruction(const Instruction&, bool dummy_exec = false);
+    virtual void ExecuteInstructions();
+    virtual void
+    CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
     virtual std::string  GetValueString(const Value&);
     virtual std::string  GetTypeString(const Type&);
     virtual void         PrintInstruction(const Instruction&);
@@ -700,24 +750,28 @@ class SPIRVSimulator
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t     GetTypeID(uint32_t result_id) const;
     virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value);
-    virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
-    virtual uint64_t                    GetPointerOffset(const PointerV& pointer_value);
-    virtual size_t                      CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
-    virtual size_t                      GetBitizeOfType(uint32_t type_id);
-    virtual uint32_t                    GetTargetPointerType(const PointerV& pointer);
-    virtual size_t                      GetBitizeOfTargetType(const PointerV& pointer);
-    virtual void                        GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
+    virtual void     ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
+    virtual uint64_t GetPointerOffset(const PointerV& pointer_value);
+    virtual size_t   CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
+    virtual size_t   GetBitizeOfType(uint32_t type_id);
+    virtual uint32_t GetTargetPointerType(const PointerV& pointer);
+    virtual size_t   GetBitizeOfTargetType(const PointerV& pointer);
+    virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator);
     virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator);
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0);
     virtual uint32_t
     GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0);
-    virtual bool  ValueIsArbitrary(uint32_t result_id) const { return arbitrary_values_.contains(result_id); };
-    virtual bool  PointeeValueIsArbitrary(const PointerV& pointer) const { (void)pointer; return false; };
-    virtual void  SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
-    virtual void  ClearIsArbitrary(uint32_t result_id) { arbitrary_values_.erase(result_id); };
-    virtual Value CopyValue(const Value& value) const;
+    virtual bool ValueIsArbitrary(uint32_t result_id) const { return arbitrary_values_.contains(result_id); };
+    virtual bool PointeeValueIsArbitrary(const PointerV& pointer) const
+    {
+        (void)pointer;
+        return false;
+    };
+    virtual void                SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
+    virtual void                ClearIsArbitrary(uint32_t result_id) { arbitrary_values_.erase(result_id); };
+    virtual Value               CopyValue(const Value& value) const;
     virtual std::vector<Value>& Heap(uint32_t sc)
     {
         if (sc == spv::StorageClass::StorageClassFunction)
@@ -735,7 +789,8 @@ class SPIRVSimulator
         auto& heap = Heap(sc);
 
         // Index 0 has special meaning, keep a dummy value there
-        if (heap.size() == 0) {
+        if (heap.size() == 0)
+        {
             heap.push_back(std::monostate{});
         }
 
