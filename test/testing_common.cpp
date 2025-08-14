@@ -1,7 +1,8 @@
 #include "testing_common.hpp"
+#include "spirv.hpp"
+#include "spirv_simulator.hpp"
 
-
-#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <variant>
 
@@ -56,6 +57,7 @@ std::ostream& operator<<(std::ostream& os, const SPIRVSimulator::Value& value)
     return os;
 }
 
+// Ideally, this should be generated from SPIRV spec
 std::string opcode_to_string(spv::Op opcode)
 {
     switch (opcode)
@@ -89,6 +91,14 @@ std::string opcode_to_string(spv::Op opcode)
         {
             return "/";
         }
+        case spv::OpVariable:
+        {
+            return "OpVariable";
+        }
+        case spv::OpCompositeConstruct:
+        {
+            return "OpCompositeConstruct";
+        }
         default:
             return "";
     }
@@ -96,10 +106,6 @@ std::string opcode_to_string(spv::Op opcode)
 
 std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParameters& parameters)
 {
-    for (const auto& [id, decorations] : parameters.decorations)
-    {
-        decorators_[id] = decorations;
-    }
 
     const uint32_t        result_id = NextId();
     std::vector<uint32_t> words{ parameters.opcode };
@@ -107,18 +113,20 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
     for (uint32_t op = 0; op < parameters.operands.size(); ++op)
     {
         const auto& type_variant = parameters.operand_types.at(op);
+        // Special handling for common types (raw words mostly)
         if (type_variant.index() == 0)
         {
             type_id = std::get<0>(type_variant);
 
             // Literals are special as they don't have id's
+            const auto& value_variant = parameters.operands.at(op);
+
             if (type_id == CommonTypes::literal)
             {
                 // Infer the characteristics from the result type?
-                CommonTypes result_type   = std::get<CommonTypes>(parameters.operand_types.at(0));
-                uint32_t    width         = types_[result_type].scalar.width;
-                bool        is_signed     = types_[result_type].scalar.is_signed;
-                const auto& value_variant = parameters.operands.at(op);
+                CommonTypes result_type = std::get<CommonTypes>(parameters.operand_types.at(0));
+                uint32_t    width       = types_[result_type].scalar.width;
+                bool        is_signed   = types_[result_type].scalar.is_signed;
                 switch (parameters.operands.at(op).index())
                 {
                     // uint64_t
@@ -172,6 +180,12 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
                     default:
                         std::cerr << "Cannot deduce literal type , must be a Scalar\n";
                 }
+                continue;
+            }
+            else if (type_id == CommonTypes::storage_class)
+            {
+                words.push_back(std::get<1>(value_variant));
+                continue;
             }
         }
         // Custom type, need to register or fetch already registered for this operand
@@ -188,18 +202,27 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
             else if (type.kind == ::SPIRVSimulator::Type::Kind::Array ||
                      type.kind == ::SPIRVSimulator::Type::Kind::RuntimeArray)
             {
-                auto it = std::ranges::find_if(types_, [&type](std::pair<uint32_t, ::SPIRVSimulator::Type> element) {
-                    const auto& [id, t] = element;
-                    return (t.kind == type.kind) && (t.array.elem_type_id == type.array.elem_type_id) &&
-                           (t.array.length_id == type.array.length_id);
-                });
-                if (it == types_.end())
+                uint32_t key = type.array.elem_type_id;
+                key ^= type.array.length_id + 0x9e3779b9u + (key << 6) + (key >> 2);
+                key += CommonTypes::num_types;
+
+                auto [it, inserted] = types_.try_emplace(key, type);
+                type_id             = it->first;
+            }
+            else if (type.kind == ::SPIRVSimulator::Type::Kind::Pointer)
+            {
+                uint32_t key = type.pointer.storage_class;
+                key ^= type.pointer.pointee_type_id + 0x9e3779b9u + (key << 6) + (key >> 2);
+                key += CommonTypes::num_types;
+
+                auto [it, inserted] = types_.try_emplace(key, type);
+                type_id             = it->first;
+
+                if (auto decorations_it = parameters.decorations.find(op);
+                    decorations_it != parameters.decorations.end())
                 {
-                    uint32_t hash = type.array.elem_type_id;
-                    hash ^= type.array.length_id + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-                    it = types_.emplace(CommonTypes::num_types + hash, type).first;
+                    decorators_[type.pointer.pointee_type_id] = decorations_it->second;
                 }
-                type_id = it->first;
             }
 
             EXPECT_CALL(*this, GetTypeByTypeId(type_id)).WillRepeatedly(ReturnRef(types_[type_id]));
@@ -213,5 +236,18 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
         EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(ReturnRef(types_[type_id]));
         EXPECT_CALL(*this, GetValue(op_id)).WillRepeatedly(ReturnRefOfCopy(parameters.operands.at(op)));
     }
+
     return words;
+}
+
+::SPIRVSimulator::InputData SPIRVSimulatorMockBase::prepare_input_data(const TestParameters& parameters)
+{
+    ::SPIRVSimulator::InputData inputs;
+
+    if (!parameters.push_constants_.empty())
+    {
+        inputs.push_constants = reinterpret_cast<const void*>(parameters.push_constants_.data());
+    }
+
+    return inputs;
 }

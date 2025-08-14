@@ -3,11 +3,20 @@
 #ifndef ARM_TESTING_COMMON_HPP
 #define ARM_TESTING_COMMON_HPP
 
-#include <ostream>
+#include <cassert>
+#include <cstddef>
+#include <cstring>
 #include <cstdint>
+
+#include <ostream>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
+
+#include <initializer_list>
+
+#include <type_traits>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -24,6 +33,7 @@ std::ostream& operator<<(std::ostream& os, SPIRVSimulator::Value const& v);
 enum CommonTypes : uint32_t
 {
     literal = 0,
+    storage_class,
     void_t,
     boolean,
     i32,
@@ -63,8 +73,11 @@ struct TestParameters
     spv::Op                                                                         opcode;
     std::unordered_map<uint32_t, SPIRVSimulator::Value>                             operands;
     std::unordered_map<uint32_t, std::variant<CommonTypes, ::SPIRVSimulator::Type>> operand_types;
-    std::vector<std::pair<uint32_t, std::vector<SPIRVSimulator::DecorationInfo>>>   decorations;
+    std::unordered_map<uint32_t, std::vector<SPIRVSimulator::DecorationInfo>>       decorations;
     std::string                                                                     death_message;
+
+    std::vector<uint8_t>        push_constants_;
+    ::SPIRVSimulator::InputData input_data;
 
     friend std::ostream& operator<<(std::ostream& os, TestParameters const& p)
     {
@@ -84,10 +97,43 @@ struct TestParameters
 template <typename T>
 concept TypeT = std::is_same_v<T, CommonTypes> || std::is_same_v<T, ::SPIRVSimulator::Type>;
 
+template <typename ValueT, typename U>
+struct variant_accepts : std::false_type
+{};
+
+template <typename... Types, typename U>
+struct variant_accepts<std::variant<Types...>, U> : std::disjunction<std::is_convertible<Types, U>...>
+{};
+
+template <typename T>
+concept ValueType = variant_accepts<::SPIRVSimulator::Value, T>::value;
+
 struct TestParametersBuilder
 {
     TestParameters build() { return std::exchange(params, {}); }
     TestParameters params;
+
+    template <typename T>
+    TestParametersBuilder& add_push_constants(const std::vector<T>& push_constants)
+    {
+        auto     bytes      = reinterpret_cast<const std::uint8_t*>(push_constants.data());
+        uint32_t byte_count = push_constants.size() * sizeof(T);
+
+        params.push_constants_.insert(params.push_constants_.end(), bytes, bytes + byte_count);
+
+        return *this;
+    }
+
+    template <typename T>
+    TestParametersBuilder& add_push_constant(const T& push_constant)
+    {
+        auto     bytes      = reinterpret_cast<const std::uint8_t*>(&push_constant);
+        uint32_t byte_count = sizeof(T);
+
+        params.push_constants_.insert(params.push_constants_.end(), bytes, bytes + byte_count);
+
+        return *this;
+    }
 
     TestParametersBuilder& set_opcode(spv::Op opcode)
     {
@@ -95,17 +141,20 @@ struct TestParametersBuilder
         return *this;
     }
 
-    template <TypeT T>
-    TestParametersBuilder& set_operand_at(uint32_t n, const SPIRVSimulator::Value& value, T type)
+    template <TypeT T, ValueType U>
+    TestParametersBuilder& set_operand_at(uint32_t                                              n,
+                                          const U&                                              value,
+                                          T                                                     type,
+                                          std::initializer_list<SPIRVSimulator::DecorationInfo> decoration_info = {})
     {
+        params.decorations[n].insert(params.decorations[n].end(), decoration_info.begin(), decoration_info.end());
         params.operands[n]      = value;
         params.operand_types[n] = type;
         return *this;
     }
 
-    template <TypeT T>
-    TestParametersBuilder&
-    set_operands_range(uint32_t index_of_first, T type, std::initializer_list<SPIRVSimulator::Value> vals)
+    template <TypeT T, ValueType U>
+    TestParametersBuilder& set_operands_range(uint32_t index_of_first, T type, std::initializer_list<U> vals)
     {
         for (size_t i = 0; i < vals.size(); ++i)
         {
@@ -115,11 +164,10 @@ struct TestParametersBuilder
         return *this;
     }
 
-    template <TypeT T>
+    template <TypeT T, ValueType U>
     TestParametersBuilder&
-    set_operands_at(std::initializer_list<uint32_t> indices, T type, std::initializer_list<SPIRVSimulator::Value> vals)
+    set_operands_at(std::initializer_list<uint32_t> indices, T type, std::initializer_list<U> vals)
     {
-        assert(indices.size() == vals.size() && "indices and vals must be same length");
         for (size_t i = 0; i < indices.size(); ++i)
         {
             params.operands[*(indices.begin() + i)]      = *(vals.begin() + i);
@@ -131,12 +179,6 @@ struct TestParametersBuilder
     TestParametersBuilder& set_death_message(const std::string& message)
     {
         params.death_message = message;
-        return *this;
-    }
-
-    TestParametersBuilder& set_decorations(uint32_t id, const std::vector<SPIRVSimulator::DecorationInfo>& decorations)
-    {
-        params.decorations.emplace_back(id, decorations);
         return *this;
     }
 };
@@ -160,7 +202,7 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
             { CommonTypes::i64, ::SPIRVSimulator::Type::Int(64, true) },
             { CommonTypes::u32, ::SPIRVSimulator::Type::Int(32, false) },
             { CommonTypes::u64, ::SPIRVSimulator::Type::Int(64, false) },
-            { CommonTypes::f64, ::SPIRVSimulator::Type::Float(32) },
+            { CommonTypes::f32, ::SPIRVSimulator::Type::Float(32) },
             { CommonTypes::f64, ::SPIRVSimulator::Type::Float(64) },
             { CommonTypes::bvec2, ::SPIRVSimulator::Type::Vector(CommonTypes::boolean, 2) },
             { CommonTypes::ivec2, ::SPIRVSimulator::Type::Vector(CommonTypes::i64, 2) },
@@ -196,8 +238,29 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     using SPIRVSimulator::SPIRVSimulator::ExecuteInstruction;
 
   protected:
-    uint32_t              NextId() { return id_counter++; }
-    std::vector<uint32_t> prepare_submission(const TestParameters& parameters);
+    uint32_t                    NextId() { return id_counter++; }
+    std::vector<uint32_t>       prepare_submission(const TestParameters& parameters);
+    ::SPIRVSimulator::InputData prepare_input_data(const TestParameters& parameters);
+
+    // needs to be rewritten through std::visit for mismatching variants
+    // Mismatching variants currently occur only for when comparing value to pointer
+    // assuming that that means use wanted to compare to pointee
+
+    // other cases can follow
+    // if user compares pointers assume that they indeed want to assert on the fact that
+    // pointer point to the same place
+    void expect_equal(const ::SPIRVSimulator::Value& a, const ::SPIRVSimulator::Value& b)
+    {
+        if (a.index() == b.index())
+        {
+            EXPECT_EQ(a, b);
+        }
+        else if (const ::SPIRVSimulator::PointerV* pointer = std::get_if<::SPIRVSimulator::PointerV>(&b); pointer)
+        {
+            ::SPIRVSimulator::Value v = ReadPointer(*pointer);
+            EXPECT_EQ(a, v);
+        }
+    }
 
   protected:
     uint32_t id_counter;

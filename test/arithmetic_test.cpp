@@ -110,7 +110,7 @@ std::vector<TestParameters> test_cases = {
                                     std::initializer_list<uint64_t>{ 0xffffffffffffffff, 0xffffffffffffffff }),
                                 std::make_shared<SPIRVSimulator::VectorV>(
                                     std::initializer_list<uint64_t>{ 0x8000000000000000, 0x8000000000000000 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 63, 63 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 63, 63 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpBitwiseXor)
@@ -137,9 +137,9 @@ std::vector<TestParameters> test_cases = {
         .set_operands_range(0,
                             CommonTypes::ivec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 4, 4 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 4, 4 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpINotEqual)
@@ -177,65 +177,62 @@ std::vector<TestParameters> test_cases = {
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpConvertFToS)
+        .set_operand_at(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 0, 1 }), CommonTypes::ivec2)
         .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 0, 1 }), CommonTypes::ivec2)
-        .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -0.68, 1.12 }),
-                        CommonTypes::vec2)
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -0.68, 1.12 }), CommonTypes::vec2)
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpISub)
         .set_operands_range(0,
                             CommonTypes::ivec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -1, -1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 2, 2 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1, -1 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
         .set_operands_range(0,
                             CommonTypes::vec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 4.0, 4.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 4.0, 4.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
         .set_operands_range(0,
                             CommonTypes::vec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -1.0, -1.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1.0, -1.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIMul)
         .set_operands_range(0,
                             CommonTypes::ivec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -2, -2 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -1, -1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 2, 2 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -2, -2 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1, -1 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFMul)
         .set_operands_range(0,
                             CommonTypes::vec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -2.0, -2.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -1.0, -1.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -2.0, -2.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1.0, -1.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpVectorTimesScalar)
-        .set_operands_range(
-            0,
-            CommonTypes::vec2,
-            std::initializer_list<SPIRVSimulator::Value>{
-                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -2.0, -2.0 }),
-                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -1.0, -1.0 }) })
+        .set_operands_range(0,
+                            CommonTypes::vec2,
+                            std::initializer_list<SPIRVSimulator::Value>{
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -2.0, -2.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1.0, -1.0 }) })
         .set_operand_at(2, 2.0, CommonTypes::f64)
         .build(),
     TestParametersBuilder()
@@ -243,12 +240,10 @@ std::vector<TestParameters> test_cases = {
         .set_operands_at(std::initializer_list<uint32_t>{ 0, 2 },
                          CommonTypes::vec2,
                          std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 7.0, 10.0 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }) })
+                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 5.0, 11.0 }),
+                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }) })
         .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                            std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }),
-                            std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 4.0 }) }),
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list{ 1.0, 2.0, 3.0, 4.0 }, 2),
                         CommonTypes::mat2)
         .build(),
     TestParametersBuilder()
@@ -257,15 +252,9 @@ std::vector<TestParameters> test_cases = {
             0,
             CommonTypes::mat2,
             std::initializer_list<SPIRVSimulator::Value>{
-                std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 7.0, 10.0 }),
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 15.0, 22.0 }) }),
-                std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }),
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 4.0 }) }),
-                std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<SPIRVSimulator::Value>{
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }),
-                    std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 4.0 }) }) })
+                std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list{ 7.0, 10.0, 15.0, 22.0 }, 2),
+                std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list{ 1.0, 2.0, 3.0, 4.0 }, 2),
+                std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list{ 1.0, 2.0, 3.0, 4.0 }, 2) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpDot)
@@ -273,15 +262,12 @@ std::vector<TestParameters> test_cases = {
         .set_operands_range(1,
                             CommonTypes::vec2,
                             std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }) })
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }) })
         .build()
 };
 
 INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsTests, ValuesIn(test_cases));
-
-// Death tests cannot work without Debug build, as they rely on program crashing with certain message in stderr
-// Also, they are slow
 
 class ArithmeticsCrashTests : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
 {};
@@ -319,7 +305,7 @@ std::vector<TestParameters> throw_tests{
     TestParametersBuilder()
         .set_opcode(spv::Op::OpSNegate)
         .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -1, -1 }), CommonTypes::ivec2)
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1, -1 }), CommonTypes::ivec2)
         .set_operand_at(1, int64_t(1), CommonTypes::i64)
         .set_death_message("Operand not of vector type")
         .build(),
@@ -327,179 +313,170 @@ std::vector<TestParameters> throw_tests{
         .set_opcode(spv::Op::OpSNegate)
         .set_operand_at(0, int64_t(1), CommonTypes::i64)
         .set_operand_at(
-            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -1, -1 }), CommonTypes::ivec2)
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1, -1 }), CommonTypes::ivec2)
         .set_death_message("Operands not of int type")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFNegate)
-        .set_operand_at(0,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -1.0, -1.0 }),
-                        CommonTypes::vec2)
+        .set_operand_at(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1.0, -1.0 }), CommonTypes::vec2)
         .set_operand_at(1, 1.0, CommonTypes::f64)
         .set_death_message("Operand not of vector type")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFNegate)
         .set_operand_at(0, 1.0, CommonTypes::f64)
-        .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -1.0, -1.0 }),
-                        CommonTypes::vec2)
+        .set_operand_at(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1.0, -1.0 }), CommonTypes::vec2)
         .set_death_message("Operands not of float type")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFNegate)
         .set_operand_at(0, 1, CommonTypes::i64)
-        .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ -1.0, -1.0 }),
-                        CommonTypes::vec2)
+        .set_operand_at(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ -1.0, -1.0 }), CommonTypes::vec2)
         .set_death_message("Invalid result type, must be vector or float")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
-        .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 3, 3 }), CommonTypes::ivec2)
-        .set_operands_range(1, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 1, 2 })
+        .set_operand_at(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3, 3 }), CommonTypes::ivec2)
+        .set_operands_range(1, CommonTypes::i64, std::initializer_list{ 1, 2 })
         .set_death_message("Operands not of vector type in Op_IAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
-        .set_operand_at(0,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 3, 3, 3 }),
-                        CommonTypes::ivec3)
-        .set_operands_range(1,
-                            CommonTypes::ivec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }) })
+        .set_operand_at(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3, 3, 3 }), CommonTypes::ivec3)
+        .set_operands_range(
+            1,
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }) })
         .set_death_message("Operands not of equal/correct length in Op_IAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::ivec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 3, 3 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }) })
-        .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1, 1 }),
-                        CommonTypes::ivec3)
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3, 3 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }) })
+        .set_operand_at(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1, 1 }), CommonTypes::ivec3)
         .set_death_message("Operands not of equal/correct length in Op_IAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::ivec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 3, 3 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }) })
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3, 3 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2, 2 }) })
         .set_operand_at(
             1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), CommonTypes::vec2)
         .set_death_message("Could not find valid parameter type combination for Op_IAdd vector operand")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
-        .set_operands_at({ 0, 2 }, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 3, 2 })
+        .set_operands_at({ 0, 2 }, CommonTypes::i64, std::initializer_list{ 3, 2 })
         .set_operand_at(1, 1.0, CommonTypes::f64)
         .set_death_message("Could not find valid parameter type combination for Op_IAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIAdd)
         .set_operand_at(0, 3.0, CommonTypes::f64)
-        .set_operands_range(1, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 1, 2 })
+        .set_operands_range(1, CommonTypes::i64, std::initializer_list{ 1, 2 })
         .set_death_message("Invalid result type for Op_IAdd, must be vector or int")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
         .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0 }), CommonTypes::vec2)
-        .set_operands_range(1, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 1.0, 2.0 })
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 3.0 }), CommonTypes::vec2)
+        .set_operands_range(1, CommonTypes::f64, std::initializer_list{ 1.0, 2.0 })
         .set_death_message("Operands not of vector type in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
-        .set_operand_at(0,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0, 3.0 }),
-                        CommonTypes::vec3)
-        .set_operands_range(1,
-                            CommonTypes::vec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }) })
+        .set_operand_at(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 3.0, 3.0 }), CommonTypes::vec3)
+        .set_operands_range(
+            1,
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }) })
         .set_death_message("Operands not of equal/correct length in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::vec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 2.0 }) })
-        .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }),
-                        CommonTypes::vec3)
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 3.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 2.0 }) })
+        .set_operand_at(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0, 1.0 }), CommonTypes::vec3)
         .set_death_message("Operands not of equal/correct length in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
-        .set_operands_range(0,
-                            CommonTypes::vec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, 3.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }) })
+        .set_operands_range(
+            0,
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 3.0, 3.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }) })
         .set_operand_at(
             2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }), CommonTypes::ivec2)
         .set_death_message("SPIRV simulator: vector contains non-doubles in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
-        .set_operands_range(0, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 3.0, 1.0 })
+        .set_operands_range(0, CommonTypes::f64, std::initializer_list{ 3.0, 1.0 })
         .set_operand_at(2, 2, CommonTypes::i64)
         .set_death_message("SPIRV simulator: Operands not of float type in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
         .set_operand_at(0, 3, CommonTypes::i64)
-        .set_operands_range(1, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 1.0, 2.0 })
+        .set_operands_range(1, CommonTypes::f64, std::initializer_list{ 1.0, 2.0 })
         .set_death_message("Invalid result type for Op_FAdd, must be vector or float")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpISub)
-        .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }), CommonTypes::ivec2)
+        .set_operand_at(0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }), CommonTypes::ivec2)
         .set_operands_range(1, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 1, 0 })
         .set_death_message("Operands not of vector type in Op_ISub")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpISub)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::ivec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 0, 0 }) })
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 0, 0 }) })
         .set_operand_at(
-            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1, 1 }), CommonTypes::ivec3)
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1, 1 }), CommonTypes::ivec3)
         .set_death_message("Operands not of equal/correct length in Op_ISub")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpISub)
         .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1, 1 }), CommonTypes::ivec3)
-        .set_operands_range(1,
-                            CommonTypes::ivec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 0, 0 }) })
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1, 1 }), CommonTypes::ivec3)
+        .set_operands_range(
+            1,
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 0, 0 }) })
         .set_death_message("Operands not of equal/correct length in Op_ISub")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpISub)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::ivec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 0, 0 }) })
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 0, 0 }) })
         .set_operand_at(
-            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), CommonTypes::vec2)
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }), CommonTypes::vec2)
         .set_death_message("Could not find valid parameter type combination for Op_ISub vector operand")
         .build(),
     TestParametersBuilder()
@@ -519,133 +496,128 @@ std::vector<TestParameters> throw_tests{
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
         .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), CommonTypes::vec2)
-        .set_operands_range(1, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 0, 1 })
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }), CommonTypes::vec2)
+        .set_operands_range(1, CommonTypes::i64, std::initializer_list{ 0, 1 })
         .set_death_message("Operands set to be vector type in Op_FSub, but they are not, illegal input parameters")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
-        .set_operand_at(0,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }),
-                        CommonTypes::vec3)
-        .set_operands_range(1,
-                            CommonTypes::vec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 0.0, 0.0 }) })
+        .set_operand_at(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0, 1.0 }), CommonTypes::vec3)
+        .set_operands_range(
+            1,
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 0.0, 0.0 }) })
         .set_death_message("Operands are vector type but not of equal length in Op_FSub")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::vec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 0.0, 0.0 }) })
-        .set_operand_at(
-            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }), CommonTypes::ivec2)
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 0.0, 0.0 }) })
+        .set_operand_at(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }), CommonTypes::ivec2)
         .set_death_message("Found non-floating point operand in Op_FSub vector operand")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
-        .set_operands_at({ 0, 2 }, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 1.0, 0.0 })
+        .set_operands_at({ 0, 2 }, CommonTypes::f64, std::initializer_list{ 1.0, 0.0 })
         .set_operand_at(1, 1, CommonTypes::i64)
         .set_death_message("Found non-floating point operand in Op_FSub")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFSub)
         .set_operand_at(0, 1, CommonTypes::i64)
-        .set_operands_range(1, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 1.0, 0.0 })
+        .set_operands_range(1, CommonTypes::f64, std::initializer_list{ 1.0, 0.0 })
         .set_death_message("Invalid result type for Op_FSub, must be vector or float")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIMul)
-        .set_operands_range(0,
-                            CommonTypes::ivec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }) })
+        .set_operands_range(
+            0,
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }) })
         .set_operand_at(2, 0, CommonTypes::i64)
         .set_death_message("Operands not of vector type in Op_IMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIMul)
-        .set_operand_at(0,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1, 1 }),
-                        CommonTypes::ivec3)
-        .set_operands_range(1,
-                            CommonTypes::ivec2,
-                            std::initializer_list<SPIRVSimulator::Value>{
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }),
-                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }) })
+        .set_operand_at(
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1, 1 }), CommonTypes::ivec3)
+        .set_operands_range(
+            1,
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }) })
         .set_death_message("Operands not of equal/correct length in Op_IMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIMul)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::ivec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }) })
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::ivec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }) })
         .set_operand_at(
-            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }), CommonTypes::vec2)
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }), CommonTypes::vec2)
         .set_death_message("Could not find valid parameter type combination for Op_IMul vector operand")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIMul)
-        .set_operands_range(0, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 2, 2 })
+        .set_operands_range(0, CommonTypes::i64, std::initializer_list{ 2, 2 })
         .set_operand_at(2, 1.0, f64)
         .set_death_message("Could not find valid parameter type combination for Op_IMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpIMul)
         .set_operand_at(0, 2.0, CommonTypes::f64)
-        .set_operands_range(1, CommonTypes::i64, std::initializer_list<SPIRVSimulator::Value>{ 2, 1 })
+        .set_operands_range(1, CommonTypes::i64, std::initializer_list{ 2, 1 })
         .set_death_message("Invalid result type for Op_IMul, must be vector or integer type")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFMul)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::vec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }) })
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }) })
         .set_operand_at(1, 2.0, CommonTypes::f64)
         .set_death_message("Operands not of vector type in Op_FMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFMul)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::vec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }) })
-        .set_operand_at(1,
-                        std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0, 1.0 }),
-                        CommonTypes::vec3)
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }) })
+        .set_operand_at(
+            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0, 1.0 }), CommonTypes::vec3)
         .set_death_message("Operands not of equal/correct length in Op_FMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFMul)
-        .set_operands_at({ 0, 2 },
-                         CommonTypes::vec2,
-                         std::initializer_list<SPIRVSimulator::Value>{
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }),
-                             std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }) })
-        .set_operand_at(
-            1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 1, 1 }), CommonTypes::ivec2)
+        .set_operands_at(
+            { 0, 2 },
+            CommonTypes::vec2,
+            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }),
+                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 1.0 }) })
+        .set_operand_at(1, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1, 1 }), CommonTypes::ivec2)
         .set_death_message("vector contains non-doubles in Op_FMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFMul)
-        .set_operands_range(0, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 2.0, 2.0 })
+        .set_operands_range(0, CommonTypes::f64, std::initializer_list{ 2.0, 2.0 })
         .set_operand_at(2, 1, CommonTypes::i64)
         .set_death_message("Operands are not floats/doubles in Op_FMul")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFMul)
         .set_operand_at(0, 2, CommonTypes::i64)
-        .set_operands_range(1, CommonTypes::f64, std::initializer_list<SPIRVSimulator::Value>{ 2.0, 1.0 })
+        .set_operands_range(1, CommonTypes::f64, std::initializer_list{ 2.0, 1.0 })
         .set_death_message("Invalid result type for Op_FMul, must be vector or float")
         .build(),
 };

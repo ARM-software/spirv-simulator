@@ -364,8 +364,10 @@ void SPIRVSimulator::ExecuteInstructions()
             assertm(HasDecorator(phys_ppointer.base_result_id, spv::Decoration::DecorationBinding),
                     "SPIRV simulator: Missing DecorationBinding for pointee object");
 
-            source_data.binding_id = GetDecoratorLiteral(phys_ppointer.base_result_id, spv::Decoration::DecorationBinding);
-            source_data.set_id = GetDecoratorLiteral(phys_ppointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
+            source_data.binding_id =
+                GetDecoratorLiteral(phys_ppointer.base_result_id, spv::Decoration::DecorationBinding);
+            source_data.set_id =
+                GetDecoratorLiteral(phys_ppointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
         }
         else
         {
@@ -1370,7 +1372,6 @@ size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
     return bitcount;
 }
 
-
 uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer)
 {
     assertm(types_.find(pointer.base_type_id) != types_.end(),
@@ -1480,9 +1481,7 @@ void SPIRVSimulator::GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& out
     }
 }
 
-void SPIRVSimulator::ReadWords(const std::byte*       external_pointer,
-                               uint32_t               type_id,
-                               std::vector<uint32_t>& buffer_data)
+void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data)
 {
     /*
     Extracts 32 bit word values with type matching type_id from the external_pointer byte buffer
@@ -1510,7 +1509,8 @@ void SPIRVSimulator::ReadWords(const std::byte*       external_pointer,
     {
         // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
         assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
-                "SPIRV simulator: No ArrayStride decorator for input array, check if this is a block array and add support for it if so");
+                "SPIRV simulator: No ArrayStride decorator for input array, check if this is a block array and add "
+                "support for it if so");
 
         uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
 
@@ -1600,9 +1600,7 @@ void SPIRVSimulator::ReadWords(const std::byte*       external_pointer,
     }
 }
 
-void SPIRVSimulator::WriteValue(std::byte* external_pointer,
-                                uint32_t type_id,
-                                const Value& value)
+void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value)
 {
     /*
     Writes the value stored in result_id to the external pointer
@@ -1626,7 +1624,6 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer,
             std::byte* member_offset_pointer =
                 external_pointer + GetDecoratorLiteral(type_id, member_offset_index, spv::Decoration::DecorationOffset);
 
-
             WriteValue(member_offset_pointer, member_type_id, agg_ptr->elems[member_offset_index]);
             member_offset_index += 1;
         }
@@ -1635,11 +1632,13 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer,
     {
         // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
         assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
-                "SPIRV simulator: No ArrayStride decorator for input array, check if this is a block array and add support for it if so");
+                "SPIRV simulator: No ArrayStride decorator for input array, check if this is a block array and add "
+                "support for it if so");
 
         uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
 
-        assertm(type.array.length_id != 0, "SPIRV simulator: Attempt to write out a runtime array, this should never happen");
+        assertm(type.array.length_id != 0,
+                "SPIRV simulator: Attempt to write out a runtime array, this should never happen");
 
         const std::shared_ptr<AggregateV>& agg_ptr = std::get<std::shared_ptr<AggregateV>>(value);
 
@@ -1674,7 +1673,8 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer,
 
         for (uint64_t col_index = 0; col_index < col_count; ++col_index)
         {
-            const std::shared_ptr<VectorV>& column_val = std::get<std::shared_ptr<VectorV>>(matrix_ptr->cols[col_index]);
+            const std::shared_ptr<VectorV>& column_val =
+                std::get<std::shared_ptr<VectorV>>(matrix_ptr->cols[col_index]);
 
             for (uint64_t row_index = 0; row_index < row_count; ++row_index)
             {
@@ -1711,7 +1711,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer,
     else if (type.kind == Type::Kind::BoolT)
     {
         uint32_t scalar_width = type.scalar.width / 8;
-        uint64_t raw_value = std::get<uint64_t>(value);
+        uint64_t raw_value    = std::get<uint64_t>(value);
 
         std::memcpy(external_pointer, (const void*)(&raw_value), scalar_width);
     }
@@ -1734,7 +1734,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer,
     else if (type.kind == Type::Kind::Float)
     {
         uint32_t scalar_width = type.scalar.width / 8;
-        uint64_t raw_value = bit_cast<uint64_t>(std::get<double>(value));
+        uint64_t raw_value    = bit_cast<uint64_t>(std::get<double>(value));
 
         std::memcpy(external_pointer, (const void*)(&raw_value), scalar_width);
     }
@@ -2069,7 +2069,9 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                     }
                 }
 
-                PointerV new_pointer{ bit_cast<uint64_t>(remapped_pointer), type_id, 0, type.pointer.storage_class, {} };
+                PointerV new_pointer{
+                    bit_cast<uint64_t>(remapped_pointer), type_id, 0, type.pointer.storage_class, {}
+                };
                 physical_address_pointers_.push_back(new_pointer);
                 return new_pointer;
             }
@@ -2183,8 +2185,10 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                     assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBinding),
                             "SPIRV simulator: Missing DecorationBinding for pointee object");
 
-                    data_source.binding_id = GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationBinding);
-                    data_source.set_id = GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
+                    data_source.binding_id =
+                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationBinding);
+                    data_source.set_id =
+                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
                 }
                 else
                 {
@@ -2297,8 +2301,9 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         return;
     }
 
-    // These are not backed by buffers (yet, input/output is debatable and we will likely need to handle them), write to the internal heaps
-    if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction  ||
+    // These are not backed by buffers (yet, input/output is debatable and we will likely need to handle them), write to
+    // the internal heaps
+    if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
         type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
@@ -2376,7 +2381,7 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
     }
 
     // These are stored on the internal heaps
-    if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction  ||
+    if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
         type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
@@ -2422,12 +2427,12 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
     }
     // These can/should have input pointers
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
+             type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
     {
-        auto offset = GetPointerOffset(ptr);
+        auto             offset           = GetPointerOffset(ptr);
         const std::byte* external_pointer = bit_cast<const std::byte*>(ptr.pointer_handle) + offset;
 
         std::vector<uint32_t> buffer_data;
@@ -3861,7 +3866,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
     if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
     {
         const std::byte* external_pointer = static_cast<const std::byte*>(input_data_.push_constants);
-        new_pointer.pointer_handle = bit_cast<uint64_t>(input_data_.push_constants);
+        new_pointer.pointer_handle        = bit_cast<uint64_t>(input_data_.push_constants);
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
@@ -3895,7 +3900,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         assertx("SPIRV simulator: Op_Variable must not be used to create pointer types with the PhysicalStorageBuffer "
                 "storage class");
     }
-    else if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction  ||
+    else if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
              type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
              type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
              type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
@@ -3907,7 +3912,8 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         }
         else
         {
-            new_pointer.pointer_handle = HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
+            new_pointer.pointer_handle =
+                HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
         }
     }
     else
@@ -3976,17 +3982,17 @@ void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    assertm(type.kind == Type::Kind::Pointer, "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
-    assertm(type.pointer.storage_class == spv::StorageClass::StorageClassImage, "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
+    assertm(type.kind == Type::Kind::Pointer,
+            "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
+    assertm(type.pointer.storage_class == spv::StorageClass::StorageClassImage,
+            "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
 
-    Value init = MakeDefault(type.pointer.pointee_type_id);
-    PointerV new_pointer{
-        HeapAllocate(spv::StorageClass::StorageClassImage, init),
-        type_id,
-        result_id,
-        spv::StorageClass::StorageClassImage,
-        {}
-    };
+    Value    init = MakeDefault(type.pointer.pointee_type_id);
+    PointerV new_pointer{ HeapAllocate(spv::StorageClass::StorageClassImage, init),
+                          type_id,
+                          result_id,
+                          spv::StorageClass::StorageClassImage,
+                          {} };
 
     SetValue(result_id, new_pointer);
     SetIsArbitrary(result_id);
@@ -4010,7 +4016,7 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpLoad);
 
-    uint32_t type_id = instruction.words[1];
+    uint32_t type_id    = instruction.words[1];
     uint32_t result_id  = instruction.words[2];
     uint32_t pointer_id = instruction.words[3];
 
@@ -4019,7 +4025,8 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     // TODO: Compare pointer with candidates here and track
     SetValue(result_id, ReadPointer(pointer));
 
-    if (pointer.storage_class == spv::StorageClass::StorageClassInput || pointer.storage_class == spv::StorageClass::StorageClassOutput)
+    if (pointer.storage_class == spv::StorageClass::StorageClassInput ||
+        pointer.storage_class == spv::StorageClass::StorageClassOutput)
     {
         SetIsArbitrary(result_id);
     }
@@ -4059,15 +4066,18 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     // If this is a non-interpolated output value, the shader may be important for pbuffer pointer detection
     if (pointer.storage_class == spv::StorageClass::StorageClassOutput)
     {
-        // TODO: Double check types, if this is a value that cant be interpolated, it may be flat even if not decorated as such
+        // TODO: Double check types, if this is a value that cant be interpolated, it may be flat even if not decorated
+        // as such
         if (HasDecorator(pointer.base_result_id, spv::Decoration::DecorationFlat))
         {
             has_buffer_writes_ = true;
         }
     }
-    else if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) && (pointer.storage_class != spv::StorageClass::StorageClassImage))
+    else if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) &&
+             (pointer.storage_class != spv::StorageClass::StorageClassImage))
     {
-        // If we are writing to any storage class that is not function or image, the shader may be important for pbuffer pointer detection
+        // If we are writing to any storage class that is not function or image, the shader may be important for pbuffer
+        // pointer detection
         has_buffer_writes_ = true;
     }
 
@@ -4345,13 +4355,12 @@ void SPIRVSimulator::Op_Return(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpReturn);
 
-
 #ifdef DEBUG_BUILD
     // Clear the heap for better error checking
     uint32_t stack_heap_index = call_stack_.back().func_heap_index;
-    for (auto heap_index = stack_heap_index; heap_index < current_heap_index_;
-         ++heap_index) {
-      function_heap_[heap_index] = std::monostate{};
+    for (auto heap_index = stack_heap_index; heap_index < current_heap_index_; ++heap_index)
+    {
+        function_heap_[heap_index] = std::monostate{};
     }
     // TODO: Maybe clear locals as well
 #endif
@@ -4375,30 +4384,32 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpReturnValue);
 
-    uint32_t value_id         = instruction.words[1];
-    uint32_t result_id        = call_stack_.back().result_id;
-    Value    return_value     = GetValue(value_id);
+    uint32_t value_id     = instruction.words[1];
+    uint32_t result_id    = call_stack_.back().result_id;
+    Value    return_value = GetValue(value_id);
 
 #ifdef DEBUG_BUILD
     // Clear the heap for better error checking
     uint32_t stack_heap_index = call_stack_.back().func_heap_index;
-    for (auto heap_index = stack_heap_index; heap_index < current_heap_index_; ++ heap_index)
+    for (auto heap_index = stack_heap_index; heap_index < current_heap_index_; ++heap_index)
     {
         function_heap_[heap_index] = std::monostate{};
     }
     // TODO: Maybe clear locals as well
 #endif
 
-  current_heap_index_ = call_stack_.back().func_heap_index;
+    current_heap_index_ = call_stack_.back().func_heap_index;
 
-  call_stack_.pop_back();
+    call_stack_.pop_back();
 
-  if (call_stack_.size()) {
-    SetValue(result_id, return_value);
-    if (ValueIsArbitrary(value_id)) {
-      SetIsArbitrary(result_id);
+    if (call_stack_.size())
+    {
+        SetValue(result_id, return_value);
+        if (ValueIsArbitrary(value_id))
+        {
+            SetIsArbitrary(result_id);
+        }
     }
-  }
 }
 
 void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
@@ -5003,7 +5014,7 @@ void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
         {
             assertm(std::holds_alternative<uint64_t>(vec->elems[i]),
                     "SPIRV simulator: Non-boolean type found in vector operand");
-            result_vec->elems.push_back((uint64_t) !(std::get<uint64_t>(vec->elems[i])));
+            result_vec->elems.push_back((uint64_t)!(std::get<uint64_t>(vec->elems[i])));
         }
 
         SetValue(result_id, result);
@@ -5013,7 +5024,7 @@ void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
         Value result;
 
         assertm(std::holds_alternative<uint64_t>(operand), "SPIRV simulator: Non-boolean type found in operand");
-        result = (uint64_t) !(std::get<uint64_t>(operand));
+        result = (uint64_t)!(std::get<uint64_t>(operand));
 
         SetValue(result_id, result);
     }
@@ -5196,7 +5207,7 @@ void SPIRVSimulator::Op_ArrayLength(const Instruction& instruction)
 
     // Must (and should) be present for any pointer to buffers containing runtime arrays
     uint64_t array_pointer = pointer.pointer_handle;
-    size_t array_offset = GetPointerOffset(pointer);
+    size_t   array_offset  = GetPointerOffset(pointer);
 
     if (array_pointer)
     {
@@ -6559,7 +6570,9 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
             }
         }
 
-        PointerV new_pointer{ bit_cast<uint64_t>(remapped_pointer), type_id, result_id, type.pointer.storage_class, {} };
+        PointerV new_pointer{
+            bit_cast<uint64_t>(remapped_pointer), type_id, result_id, type.pointer.storage_class, {}
+        };
         physical_address_pointers_.push_back(new_pointer);
         result = new_pointer;
 
@@ -6895,7 +6908,9 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
 
                 if (!ValueIsArbitrary(operand2_id))
                 {
-                    std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_UMod, shader has undefined behaviour" << std::endl;
+                    std::cout
+                        << "SPIRV simulator: WARNING: Second operand is 0 in Op_UMod, shader has undefined behaviour"
+                        << std::endl;
                 }
             }
 
@@ -6923,7 +6938,8 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
 
             if (!ValueIsArbitrary(operand2_id))
             {
-                std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_UMod, shader has undefined behaviour" << std::endl;
+                std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_UMod, shader has undefined behaviour"
+                          << std::endl;
             }
         }
 
@@ -6936,7 +6952,8 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or unsigned-integer");
     }
 
-    if (ValueIsArbitrary(operand1_id) || ValueIsArbitrary(operand2_id)){
+    if (ValueIsArbitrary(operand1_id) || ValueIsArbitrary(operand2_id))
+    {
         SetIsArbitrary(result_id);
     }
 }
@@ -7119,9 +7136,9 @@ void SPIRVSimulator::Op_AtomicIAdd(const Instruction& instruction)
     uint32_t pointer_id = instruction.words[3];
     uint32_t value_id   = instruction.words[6];
 
-    PointerV pointer             = std::get<PointerV>(GetValue(pointer_id));
-    const Value&    pointee_val  = ReadPointer(pointer);
-    const Value&    source_value = GetValue(value_id);
+    PointerV     pointer      = std::get<PointerV>(GetValue(pointer_id));
+    const Value& pointee_val  = ReadPointer(pointer);
+    const Value& source_value = GetValue(value_id);
 
     Value result;
     if (std::holds_alternative<uint64_t>(pointee_val) && std::holds_alternative<uint64_t>(source_value))
@@ -7166,9 +7183,9 @@ void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
     uint32_t pointer_id = instruction.words[3];
     uint32_t value_id   = instruction.words[6];
 
-    PointerV pointer             = std::get<PointerV>(GetValue(pointer_id));
-    const Value&    pointee_val  = ReadPointer(pointer);
-    const Value&    source_value = GetValue(value_id);
+    PointerV     pointer      = std::get<PointerV>(GetValue(pointer_id));
+    const Value& pointee_val  = ReadPointer(pointer);
+    const Value& source_value = GetValue(value_id);
 
     Value result;
     if (std::holds_alternative<uint64_t>(pointee_val) && std::holds_alternative<uint64_t>(source_value))
@@ -9507,7 +9524,7 @@ void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
     uint32_t image_id       = instruction.words[3];
     uint32_t sampler_id     = instruction.words[4];
 
-    SampledImageV new_si{std::get<uint64_t>(GetValue(image_id)), std::get<uint64_t>(GetValue(sampler_id))};
+    SampledImageV new_si{ std::get<uint64_t>(GetValue(image_id)), std::get<uint64_t>(GetValue(sampler_id)) };
     SetValue(result_id, new_si);
 }
 
@@ -9578,7 +9595,7 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpImageSampleExplicitLod);
 
-    uint32_t type_id     = instruction.words[1];
+    uint32_t type_id            = instruction.words[1];
     uint32_t result_id          = instruction.words[2];
     uint32_t sampled_image_id   = instruction.words[3];
     uint32_t coordinate_id      = instruction.words[4];
@@ -9609,10 +9626,10 @@ void SPIRVSimulator::Op_ImageFetch(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpImageFetch);
 
-    uint32_t type_id        = instruction.words[1];
-    uint32_t result_id      = instruction.words[2];
-    uint32_t image_id       = instruction.words[3];
-    uint32_t coordinate_id  = instruction.words[4];
+    uint32_t type_id       = instruction.words[1];
+    uint32_t result_id     = instruction.words[2];
+    uint32_t image_id      = instruction.words[3];
+    uint32_t coordinate_id = instruction.words[4];
 
     uint32_t image_operand_mask = 0;
     if (instruction.word_count > 5)
@@ -10504,8 +10521,8 @@ void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicOr");
     assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicOr");
 
-    const PointerV& pointer = std::get<PointerV>(pointer_val);
-    const Value& pointee_val = ReadPointer(pointer);
+    const PointerV& pointer     = std::get<PointerV>(pointer_val);
+    const Value&    pointee_val = ReadPointer(pointer);
 
     assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicOr");
@@ -10565,8 +10582,8 @@ void SPIRVSimulator::Op_AtomicUMax(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMax");
     assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMax");
 
-    const PointerV& pointer = std::get<PointerV>(pointer_val);
-    const Value& pointee_val = ReadPointer(pointer);
+    const PointerV& pointer     = std::get<PointerV>(pointer_val);
+    const Value&    pointee_val = ReadPointer(pointer);
 
     assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicUMax");
@@ -10627,8 +10644,8 @@ void SPIRVSimulator::Op_AtomicUMin(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMin");
     assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMin");
 
-    const PointerV& pointer = std::get<PointerV>(pointer_val);
-    const Value& pointee_val = ReadPointer(pointer);
+    const PointerV& pointer     = std::get<PointerV>(pointer_val);
+    const Value&    pointee_val = ReadPointer(pointer);
 
     assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicUMin");

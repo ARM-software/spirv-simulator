@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <set>
 #include <span>
@@ -15,7 +14,6 @@
 #include <vector>
 #include <type_traits>
 #include <cassert>
-#include <limits>
 
 //  Flip SPIRV_HEADERS_PRESENT to 1 to auto‑pull the SPIR‑V-Headers from the environment.
 #define SPV_ENABLE_UTILITY_CODE 1
@@ -339,6 +337,14 @@ struct Type
         t.array = ArrayTypeData{ .elem_type_id = elem_type_id, .length_id = 0 };
         return t;
     }
+
+    static Type Pointer(uint32_t storage_class, uint32_t pointee_type_id)
+    {
+        Type t;
+        t.kind    = Kind::Pointer;
+        t.pointer = PointerTypeData{ .storage_class = storage_class, .pointee_type_id = pointee_type_id };
+        return t;
+    }
 };
 
 struct AggregateV;
@@ -436,6 +442,29 @@ struct MatrixV
     explicit MatrixV(std::initializer_list<Value> initializer_list) :
         cols(initializer_list.begin(), initializer_list.end())
     {}
+
+    template <typename T>
+    MatrixV(std::initializer_list<T> initializer_list, uint32_t cols_count)
+    {
+        cols.reserve(cols_count);
+
+        uint32_t rows = initializer_list.size() / cols_count;
+
+        for (uint32_t i = 0; i < cols_count; ++i)
+        {
+            cols.emplace_back(std::make_shared<VectorV>());
+        }
+
+        auto it = initializer_list.begin();
+        for (uint32_t c = 0; c < cols_count; ++c)
+        {
+            auto& v = std::get<std::shared_ptr<VectorV>>(cols[c]);
+            for (uint32_t r = 0; r < rows; ++r)
+            {
+                v->elems.push_back(*(it + r * cols_count + c));
+            }
+        }
+    }
 };
 
 inline bool operator==(const MatrixV& a, const MatrixV& b)
@@ -695,8 +724,8 @@ class SPIRVSimulator
     uint32_t current_continue_block_id_ = 0;
 
     // Execution fork data, used to prevent infinte loops in SPIRV loop constructs
-    // If we encounter a conditional that branches to the target ID based on the trigger ID, we assume completion and
-    // return from the fork. The result ID of the boolean value that triggered the fork
+    // If we encounter a conditional that branches to the target ID based on the trigger ID, we assume completion
+    // and return from the fork. The result ID of the boolean value that triggered the fork
     uint32_t fork_abort_trigger_id_ = 0;
     // The result ID of the label we would have branched to, but diverged away from, when creating the fork
     uint64_t fork_abort_target_id_ = 0;
