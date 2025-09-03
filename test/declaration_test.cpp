@@ -51,27 +51,28 @@ std::vector<TestParameters> test_cases{
     TestParametersBuilder()
         .set_opcode(spv::Op::OpCompositeConstruct)
         .set_operand_at(
-            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }), CommonTypes::vec2)
-        .set_operands_range(1, CommonTypes::f64, std::initializer_list{ 1.0, 2.0 })
+            0, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }), CommonTypes::vec2)
+        .set_operands_range(1, CommonTypes::f64, std::initializer_list<double>{ 1.0, 2.0 })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpCompositeConstruct)
-        .set_operands_range(
+        .set_operands_range(0,
+                            CommonTypes::vec2,
+                            std::initializer_list<::SPIRVSimulator::Value>{
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0 }) })
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCompositeConstruct)
+        .set_operand_at(
             0,
-            CommonTypes::vec2,
-            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }),
-                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 2.0 }) })
-        .build(),
-    TestParametersBuilder()
-        .set_opcode(spv::Op::OpCompositeConstruct)
-        .set_operand_at(0,
-                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list{ 1.0, 2.0, 3.0, 4.0 }, 2),
-                        CommonTypes::mat2)
-        .set_operands_range(
-            1,
-            CommonTypes::vec2,
-            std::initializer_list{ std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 1.0, 3.0 }),
-                                   std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list{ 2.0, 4.0 }) })
+            std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, 2.0, 3.0, 4.0 }, 2),
+            CommonTypes::mat2)
+        .set_operands_range(1,
+                            CommonTypes::vec2,
+                            std::initializer_list<::SPIRVSimulator::Value>{
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 3.0 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 2.0, 4.0 }) })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpCompositeConstruct)
@@ -88,8 +89,9 @@ std::vector<TestParameters> test_cases{
                         std::make_shared<SPIRVSimulator::AggregateV>(
                             std::initializer_list<::SPIRVSimulator::Value>{ 1.0, 2.0, 3.0 }),
                         ::SPIRVSimulator::Type::Array(CommonTypes::f64, 3))
-        .set_operands_at(
-            std::initializer_list<uint32_t>{ 1, 2, 3 }, CommonTypes::f64, std::initializer_list{ 1.0, 2.0, 3.0 })
+        .set_operands_at(std::initializer_list<uint32_t>{ 1, 2, 3 },
+                         CommonTypes::f64,
+                         std::initializer_list<double>{ 1.0, 2.0, 3.0 })
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpVariable)
@@ -149,7 +151,7 @@ std::vector<TestParameters> test_cases{
         .set_opcode(spv::Op::OpVariable)
         .add_push_constants(std::vector{ 1.1, 2.0, 3.0 })
         .set_operand_at(0,
-                        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list{ 1.1, 2.0, 3.0 }),
+                        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.1, 2.0, 3.0 }),
                         ::SPIRVSimulator::Type::Pointer(spv::StorageClassPushConstant, CommonTypes::vec3))
         .set_operand_at(1,
                         static_cast<uint64_t>(spv::StorageClassPushConstant),
@@ -158,12 +160,14 @@ std::vector<TestParameters> test_cases{
     TestParametersBuilder()
         .set_opcode(spv::Op::OpVariable)
         .add_push_constants(std::vector{ 1.0, 2.0, 3.0, 4.0 })
-        .set_operand_at(0,
-                        std::make_shared<::SPIRVSimulator::MatrixV>(std::initializer_list{ 1.0, 2.0, 3.0, 4.0 }, 2),
-                        ::SPIRVSimulator::Type::Pointer(spv::StorageClassPushConstant, CommonTypes::mat2),
-                        std::initializer_list{ ::SPIRVSimulator::DecorationInfo{ .kind = spv::DecorationMatrixStride,
-                                                                                 .literals = { sizeof(double) * 2 } },
-                                               ::SPIRVSimulator::DecorationInfo{ .kind = spv::DecorationRowMajor } })
+        .set_operand_at(
+            0,
+            std::make_shared<::SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, 2.0, 3.0, 4.0 }, 2),
+            ::SPIRVSimulator::Type::Pointer(spv::StorageClassPushConstant, CommonTypes::mat2),
+            std::initializer_list<::SPIRVSimulator::DecorationInfo>{
+                ::SPIRVSimulator::DecorationInfo{ .kind     = spv::DecorationMatrixStride,
+                                                  .literals = { sizeof(double) * 2 } },
+                ::SPIRVSimulator::DecorationInfo{ .kind = spv::DecorationRowMajor } })
         .set_operand_at(1,
                         static_cast<uint64_t>(spv::StorageClassPushConstant),
                         CommonTypes::storage_class) // Storage class is always a raw uint
@@ -171,12 +175,14 @@ std::vector<TestParameters> test_cases{
     TestParametersBuilder()
         .set_opcode(spv::Op::OpVariable)
         .add_push_constants(std::vector{ 1.0, 3.0, 2.0, 4.0 })
-        .set_operand_at(0,
-                        std::make_shared<::SPIRVSimulator::MatrixV>(std::initializer_list{ 1.0, 2.0, 3.0, 4.0 }, 2),
-                        ::SPIRVSimulator::Type::Pointer(spv::StorageClassPushConstant, CommonTypes::mat2),
-                        std::initializer_list{ ::SPIRVSimulator::DecorationInfo{ .kind = spv::DecorationMatrixStride,
-                                                                                 .literals = { sizeof(double) * 2 } },
-                                               ::SPIRVSimulator::DecorationInfo{ .kind = spv::DecorationColMajor } })
+        .set_operand_at(
+            0,
+            std::make_shared<::SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, 2.0, 3.0, 4.0 }, 2),
+            ::SPIRVSimulator::Type::Pointer(spv::StorageClassPushConstant, CommonTypes::mat2),
+            std::initializer_list<::SPIRVSimulator::DecorationInfo>{
+                ::SPIRVSimulator::DecorationInfo{ .kind     = spv::DecorationMatrixStride,
+                                                  .literals = { sizeof(double) * 2 } },
+                ::SPIRVSimulator::DecorationInfo{ .kind = spv::DecorationColMajor } })
         .set_operand_at(1,
                         static_cast<uint64_t>(spv::StorageClassPushConstant),
                         CommonTypes::storage_class) // Storage class is always a raw uint
