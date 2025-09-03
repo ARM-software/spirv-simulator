@@ -48,6 +48,11 @@ cd build
 make run_tests
 ```
 
+To run specific tests (example for arithmetic suite test 21):
+```
+test/arithmetic_test --gtest_filter=Arithmetics/ArithmeticsTests.ParametrizedArithmeticOperation/21 --gtest_also_run_disabled_tests
+```
+
 
 ## Execution framework (WIP)
 

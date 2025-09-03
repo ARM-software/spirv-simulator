@@ -30,6 +30,12 @@
 namespace SPIRVSimulator
 {
 
+// Any result ID or pointer object ID in this set, can be treated as if it has
+// any valid value for the given type
+#define SPS_FLAG_IS_ARBITRARY  1
+#define SPS_FLAG_UNINITIALIZED 2
+#define SPS_FLAG_IS_CANDIDATA  4
+
 // Used by tracing tools to pass in potential pbuffer candidates.
 // This is optional but allows for easier remapping user side in most cases
 struct PhysicalAddressCandidate
@@ -370,6 +376,9 @@ struct PointerV
     // pointer
     uint64_t pointer_handle;
 
+    // Flags and metadata related to the object this pointer points to
+    uint64_t pointee_meta;
+
     // The following two values refer to the base pointers type and result id.
     // Eg. a pointer created from OpAccessChain will keep these as they were in the base pointer.
 
@@ -387,8 +396,10 @@ struct PointerV
 
 inline bool operator==(const PointerV& a, const PointerV& b)
 {
-    return a.pointer_handle == b.pointer_handle && a.base_type_id == b.base_type_id &&
-           a.base_result_id == b.base_result_id && a.storage_class == b.storage_class && a.idx_path == b.idx_path;
+  return a.pointer_handle == b.pointer_handle &&
+         a.pointee_meta == b.pointee_meta && a.base_type_id == b.base_type_id &&
+         a.base_result_id == b.base_result_id &&
+         a.storage_class == b.storage_class && a.idx_path == b.idx_path;
 }
 
 struct SampledImageV
@@ -688,9 +699,7 @@ class SPIRVSimulator
     std::unordered_map<uint32_t, std::vector<DecorationInfo>>                               decorators_;
     std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<DecorationInfo>>> struct_decorators_;
     std::unordered_map<uint32_t, std::string>                                               extended_imports_;
-    // Any result ID or pointer object ID in this set, can be treated as if it has any valid value for
-    // the given type
-    std::set<uint32_t> arbitrary_values_;
+
     Type               void_type_;
 
     // This maps the result ID of pointers to the result ID of values stored
@@ -743,6 +752,7 @@ class SPIRVSimulator
     // result_id -> Value
     // std::unordered_map<uint32_t, Value> globals_;
     std::vector<Value> values_;
+    std::vector<uint64_t> value_meta_;
     std::vector<Value> function_heap_;
 
     // storage_class -> heap_index -> Heap Value for all non-function storage classes
@@ -790,17 +800,47 @@ class SPIRVSimulator
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator);
     virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator);
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0);
-    virtual uint32_t
-    GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0);
-    virtual bool ValueIsArbitrary(uint32_t result_id) const { return arbitrary_values_.contains(result_id); };
-    virtual bool PointeeValueIsArbitrary(const PointerV& pointer) const
-    {
-        (void)pointer;
-        return false;
+    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0);
+    virtual bool ValueIsArbitrary(uint32_t result_id) const {
+      return value_meta_[result_id] & SPS_FLAG_IS_ARBITRARY;
     };
-    virtual void                SetIsArbitrary(uint32_t result_id) { arbitrary_values_.insert(result_id); };
-    virtual void                ClearIsArbitrary(uint32_t result_id) { arbitrary_values_.erase(result_id); };
-    virtual Value               CopyValue(const Value& value) const;
+    virtual bool PointeeValueIsArbitrary(const PointerV& pointer) const { (void)pointer; return false; };
+
+    virtual void SetIsArbitrary(uint32_t result_id) {
+      value_meta_[result_id] |= SPS_FLAG_IS_ARBITRARY;
+    };
+    virtual void ClearIsArbitrary(uint32_t result_id) {
+      value_meta_[result_id] &= ~SPS_FLAG_IS_ARBITRARY;
+    };
+
+    virtual void TransferFlags(uint32_t target_rid, uint32_t source_rid) {
+      value_meta_[target_rid] |= value_meta_[source_rid];
+    };
+
+    virtual void TransferFlags(uint32_t result_id, uint64_t flags) {
+      value_meta_[result_id] |= flags;
+    };
+
+    virtual void TransferFlagsToPointee(PointerV& pointer, uint32_t result_id) {pointer.pointee_meta |= value_meta_[result_id]; };
+    virtual void TransferFlagsToPointee(uint32_t pointer_id, uint32_t result_id) {std::get<PointerV>(values_[pointer_id]).pointee_meta |= value_meta_[result_id]; };
+    virtual void TransferFlagsFromPointee(uint32_t result_id, const PointerV& pointer) {value_meta_[result_id] |= pointer.pointee_meta; };
+
+    virtual void ExtractFlags(uint32_t result_id, uint64_t& out_meta) {
+      out_meta |= value_meta_[result_id];
+    };
+
+    virtual void SetFlags(uint32_t result_id, uint64_t flag) { value_meta_[result_id] |= flag; };
+    virtual void SetFlagsPointee(PointerV& pointer, uint64_t flag) { pointer.pointee_meta |= flag; };
+    virtual uint64_t GetFlags(uint32_t result_id) const { return value_meta_[result_id]; };
+
+    virtual void OverrideFlagsPointee(PointerV& pointer, uint32_t result_id) { pointer.pointee_meta = value_meta_[result_id]; };
+    virtual void OverrideFlagsPointee(uint32_t pointer_id, uint32_t result_id) { std::get<PointerV>(values_[pointer_id]).pointee_meta = value_meta_[result_id]; };
+
+    virtual bool HasFlags(uint32_t result_id, uint64_t flags) { return value_meta_[result_id] & flags; };
+    virtual bool HasFlagsPointee(const PointerV& pointer, uint64_t flags) { return pointer.pointee_meta & flags; };
+
+    virtual Value CopyValue(const Value& value) const;
+
     virtual std::vector<Value>& Heap(uint32_t sc)
     {
         if (sc == spv::StorageClass::StorageClassFunction)

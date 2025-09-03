@@ -232,9 +232,16 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
         {
             words.push_back(type_id);
         }
+
+        uint64_t dummy_flags = 0;
         words.push_back(op_id);
         EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(ReturnRef(types_[type_id]));
         EXPECT_CALL(*this, GetValue(op_id)).WillRepeatedly(ReturnRefOfCopy(parameters.operands.at(op)));
+        EXPECT_CALL(*this, TransferFlags(::testing::A<uint32_t>(), ::testing::A<uint32_t>())).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, TransferFlags(::testing::A<uint32_t>(), ::testing::A<uint64_t>())).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, HasFlags(_, _)).WillRepeatedly(::testing::Return(false));
+        EXPECT_CALL(*this, ExtractFlags(_, _)).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, SetFlags(_, _)).Times(::testing::AnyNumber());
     }
 
     return words;

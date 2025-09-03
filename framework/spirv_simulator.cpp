@@ -192,11 +192,11 @@ void SPIRVSimulator::ParseAll()
 
     // Preinitialize to max result ID
     values_.resize(num_result_ids_, std::monostate{});
+    value_meta_.resize(num_result_ids_, 0);
 
     instruction_index = 0;
     for (const auto& instruction : instructions_)
     {
-
         if (verbose_)
         {
             PrintInstruction(instruction);
@@ -2070,7 +2070,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                 }
 
                 PointerV new_pointer{
-                    bit_cast<uint64_t>(remapped_pointer), type_id, 0, type.pointer.storage_class, {}
+                    bit_cast<uint64_t>(remapped_pointer), 0, type_id, 0, type.pointer.storage_class, {}
                 };
                 physical_address_pointers_.push_back(new_pointer);
                 return new_pointer;
@@ -2480,24 +2480,25 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 8:
         { // Floor
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
-            if (type.kind == Type::Kind::Vector)
-            {
-                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
-                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::floor");
+                if (type.kind == Type::Kind::Vector) {
+              assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                      "SPIRV simulator: Operands not of vector type in "
+                      "GLSLExtHandler::floor");
 
-                Value result     = std::make_shared<VectorV>();
-                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+              Value result = std::make_shared<VectorV>();
+              auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
 
-                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+              auto vec = std::get<std::shared_ptr<VectorV>>(operand);
 
-                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
-                {
-                    Value elem_result = (double)std::floor(std::get<double>(vec->elems[i]));
-                    result_vec->elems.push_back(elem_result);
-                }
+              for (uint32_t i = 0; i < type.vector.elem_count; ++i) {
+                Value elem_result =
+                    (double)std::floor(std::get<double>(vec->elems[i]));
+                result_vec->elems.push_back(elem_result);
+              }
 
-                SetValue(result_id, result_vec);
+              SetValue(result_id, result_vec);
             }
             else if (type.kind == Type::Kind::Float)
             {
@@ -2513,6 +2514,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 9:
         { // Ceil
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2546,6 +2548,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 10:
         { // Fract
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2581,6 +2584,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 13:
         { // Sin
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2614,6 +2618,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 14:
         { // Cos
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2647,6 +2652,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 15:
         { // Tan
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2681,6 +2687,8 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         { // Pow
             const Value& base     = GetValue(operand_words[0]);
             const Value& exponent = GetValue(operand_words[1]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2717,6 +2725,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 31:
         { // Sqrt
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2751,6 +2760,8 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         { // UMin
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2829,6 +2840,8 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         { // SMin
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2907,6 +2920,8 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         { // UMax
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2986,6 +3001,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
             const Value& max_val = GetValue(operand_words[2]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3028,6 +3046,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
             const Value& max_val = GetValue(operand_words[2]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3070,6 +3091,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
             const Value& max_val = GetValue(operand_words[2]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3112,6 +3136,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& x = GetValue(operand_words[0]);
             const Value& y = GetValue(operand_words[1]);
             const Value& a = GetValue(operand_words[2]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3157,6 +3184,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& a_val = GetValue(operand_words[0]);
             const Value& b_val = GetValue(operand_words[1]);
             const Value& c_val = GetValue(operand_words[2]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3196,6 +3226,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         { // Length
             const Value& operand      = GetValue(operand_words[0]);
             const Type&  operand_type = GetTypeByResultId(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (operand_type.kind == Type::Kind::Vector)
             {
@@ -3249,6 +3280,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 69:
         { // Normalize
             const Value& operand = GetValue(operand_words[0]);
+            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3291,6 +3323,8 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         { // NMin
             const Value& x_val = GetValue(operand_words[0]);
             const Value& y_val = GetValue(operand_words[1]);
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3362,6 +3396,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 std::cout << "SPIRV simulator: Setting output to default value, this will likely crash" << std::endl;
             }
             SetValue(result_id, MakeDefault(type_id));
+            SetIsArbitrary(result_id);
         }
     }
 }
@@ -3707,6 +3742,7 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
             }
             const uint32_t* buffer_pointer = instruction.words.subspan(3).data();
             SetValue(result_id, MakeScalar(type_id, buffer_pointer));
+            SetFlags(result_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY);
         }
     }
     else
@@ -3774,13 +3810,15 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
 
     bool is_arbitrary = false;
 
+    uint64_t value_meta = 0;
+
     if (type.kind == Type::Kind::Vector)
     {
         auto vec = std::make_shared<VectorV>();
         for (auto i = 3; i < instruction.word_count; ++i)
         {
             const Value& component_value = GetValue(instruction.words[i]);
-            is_arbitrary |= ValueIsArbitrary(instruction.words[i]);
+            ExtractFlags(instruction.words[i], value_meta);
 
             if (std::holds_alternative<std::shared_ptr<VectorV>>(component_value))
             {
@@ -3804,8 +3842,8 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         auto matrix = std::make_shared<MatrixV>();
         for (auto i = 3; i < instruction.word_count; ++i)
         {
-            is_arbitrary |= ValueIsArbitrary(instruction.words[i]);
-            matrix->cols.push_back(GetValue(instruction.words[i]));
+          ExtractFlags(instruction.words[i], value_meta);
+          matrix->cols.push_back(GetValue(instruction.words[i]));
         }
 
         SetValue(result_id, matrix);
@@ -3815,8 +3853,8 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         auto aggregate = std::make_shared<AggregateV>();
         for (auto i = 3; i < instruction.word_count; ++i)
         {
-            is_arbitrary |= ValueIsArbitrary(instruction.words[i]);
-            aggregate->elems.push_back(GetValue(instruction.words[i]));
+          ExtractFlags(instruction.words[i], value_meta);
+          aggregate->elems.push_back(GetValue(instruction.words[i]));
         }
 
         SetValue(result_id, aggregate);
@@ -3826,10 +3864,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         assertx("SPIRV simulator: CompositeConstruct not implemented yet for type");
     }
 
-    if (is_arbitrary)
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, value_meta);
 }
 
 void SPIRVSimulator::Op_Variable(const Instruction& instruction)
@@ -3861,12 +3896,21 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
     assertm(type.kind == Type::Kind::Pointer, "SPIRV simulator: Op_Variable must only be used to create pointer types");
 
-    PointerV new_pointer{ 0, type_id, result_id, storage_class, {} };
+    PointerV new_pointer{ 0, 0, type_id, result_id, storage_class, {} };
+
+    // All pointer values are abitrary
+    SetFlags(result_id, SPS_FLAG_IS_ARBITRARY);
 
     if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
     {
         const std::byte* external_pointer = static_cast<const std::byte*>(input_data_.push_constants);
         new_pointer.pointer_handle        = bit_cast<uint64_t>(input_data_.push_constants);
+
+        // If the pointer itself is uninitialized, mark it and the pointee
+        if (!external_pointer) {
+          SetFlags(result_id, SPS_FLAG_UNINITIALIZED);
+          SetFlagsPointee(new_pointer, SPS_FLAG_UNINITIALIZED);
+        }
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
@@ -3893,6 +3937,13 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         }
 
         new_pointer.pointer_handle = external_pointer ? bit_cast<uint64_t>(external_pointer) : 0;
+
+        // If the pointer itself is uninitialized, mark it and the pointee
+        if (!external_pointer)
+        {
+          SetFlags(result_id, SPS_FLAG_UNINITIALIZED);
+          SetFlagsPointee(new_pointer, SPS_FLAG_UNINITIALIZED);
+        }
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
     {
@@ -3902,9 +3953,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
              type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
-             type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
-             type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
-             type.pointer.storage_class == spv::StorageClass::StorageClassOutput)
+             type.pointer.storage_class == spv::StorageClass::StorageClassPrivate)
     {
         if (instruction.word_count >= 5)
         {
@@ -3915,6 +3964,13 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
             new_pointer.pointer_handle =
                 HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
         }
+    }
+    else if (type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassOutput)
+    {
+        SetFlagsPointee(new_pointer, SPS_FLAG_UNINITIALIZED);
+        new_pointer.pointer_handle =
+                HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
     }
     else
     {
@@ -3988,14 +4044,18 @@ void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction)
             "SPIRV simulator: Op_ImageTexelPointer must only be used to create pointer types");
 
     Value    init = MakeDefault(type.pointer.pointee_type_id);
-    PointerV new_pointer{ HeapAllocate(spv::StorageClass::StorageClassImage, init),
-                          type_id,
-                          result_id,
-                          spv::StorageClass::StorageClassImage,
-                          {} };
+    PointerV new_pointer{
+        HeapAllocate(spv::StorageClass::StorageClassImage, init),
+        SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED,
+        type_id,
+        result_id,
+        spv::StorageClass::StorageClassImage,
+        {}};
 
     SetValue(result_id, new_pointer);
-    SetIsArbitrary(result_id);
+
+    // All pointers are arbitrary
+    SetFlags(result_id, SPS_FLAG_IS_ARBITRARY);
 }
 
 void SPIRVSimulator::Op_Load(const Instruction& instruction)
@@ -4031,13 +4091,7 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
         SetIsArbitrary(result_id);
     }
 
-    if (values_stored_.find(pointer_id) != values_stored_.end())
-    {
-        if (ValueIsArbitrary(values_stored_[pointer_id]))
-        {
-            SetIsArbitrary(result_id);
-        }
-    }
+    TransferFlagsFromPointee(result_id, pointer);
 }
 
 void SPIRVSimulator::Op_Store(const Instruction& instruction)
@@ -4060,6 +4114,7 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     const PointerV& pointer    = std::get<PointerV>(GetValue(pointer_id));
 
     WritePointer(pointer, GetValue(result_id));
+    OverrideFlagsPointee(pointer_id, result_id);
 
     // TODO: Compare pointer with candidates here and track
 
@@ -4166,12 +4221,8 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
 
     // TODO: Compare pointer with candidates here and track
 
-    if (ValueIsArbitrary(base_id))
-    {
-        SetIsArbitrary(result_id);
-    }
-
     SetValue(result_id, new_pointer);
+    TransferFlags(result_id, base_id);
 }
 
 void SPIRVSimulator::Op_Function(const Instruction& instruction)
@@ -4405,10 +4456,7 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     if (call_stack_.size())
     {
         SetValue(result_id, return_value);
-        if (ValueIsArbitrary(value_id))
-        {
-            SetIsArbitrary(result_id);
-        }
+        TransferFlags(result_id, value_id);
     }
 }
 
@@ -4475,11 +4523,8 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type for Op_FAdd, must be vector or float");
     }
-
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ExtInst(const Instruction& instruction)
@@ -4519,6 +4564,7 @@ void SPIRVSimulator::Op_ExtInst(const Instruction& instruction)
                       << " (length: " << set_literal.length() << ") " << " does not exist" << std::endl;
         }
         SetValue(result_id, MakeDefault(type_id));
+        SetFlags(result_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY);
     }
 }
 
@@ -4635,10 +4681,8 @@ void SPIRVSimulator::Op_FMul(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_FMul, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_INotEqual(const Instruction& instruction)
@@ -4749,10 +4793,8 @@ void SPIRVSimulator::Op_INotEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_IAdd, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
@@ -4863,10 +4905,8 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_IAdd, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ISub(const Instruction& instruction)
@@ -4885,10 +4925,18 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpISub);
 
-    uint32_t type_id   = instruction.words[1];
-    uint32_t result_id = instruction.words[2];
+    uint32_t type_id      = instruction.words[1];
+    uint32_t result_id    = instruction.words[2];
+    uint32_t operand_1_id = instruction.words[3];
+    uint32_t operand_2_id = instruction.words[4];
 
     Type type = GetTypeByTypeId(type_id);
+
+    uint64_t t_flags = SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED;
+
+    // If we have a free case, that means we can assume any value, and should take care to avoid some common
+    // pitfalls for uninitialized values
+    bool free_case = HasFlags(operand_1_id, t_flags) || HasFlags(operand_2_id, t_flags);
 
     if (type.kind == Type::Kind::Vector)
     {
@@ -4914,12 +4962,38 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
 
             if (std::holds_alternative<uint64_t>(vec1->elems[i]) && std::holds_alternative<uint64_t>(vec2->elems[i]))
             {
-                elem_result = (std::get<uint64_t>(vec1->elems[i]) - std::get<uint64_t>(vec2->elems[i]));
+                uint64_t base_value = std::get<uint64_t>(vec1->elems[i]);
+                uint64_t sub_value = std::get<uint64_t>(vec2->elems[i]);
+                if (free_case)
+                {
+                    // Avoids wrapping which can lead to really long loops
+                    if (base_value < sub_value)
+                    {
+                        elem_result = 0;
+                    }
+                }
+                else
+                {
+                    elem_result = base_value - sub_value;
+                }
             }
             else if (std::holds_alternative<uint64_t>(vec1->elems[i]) &&
                      std::holds_alternative<int64_t>(vec2->elems[i]))
             {
-                elem_result = (std::get<uint64_t>(vec1->elems[i]) - std::get<int64_t>(vec2->elems[i]));
+                uint64_t base_value = std::get<uint64_t>(vec1->elems[i]);
+                uint64_t sub_value = std::get<int64_t>(vec2->elems[i]);
+                if (free_case)
+                {
+                    // Avoids wrapping which can lead to really long loops
+                    if (base_value < sub_value)
+                    {
+                        elem_result = 0;
+                    }
+                }
+                else
+                {
+                    elem_result = base_value - sub_value;
+                }
             }
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
             {
@@ -4948,11 +5022,37 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         Value result;
         if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<uint64_t>(op2))
         {
-            result = (std::get<uint64_t>(op1) - std::get<uint64_t>(op2));
+            uint64_t base_value = std::get<uint64_t>(op1);
+            uint64_t sub_value = std::get<uint64_t>(op2);
+            if (free_case)
+            {
+                // Avoids wrapping which can lead to really long loops
+                if (base_value < sub_value)
+                {
+                    result = 0;
+                }
+            }
+            else
+            {
+                result = base_value - sub_value;
+            }
         }
         else if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<int64_t>(op2))
         {
-            result = (std::get<uint64_t>(op1) - std::get<int64_t>(op2));
+            uint64_t base_value = std::get<uint64_t>(op1);
+            uint64_t sub_value = std::get<int64_t>(op2);
+            if (free_case)
+            {
+                // Avoids wrapping which can lead to really long loops
+                if (base_value < sub_value)
+                {
+                    result = 0;
+                }
+            }
+            else
+            {
+                result = base_value - sub_value;
+            }
         }
         else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<int64_t>(op2))
         {
@@ -4974,10 +5074,8 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_ISub, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
@@ -5033,10 +5131,7 @@ void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(operand_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, operand_id);
 }
 
 void SPIRVSimulator::Op_Capability(const Instruction& instruction)
@@ -5230,6 +5325,7 @@ void SPIRVSimulator::Op_ArrayLength(const Instruction& instruction)
                 }
 
                 SetValue(result_id, (uint64_t)1);
+                SetFlags(result_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY);
             }
         }
         else
@@ -5243,6 +5339,7 @@ void SPIRVSimulator::Op_ArrayLength(const Instruction& instruction)
             }
 
             SetValue(result_id, (uint64_t)1);
+            SetFlags(result_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY);
         }
     }
     else
@@ -5255,6 +5352,7 @@ void SPIRVSimulator::Op_ArrayLength(const Instruction& instruction)
         }
 
         SetValue(result_id, (uint64_t)1);
+        SetFlags(result_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY);
     }
 }
 
@@ -5508,10 +5606,8 @@ void SPIRVSimulator::Op_UGreaterThanEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_UGreaterThanEqual, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_Phi(const Instruction& instruction)
@@ -5548,16 +5644,12 @@ void SPIRVSimulator::Op_Phi(const Instruction& instruction)
         if (block_id == prev_block_id_)
         {
             SetValue(result_id, GetValue(variable_id));
-
-            if (ValueIsArbitrary(variable_id))
-            {
-                SetIsArbitrary(result_id);
-            }
+            TransferFlags(result_id, variable_id);
             return;
         }
     }
 
-    assertx("SPIRV simulator: Op_Phi faield to find a valid source block ID, something is broken in the control flow "
+    assertx("SPIRV simulator: Op_Phi failed to find a valid source block ID, something is broken in the control flow "
             "handling.");
 }
 
@@ -5624,10 +5716,7 @@ void SPIRVSimulator::Op_ConvertUToF(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid return type in OpConvertUToF, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_ConvertSToF(const Instruction& instruction)
@@ -5692,10 +5781,7 @@ void SPIRVSimulator::Op_ConvertSToF(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_ConvertSToF, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_FDiv(const Instruction& instruction)
@@ -5768,10 +5854,8 @@ void SPIRVSimulator::Op_FDiv(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_FDiv, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FSub(const Instruction& instruction)
@@ -5843,10 +5927,8 @@ void SPIRVSimulator::Op_FSub(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_FSub, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_VectorTimesScalar(const Instruction& instruction)
@@ -5896,10 +5978,8 @@ void SPIRVSimulator::Op_VectorTimesScalar(const Instruction& instruction)
 
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_SLessThan(const Instruction& instruction)
@@ -5973,10 +6053,8 @@ void SPIRVSimulator::Op_SLessThan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_SLessThan, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_Dot(const Instruction& instruction)
@@ -6028,10 +6106,8 @@ void SPIRVSimulator::Op_Dot(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_Dot, must be float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FOrdGreaterThan(const Instruction& instruction)
@@ -6095,10 +6171,8 @@ void SPIRVSimulator::Op_FOrdGreaterThan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_FOrdGreaterThan, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FOrdGreaterThanEqual(const Instruction& instruction)
@@ -6163,10 +6237,8 @@ void SPIRVSimulator::Op_FOrdGreaterThanEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_FOrdGreaterThanEqual, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FOrdEqual(const Instruction& instruction)
@@ -6231,10 +6303,8 @@ void SPIRVSimulator::Op_FOrdEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_FOrdEqual, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FOrdNotEqual(const Instruction& instruction)
@@ -6299,10 +6369,8 @@ void SPIRVSimulator::Op_FOrdNotEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_FOrdNotEqual, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_CompositeExtract(const Instruction& instruction)
@@ -6361,10 +6429,7 @@ void SPIRVSimulator::Op_CompositeExtract(const Instruction& instruction)
 
     SetValue(result_id, *current_composite);
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
@@ -6571,7 +6636,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         }
 
         PointerV new_pointer{
-            bit_cast<uint64_t>(remapped_pointer), type_id, result_id, type.pointer.storage_class, {}
+            bit_cast<uint64_t>(remapped_pointer), 0, type_id, result_id, type.pointer.storage_class, {}
         };
         physical_address_pointers_.push_back(new_pointer);
         result = new_pointer;
@@ -6590,10 +6655,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
 
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_IMul(const Instruction& instruction)
@@ -6685,10 +6747,8 @@ void SPIRVSimulator::Op_IMul(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_IMul, must be vector or integer type");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
@@ -6739,7 +6799,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
         }
     }
 
-    PointerV new_pointer{ pointer_value, type_id, result_id, type.pointer.storage_class, {} };
+    PointerV new_pointer{ pointer_value, 0, type_id, result_id, type.pointer.storage_class, {} };
     physical_address_pointers_.push_back(new_pointer);
     SetValue(result_id, new_pointer);
 
@@ -6752,10 +6812,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
     pointer_data.raw_pointer_value = pointer_value;
     physical_address_pointer_source_data_.push_back(std::move(pointer_data));
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
@@ -6848,10 +6905,8 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or unsigned-integer");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_UMod(const Instruction& instruction)
@@ -6952,10 +7007,8 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or unsigned-integer");
     }
 
-    if (ValueIsArbitrary(operand1_id) || ValueIsArbitrary(operand2_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, operand1_id);
+    TransferFlags(result_id, operand2_id);
 }
 
 void SPIRVSimulator::Op_ULessThan(const Instruction& instruction)
@@ -7028,10 +7081,8 @@ void SPIRVSimulator::Op_ULessThan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ConstantTrue(const Instruction& instruction)
@@ -7156,6 +7207,9 @@ void SPIRVSimulator::Op_AtomicIAdd(const Instruction& instruction)
 
     WritePointer(pointer, result);
     SetValue(result_id, pointee_val);
+
+    TransferFlagsFromPointee(result_id, pointer);
+    TransferFlagsToPointee(pointer, value_id);
 }
 
 void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
@@ -7187,10 +7241,29 @@ void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
     const Value& pointee_val  = ReadPointer(pointer);
     const Value& source_value = GetValue(value_id);
 
+    uint64_t t_flags = SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED;
+
+    // If we have a free case, that means we can assume any value, and should take care to avoid some common
+    // pitfalls for uninitialized values
+    bool free_case = HasFlagsPointee(pointer, t_flags) || HasFlags(value_id, t_flags);
+
     Value result;
     if (std::holds_alternative<uint64_t>(pointee_val) && std::holds_alternative<uint64_t>(source_value))
     {
-        result = std::get<uint64_t>(pointee_val) - std::get<uint64_t>(source_value);
+        uint64_t base_value = std::get<uint64_t>(pointee_val);
+        uint64_t sub_value = std::get<uint64_t>(source_value);
+        if (free_case)
+        {
+            // Avoids wrapping which can lead to really long loops
+            if (base_value < sub_value)
+            {
+                result = 0;
+            }
+        }
+        else
+        {
+            result = base_value - sub_value;
+        }
     }
     else if (std::holds_alternative<int64_t>(pointee_val) && std::holds_alternative<int64_t>(source_value))
     {
@@ -7203,6 +7276,9 @@ void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
 
     WritePointer(pointer, result);
     SetValue(result_id, pointee_val);
+
+    TransferFlagsFromPointee(result_id, pointer);
+    TransferFlagsToPointee(pointer, value_id);
 }
 
 void SPIRVSimulator::Op_Select(const Instruction& instruction)
@@ -7265,20 +7341,12 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
             if (cond_val)
             {
                 result_vec->elems.push_back(vec1->elems[i]);
-
-                if (ValueIsArbitrary(instruction.words[4]))
-                {
-                    SetIsArbitrary(result_id);
-                }
+                TransferFlags(result_id, instruction.words[4]);
             }
             else
             {
                 result_vec->elems.push_back(vec2->elems[i]);
-
-                if (ValueIsArbitrary(instruction.words[5]))
-                {
-                    SetIsArbitrary(result_id);
-                }
+                TransferFlags(result_id, instruction.words[5]);
             }
         }
 
@@ -7293,27 +7361,16 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
         if (condition_int)
         {
             SetValue(result_id, val_op1);
-
-            if (ValueIsArbitrary(instruction.words[4]))
-            {
-                SetIsArbitrary(result_id);
-            }
+            TransferFlags(result_id, instruction.words[4]);
         }
         else
         {
             SetValue(result_id, val_op2);
-
-            if (ValueIsArbitrary(instruction.words[5]))
-            {
-                SetIsArbitrary(result_id);
-            }
+            TransferFlags(result_id, instruction.words[5]);
         }
     }
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_IEqual(const Instruction& instruction)
@@ -7423,10 +7480,8 @@ void SPIRVSimulator::Op_IEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type for Op_IEqual, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
@@ -7492,10 +7547,8 @@ void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
     *current_composite         = CopyValue(source_object);
     SetValue(result_id, composite_copy);
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
@@ -7553,10 +7606,7 @@ void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
 
     SetValue(result_id, new_matrix);
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
@@ -7611,10 +7661,7 @@ void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_UGreaterThan(const Instruction& instruction)
@@ -7679,10 +7726,8 @@ void SPIRVSimulator::Op_UGreaterThan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FOrdLessThan(const Instruction& instruction)
@@ -7745,10 +7790,8 @@ void SPIRVSimulator::Op_FOrdLessThan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_FOrdLessThanEqual(const Instruction& instruction)
@@ -7810,10 +7853,8 @@ void SPIRVSimulator::Op_FOrdLessThanEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_Switch(const Instruction& instruction)
@@ -7934,10 +7975,8 @@ void SPIRVSimulator::Op_MatrixTimesVector(const Instruction& instruction)
 
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction)
@@ -8011,10 +8050,8 @@ void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction)
 
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
@@ -8114,10 +8151,8 @@ void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_ShiftRightLogical, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction)
@@ -8215,10 +8250,8 @@ void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_ShiftLeftLogical, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_BitwiseOr(const Instruction& instruction)
@@ -8338,10 +8371,8 @@ void SPIRVSimulator::Op_BitwiseOr(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
@@ -8478,10 +8509,8 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_All(const Instruction& instruction)
@@ -8520,10 +8549,7 @@ void SPIRVSimulator::Op_All(const Instruction& instruction)
     Value result = (uint64_t)result_bool;
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_Any(const Instruction& instruction)
@@ -8562,10 +8588,7 @@ void SPIRVSimulator::Op_Any(const Instruction& instruction)
     Value result = (uint64_t)result_bool;
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
@@ -8625,6 +8648,9 @@ void SPIRVSimulator::Op_BitCount(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result value, must be vector or int");
     }
 
+    TransferFlags(result_id, instruction.words[3]);
+
+    // This must be done because the presence of any pointers in the target object will make bitcount arbitrary
     if (is_arbitrary)
     {
         SetIsArbitrary(result_id);
@@ -8752,10 +8778,8 @@ void SPIRVSimulator::Op_VectorTimesMatrix(const Instruction& instruction)
 
     SetValue(result_id, result);
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ULessThanEqual(const Instruction& instruction)
@@ -8820,10 +8844,8 @@ void SPIRVSimulator::Op_ULessThanEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_SLessThanEqual(const Instruction& instruction)
@@ -8887,10 +8909,8 @@ void SPIRVSimulator::Op_SLessThanEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_SGreaterThanEqual(const Instruction& instruction)
@@ -8954,10 +8974,8 @@ void SPIRVSimulator::Op_SGreaterThanEqual(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_SGreaterThan(const Instruction& instruction)
@@ -9021,10 +9039,8 @@ void SPIRVSimulator::Op_SGreaterThan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
@@ -9121,10 +9137,8 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or signed int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
@@ -9185,10 +9199,7 @@ void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or integer");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_LogicalOr(const Instruction& instruction)
@@ -9255,10 +9266,8 @@ void SPIRVSimulator::Op_LogicalOr(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_LogicalAnd(const Instruction& instruction)
@@ -9325,10 +9334,8 @@ void SPIRVSimulator::Op_LogicalAnd(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_MatrixTimesMatrix(const Instruction& instruction)
@@ -9405,10 +9412,8 @@ void SPIRVSimulator::Op_MatrixTimesMatrix(const Instruction& instruction)
 
     SetValue(result_id, result_matrix);
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
@@ -9491,10 +9496,7 @@ void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or bool");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
@@ -9959,7 +9961,7 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
 
     Level of Detail is used to compute which mipmap level to query and must be a 32-bit integer type scalar.
     */
-    assert(instruction.opcode == spv::Op::OpImageQuerySize);
+    assert(instruction.opcode == spv::Op::OpImageQuerySizeLod);
 
     uint32_t result_type_id = instruction.words[1];
     uint32_t result_id      = instruction.words[2];
@@ -9979,43 +9981,19 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
         case spv::Dim::Dim1D:
         case spv::Dim::DimBuffer:
         {
-            if (image_type.image.dim == spv::Dim::Dim1D)
-            {
-                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
-                            image_type.image.sampled == 2,
-                        "SPIRV simulator: Invalid image configuration for 1D image");
-            }
-
             size.resize(1, 1);
-
             break;
         }
         case spv::Dim::Dim2D:
         case spv::Dim::DimCube:
         case spv::Dim::DimRect:
         {
-            if (image_type.image.dim == spv::Dim::Dim2D || image_type.image.dim == spv::Dim::DimCube)
-            {
-                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
-                            image_type.image.sampled == 2,
-                        "SPIRV simulator: Invalid image configuration for 2D image");
-            }
-
             size.resize(2, 1);
-
             break;
         }
         case spv::Dim::Dim3D:
         {
-            if (image_type.image.dim == spv::Dim::Dim3D)
-            {
-                assertm(image_type.image.multisampled == 1 || image_type.image.sampled == 0 ||
-                            image_type.image.sampled == 2,
-                        "SPIRV simulator: Invalid image configuration for 3D image");
-            }
-
             size.resize(3, 1);
-
             break;
         }
         default:
@@ -10143,11 +10121,7 @@ void SPIRVSimulator::Op_FConvert(const Instruction& instruction)
 
     // We always store as doubles, this just equates to a type change
     SetValue(result_id, GetValue(value_id));
-
-    if (ValueIsArbitrary(value_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_Image(const Instruction& instruction)
@@ -10236,10 +10210,7 @@ void SPIRVSimulator::Op_ConvertFToS(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
-    if (ValueIsArbitrary(operand_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, operand_id);
 }
 
 void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
@@ -10305,10 +10276,7 @@ void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
-    if (ValueIsArbitrary(operand_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, operand_id);
 }
 
 void SPIRVSimulator::Op_FRem(const Instruction& instruction)
@@ -10387,10 +10355,8 @@ void SPIRVSimulator::Op_FRem(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
-    if (ValueIsArbitrary(operand_1_id) || ValueIsArbitrary(operand_2_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, operand_1_id);
+    TransferFlags(result_id, operand_2_id);
 }
 
 void SPIRVSimulator::Op_FMod(const Instruction& instruction)
@@ -10479,10 +10445,8 @@ void SPIRVSimulator::Op_FMod(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
-    if (ValueIsArbitrary(operand_1_id) || ValueIsArbitrary(operand_2_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, operand_1_id);
+    TransferFlags(result_id, operand_2_id);
 }
 
 void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
@@ -10521,18 +10485,14 @@ void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicOr");
     assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicOr");
 
-    const PointerV& pointer     = std::get<PointerV>(pointer_val);
-    const Value&    pointee_val = ReadPointer(pointer);
+    const PointerV&    pointer     = std::get<PointerV>(pointer_val);
+    const Value& pointee_val = ReadPointer(pointer);
 
     assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicOr");
 
     SetValue(result_id, pointee_val);
-
-    if (ValueIsArbitrary(pointer_id) || PointeeValueIsArbitrary(pointer))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlagsFromPointee(result_id, pointer);
 
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
@@ -10544,6 +10504,8 @@ void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
         Value result = (int64_t)(std::get<int64_t>(pointee_val) | std::get<int64_t>(value));
         WritePointer(pointer, result);
     }
+
+    TransferFlagsToPointee(pointer_id, value_id);
 }
 
 void SPIRVSimulator::Op_AtomicUMax(const Instruction& instruction)
@@ -10582,18 +10544,14 @@ void SPIRVSimulator::Op_AtomicUMax(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMax");
     assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMax");
 
-    const PointerV& pointer     = std::get<PointerV>(pointer_val);
-    const Value&    pointee_val = ReadPointer(pointer);
+    const PointerV&    pointer     = std::get<PointerV>(pointer_val);
+    const Value& pointee_val = ReadPointer(pointer);
 
     assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicUMax");
 
     SetValue(result_id, pointee_val);
-
-    if (ValueIsArbitrary(pointer_id) || PointeeValueIsArbitrary(pointer))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlagsFromPointee(result_id, pointer);
 
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
@@ -10605,6 +10563,8 @@ void SPIRVSimulator::Op_AtomicUMax(const Instruction& instruction)
         Value result = (int64_t)std::max(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
         WritePointer(pointer, result);
     }
+
+    TransferFlagsToPointee(pointer_id, value_id);
 }
 
 void SPIRVSimulator::Op_AtomicUMin(const Instruction& instruction)
@@ -10644,18 +10604,14 @@ void SPIRVSimulator::Op_AtomicUMin(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMin");
     assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMin");
 
-    const PointerV& pointer     = std::get<PointerV>(pointer_val);
-    const Value&    pointee_val = ReadPointer(pointer);
+    const PointerV&    pointer     = std::get<PointerV>(pointer_val);
+    const Value& pointee_val = ReadPointer(pointer);
 
     assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicUMin");
 
     SetValue(result_id, pointee_val);
-
-    if (ValueIsArbitrary(pointer_id) || PointeeValueIsArbitrary(pointer))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlagsFromPointee(result_id, pointer);
 
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
@@ -10667,6 +10623,8 @@ void SPIRVSimulator::Op_AtomicUMin(const Instruction& instruction)
         Value result = (int64_t)std::min(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
         WritePointer(pointer, result);
     }
+
+    TransferFlagsToPointee(pointer_id, value_id);
 }
 
 void SPIRVSimulator::Op_BitReverse(const Instruction& instruction)
@@ -10767,10 +10725,7 @@ void SPIRVSimulator::Op_BitReverse(const Instruction& instruction)
         }
     }
 
-    if (ValueIsArbitrary(base_id))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, base_id);
 }
 
 void SPIRVSimulator::Op_BitwiseXor(const Instruction& instruction)
@@ -10891,10 +10846,8 @@ void SPIRVSimulator::Op_BitwiseXor(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ControlBarrier(const Instruction& instruction)
@@ -11071,10 +11024,8 @@ void SPIRVSimulator::Op_ShiftRightArithmetic(const Instruction& instruction)
         assertx("SPIRV simulator: Invalid result type in Op_ShiftRightArithmetic, must be vector or int");
     }
 
-    if (ValueIsArbitrary(instruction.words[3]) || ValueIsArbitrary(instruction.words[4]))
-    {
-        SetIsArbitrary(result_id);
-    }
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformAll(const Instruction& instruction)
@@ -11106,6 +11057,7 @@ void SPIRVSimulator::Op_GroupNonUniformAll(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(predicate_id));
+    TransferFlags(result_id, predicate_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformAny(const Instruction& instruction)
@@ -11137,6 +11089,7 @@ void SPIRVSimulator::Op_GroupNonUniformAny(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(predicate_id));
+    TransferFlags(result_id, predicate_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformBallot(const Instruction& instruction)
@@ -11194,6 +11147,7 @@ void SPIRVSimulator::Op_GroupNonUniformBallot(const Instruction& instruction)
 
     SetValue(result_id, result);
     SetIsArbitrary(result_id);
+    TransferFlags(result_id, predicate_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformBallotBitCount(const Instruction& instruction)
@@ -11236,7 +11190,9 @@ void SPIRVSimulator::Op_GroupNonUniformBallotBitCount(const Instruction& instruc
 
     bool arb_count = false;
     SetValue(result_id, (uint64_t)CountSetBits(value, GetTypeID(value_id), &arb_count));
+    TransferFlags(result_id, value_id);
     SetIsArbitrary(result_id);
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformBroadcastFirst(const Instruction& instruction)
@@ -11267,6 +11223,7 @@ void SPIRVSimulator::Op_GroupNonUniformBroadcastFirst(const Instruction& instruc
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformElect(const Instruction& instruction)
@@ -11337,6 +11294,7 @@ void SPIRVSimulator::Op_GroupNonUniformFMax(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformFMin(const Instruction& instruction)
@@ -11379,6 +11337,7 @@ void SPIRVSimulator::Op_GroupNonUniformFMin(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformIAdd(const Instruction& instruction)
@@ -11418,6 +11377,7 @@ void SPIRVSimulator::Op_GroupNonUniformIAdd(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformShuffle(const Instruction& instruction)
@@ -11453,6 +11413,7 @@ void SPIRVSimulator::Op_GroupNonUniformShuffle(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
@@ -11492,6 +11453,7 @@ void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
 
     SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction& instruction)
