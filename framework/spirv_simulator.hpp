@@ -14,6 +14,7 @@
 #include <vector>
 #include <type_traits>
 #include <cassert>
+#include <limits>
 
 //  Flip SPIRV_HEADERS_PRESENT to 1 to auto‑pull the SPIR‑V-Headers from the environment.
 #define SPV_ENABLE_UTILITY_CODE 1
@@ -644,6 +645,30 @@ bit_cast(const From& src) noexcept
     To dst;
     std::memcpy(&dst, &src, sizeof(To));
     return dst;
+}
+
+// On x86 platforms, pointers are not 64bit
+// This template should catch any reads from a pointer and safely convert it into x64 value
+template <class From>
+typename std::enable_if_t<std::is_pointer_v<From> && sizeof(std::uintptr_t) != sizeof(uint64_t), uint64_t>
+bit_cast(From p) noexcept
+{
+    return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(p));
+}
+
+// On x86 platforms, pointers are not 64bit
+// This template tries to convert uint64_t value to a readable pointer
+// However, uint64_t value might not fit into a std::uintptr_t on x86
+// In practice, should not happen
+template <class To>
+typename std::enable_if_t<std::is_pointer_v<To>, To> bit_cast(std::uint64_t v) noexcept
+{
+    if constexpr (sizeof(std::uintptr_t) < sizeof(std::uint64_t))
+    {
+        // On 32-bit, ensure no information would be lost.
+        assert(v <= std::numeric_limits<uint32_t>::max() && "uint64_t value doesn't fit in uintptr_t");
+    }
+    return reinterpret_cast<To>(static_cast<std::uintptr_t>(v));
 }
 
 class SPIRVSimulator
