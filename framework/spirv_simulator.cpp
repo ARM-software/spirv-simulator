@@ -2355,7 +2355,9 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
 
         std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
 
-        WriteValue(external_pointer, type.pointer.pointee_type_id, out_value);
+        uint32_t target_type_id = GetTargetPointerType(ptr);
+        WriteValue(external_pointer, target_type_id, out_value);
+
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
@@ -2432,14 +2434,16 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
              type.pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
              type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
     {
-        auto             offset           = GetPointerOffset(ptr);
-        const std::byte* external_pointer = bit_cast<const std::byte*>(ptr.pointer_handle) + offset;
-
+        const std::byte* external_pointer = bit_cast<const std::byte*>(ptr.pointer_handle);
         std::vector<uint32_t> buffer_data;
         ReadWords(external_pointer, type.pointer.pointee_type_id, buffer_data);
 
+        auto            offset         = GetPointerOffset(ptr);
         const uint32_t* buffer_pointer = buffer_data.data();
-        return MakeDefault(type.pointer.pointee_type_id, &(buffer_pointer));
+        buffer_pointer += offset/4;
+
+        uint32_t target_type_id = GetTargetPointerType(ptr);
+        return MakeDefault(target_type_id, &(buffer_pointer));
     }
     else
     {
