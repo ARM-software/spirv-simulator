@@ -26,8 +26,8 @@ target_link_libraries(declaration_test PRIVATE GTest::gtest_main GTest::gmock sp
 include(CTest)
 include(GoogleTest)
 
-gtest_discover_tests(arithmetic_test REPORTER compact)
-gtest_discover_tests(declaration_test REPORTER compact)
+gtest_discover_tests(arithmetic_test REPORTER compact DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(declaration_test REPORTER compact DISCOVERY_MODE PRE_TEST)
 
 add_custom_target(run_tests
   COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
