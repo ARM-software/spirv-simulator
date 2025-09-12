@@ -34,9 +34,10 @@ namespace SPIRVSimulator
 
 // Any result ID or pointer object ID in this set, can be treated as if it has
 // any valid value for the given type
-#define SPS_FLAG_IS_ARBITRARY  1
-#define SPS_FLAG_UNINITIALIZED 2
-#define SPS_FLAG_IS_CANDIDATA  4
+#define SPS_FLAG_IS_ARBITRARY       1
+#define SPS_FLAG_UNINITIALIZED      2
+#define SPS_FLAG_IS_CANDIDATE       4
+#define SPS_FLAG_IS_PBUFFER_PTR     8
 
 // Used by tracing tools to pass in potential pbuffer candidates.
 // This is optional but allows for easier remapping user side in most cases
@@ -106,7 +107,7 @@ struct InputData
     // If provided, the simulator will mark candidates in this when it finds a physical address pointer
     // and raise an error if it finds a physical address pointer with no candidate in this list.
     // If the map is empty all candidate related code and functionality will be skipped.
-    std::unordered_map<const void*, PhysicalAddressCandidate> candidates;
+    std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> candidates;
 
     // Optional value, a unique identifier for the input shader.
     // If provided, this can allow the simulator to massively speed up simulation time
@@ -139,6 +140,9 @@ struct DataSourceBits
 
     // If location is StorageClass, this holds the storage class
     spv::StorageClass storage_class;
+
+    // The input source pointer this comes from
+    const void* source_ptr = nullptr;
 
     // If the location is StorageClass and the pointer is located in a array of Block's
     // then this is the array index which holds the descriptor block containing the pointer
@@ -371,6 +375,11 @@ using Value = std::variant<std::monostate,
                            PointerV,
                            SampledImageV>;
 
+struct ValueMetadata
+{
+    uint64_t flags = 0;
+};
+
 struct PointerV
 {
     // Either an index (if the storage class is stored in internal heaps), or the actual pointer value
@@ -378,8 +387,8 @@ struct PointerV
     // pointer
     uint64_t pointer_handle;
 
-    // Flags and metadata related to the object this pointer points to
-    uint64_t pointee_meta;
+    // Flags related to the object this pointer points to, the full meta struct is redundant as the pointer keeps track of those values
+    uint64_t pointee_flags;
 
     // The following two values refer to the base pointers type and result id.
     // Eg. a pointer created from OpAccessChain will keep these as they were in the base pointer.
@@ -399,7 +408,7 @@ struct PointerV
 inline bool operator==(const PointerV& a, const PointerV& b)
 {
   return a.pointer_handle == b.pointer_handle &&
-         a.pointee_meta == b.pointee_meta && a.base_type_id == b.base_type_id &&
+         a.pointee_flags == b.pointee_flags && a.base_type_id == b.base_type_id &&
          a.base_result_id == b.base_result_id &&
          a.storage_class == b.storage_class && a.idx_path == b.idx_path;
 }
@@ -648,6 +657,7 @@ bit_cast(const From& src) noexcept
     return dst;
 }
 
+
 // On x86 platforms, pointers are not 64bit
 // This template should catch any reads from a pointer and safely convert it into x64 value
 template <class To, class From>
@@ -672,6 +682,7 @@ typename std::enable_if_t<std::is_pointer_v<To>, To> bit_cast(std::uint64_t v) n
     return reinterpret_cast<To>(static_cast<std::uintptr_t>(v));
 }
 
+
 class SPIRVSimulator
 {
   public:
@@ -689,6 +700,11 @@ class SPIRVSimulator
     const std::vector<PhysicalAddressData>& GetPhysicalAddressData() const
     {
         return physical_address_pointer_source_data_;
+    }
+
+    const std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>>& GetOutputCandidateData() const
+    {
+        return output_candidates_;
     }
 
     std::set<std::string> unsupported_opcodes;
@@ -742,6 +758,9 @@ class SPIRVSimulator
     std::vector<PhysicalAddressData>             physical_address_pointer_source_data_;
     std::unordered_map<uint32_t, DataSourceBits> data_source_bits_;
 
+    // TODO: Proper
+    std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> output_candidates_;
+
     // Control flow
     struct FunctionInfo
     {
@@ -778,7 +797,7 @@ class SPIRVSimulator
     // result_id -> Value
     // std::unordered_map<uint32_t, Value> globals_;
     std::vector<Value> values_;
-    std::vector<uint64_t> value_meta_;
+    std::vector<ValueMetadata> value_meta_;
     std::vector<Value> function_heap_;
 
     // storage_class -> heap_index -> Heap Value for all non-function storage classes
@@ -798,8 +817,8 @@ class SPIRVSimulator
     virtual void Validate();
     virtual bool ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void ExecuteInstructions();
-    virtual void
-    CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
+    virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
+
     virtual std::string  GetValueString(const Value&);
     virtual std::string  GetTypeString(const Type&);
     virtual void         PrintInstruction(const Instruction&);
@@ -810,60 +829,174 @@ class SPIRVSimulator
     virtual void         WritePointer(const PointerV& ptr, const Value& value);
     virtual Value        ReadPointer(const PointerV& ptr);
     virtual const Value& GetValue(uint32_t result_id);
-    virtual void         SetValue(uint32_t result_id, const Value& value);
+    virtual void         SetValue(uint32_t result_id, const Value& value, bool clear_meta=true);
     virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t     GetTypeID(uint32_t result_id) const;
     virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value);
-    virtual void     ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
-    virtual uint64_t GetPointerOffset(const PointerV& pointer_value);
+    virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
+    virtual uint64_t GetPointerOffset(const PointerV& pointer_value) const;
     virtual size_t   CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
     virtual size_t   GetBitizeOfType(uint32_t type_id);
     virtual uint32_t GetTargetPointerType(const PointerV& pointer);
     virtual size_t   GetBitizeOfTargetType(const PointerV& pointer);
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
-    virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator);
-    virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator);
-    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0);
-    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0);
+    virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
+    virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator) const;
+    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0) const;
+    virtual uint32_t GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0) const;
+
     virtual bool ValueIsArbitrary(uint32_t result_id) const {
-      return value_meta_[result_id] & SPS_FLAG_IS_ARBITRARY;
+        return value_meta_[result_id].flags & SPS_FLAG_IS_ARBITRARY;
     };
-    virtual bool PointeeValueIsArbitrary(const PointerV& pointer) const { (void)pointer; return false; };
+    virtual bool PointeeValueIsArbitrary(const PointerV& pointer) const {
+        return pointer.pointee_flags & SPS_FLAG_IS_ARBITRARY;
+    };
+    virtual bool ValueIsCandidate(uint32_t result_id) const {
+        return value_meta_[result_id].flags & SPS_FLAG_IS_CANDIDATE;
+    };
+
+    virtual bool ValueHoldsPbufferPtr(uint32_t result_id) const {
+        return value_meta_[result_id].flags & SPS_FLAG_IS_PBUFFER_PTR;
+    };
+    virtual bool PointeeValueHoldsPbufferPtr(const PointerV& pointer) const {
+        return pointer.pointee_flags & SPS_FLAG_IS_PBUFFER_PTR;
+    };
+
+    virtual void SetHoldsPbufferPtr(uint32_t result_id) {
+        value_meta_[result_id].flags |= SPS_FLAG_IS_PBUFFER_PTR;
+    };
+    virtual void ClearHoldsPbufferPtr(uint32_t result_id) {
+        value_meta_[result_id].flags &= ~SPS_FLAG_IS_PBUFFER_PTR;
+    };
 
     virtual void SetIsArbitrary(uint32_t result_id) {
-      value_meta_[result_id] |= SPS_FLAG_IS_ARBITRARY;
+        value_meta_[result_id].flags |= SPS_FLAG_IS_ARBITRARY;
     };
     virtual void ClearIsArbitrary(uint32_t result_id) {
-      value_meta_[result_id] &= ~SPS_FLAG_IS_ARBITRARY;
+        value_meta_[result_id].flags &= ~SPS_FLAG_IS_ARBITRARY;
+    };
+
+    virtual void SetIsCandidate(uint32_t result_id) {
+        value_meta_[result_id].flags |= SPS_FLAG_IS_CANDIDATE;
+    };
+    virtual void ClearIsCandidate(uint32_t result_id) {
+        value_meta_[result_id].flags &= ~SPS_FLAG_IS_CANDIDATE;
+    };
+
+    virtual bool PointerIsCandidate(const void* potential_ptr, uint64_t offset) const {
+        if (input_data_.candidates.find(potential_ptr) != input_data_.candidates.end())
+        {
+            for (const auto& candidate : input_data_.candidates.at(potential_ptr))
+            {
+                if (candidate.offset == offset)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    virtual bool PointerIsCandidate(const PointerV& pointer_value) const {
+        const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
+        if (input_data_.candidates.find(potential_raw_ptr) != input_data_.candidates.end())
+        {
+            uint64_t pointee_offset = GetPointerOffset(pointer_value);
+            for (const auto& candidate : input_data_.candidates.at(potential_raw_ptr))
+            {
+                if (candidate.offset == pointee_offset)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    virtual void ConfirmCandidate(const void* potential_ptr, uint64_t offset) {
+        if (input_data_.candidates.find(potential_ptr) != input_data_.candidates.end())
+        {
+            for (auto& candidate : input_data_.candidates.at(potential_ptr))
+            {
+                if (candidate.offset == offset)
+                {
+                    candidate.verified = true;
+                }
+            }
+        }
+        // TODO: Report error
+    };
+
+    virtual void ConfirmCandidate(const PointerV& pointer_value) {
+        const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
+        if (input_data_.candidates.find(potential_raw_ptr) != input_data_.candidates.end())
+        {
+            uint64_t pointee_offset = GetPointerOffset(pointer_value);
+            for (auto& candidate : input_data_.candidates.at(potential_raw_ptr))
+            {
+                if (candidate.offset == pointee_offset)
+                {
+                    candidate.verified = true;
+                }
+            }
+        }
+        // TODO: Report error
+    };
+
+    virtual bool PointeeValueIsCandidate(const PointerV& pointer) const {
+        return pointer.pointee_flags & SPS_FLAG_IS_CANDIDATE;
     };
 
     virtual void TransferFlags(uint32_t target_rid, uint32_t source_rid) {
-      value_meta_[target_rid] |= value_meta_[source_rid];
+        value_meta_[target_rid].flags |= value_meta_[source_rid].flags;
     };
 
     virtual void TransferFlags(uint32_t result_id, uint64_t flags) {
-      value_meta_[result_id] |= flags;
+      value_meta_[result_id].flags |= flags;
     };
 
-    virtual void TransferFlagsToPointee(PointerV& pointer, uint32_t result_id) {pointer.pointee_meta |= value_meta_[result_id]; };
-    virtual void TransferFlagsToPointee(uint32_t pointer_id, uint32_t result_id) {std::get<PointerV>(values_[pointer_id]).pointee_meta |= value_meta_[result_id]; };
-    virtual void TransferFlagsFromPointee(uint32_t result_id, const PointerV& pointer) {value_meta_[result_id] |= pointer.pointee_meta; };
+    virtual void TransferFlagsToPointee(PointerV& pointer, uint32_t result_id) {
+        pointer.pointee_flags |= value_meta_[result_id].flags;
+    };
+    virtual void TransferFlagsToPointee(uint32_t pointer_id, uint32_t result_id) {
+        std::get<PointerV>(values_[pointer_id]).pointee_flags |= value_meta_[result_id].flags;
+    };
+    virtual void TransferFlagsFromPointee(uint32_t result_id, const PointerV& pointer) {
+        value_meta_[result_id].flags |= pointer.pointee_flags;
+    };
 
     virtual void ExtractFlags(uint32_t result_id, uint64_t& out_meta) {
-      out_meta |= value_meta_[result_id];
+      out_meta |= value_meta_[result_id].flags;
     };
 
-    virtual void SetFlags(uint32_t result_id, uint64_t flag) { value_meta_[result_id] |= flag; };
-    virtual void SetFlagsPointee(PointerV& pointer, uint64_t flag) { pointer.pointee_meta |= flag; };
-    virtual uint64_t GetFlags(uint32_t result_id) const { return value_meta_[result_id]; };
+    virtual void SetFlags(uint32_t result_id, uint64_t flag) {
+        value_meta_[result_id].flags |= flag;
+    };
+    virtual void SetFlagsPointee(PointerV& pointer, uint64_t flags) {
+        pointer.pointee_flags |= flags;
+    };
+    virtual void SetFlagsPointee(uint32_t pointer_id, uint64_t flags) {
+        std::get<PointerV>(values_[pointer_id]).pointee_flags |= flags;
+    };
+    virtual uint64_t GetFlags(uint32_t result_id) const {
+        return value_meta_[result_id].flags;
+    };
 
-    virtual void OverrideFlagsPointee(PointerV& pointer, uint32_t result_id) { pointer.pointee_meta = value_meta_[result_id]; };
-    virtual void OverrideFlagsPointee(uint32_t pointer_id, uint32_t result_id) { std::get<PointerV>(values_[pointer_id]).pointee_meta = value_meta_[result_id]; };
+    virtual void OverrideFlagsPointee(PointerV& pointer, uint32_t result_id) {
+        pointer.pointee_flags = value_meta_[result_id].flags;
+    };
+    virtual void OverrideFlagsPointee(uint32_t pointer_id, uint32_t result_id) {
+        std::get<PointerV>(values_[pointer_id]).pointee_flags = value_meta_[result_id].flags;
+    };
 
-    virtual bool HasFlags(uint32_t result_id, uint64_t flags) { return value_meta_[result_id] & flags; };
-    virtual bool HasFlagsPointee(const PointerV& pointer, uint64_t flags) { return pointer.pointee_meta & flags; };
+    virtual bool HasFlags(uint32_t result_id, uint64_t flags) {
+        return value_meta_[result_id].flags & flags;
+    };
+    virtual bool HasFlagsPointee(const PointerV& pointer, uint64_t flags) {
+        return pointer.pointee_flags & flags;
+    };
 
     virtual Value CopyValue(const Value& value) const;
 

@@ -27,7 +27,7 @@ TEST_P(DeclarationTests, ParametrizedDeclarationOperation)
     input_data_ = prepare_input_data(parameters);
 
     ::SPIRVSimulator::Value captured_value;
-    EXPECT_CALL(*this, SetValue(_, _)).WillOnce(SaveArg<1>(&captured_value));
+    EXPECT_CALL(*this, SetValue(_, _, true)).WillOnce(SaveArg<1>(&captured_value));
 
     this->ExecuteInstruction(inst);
 

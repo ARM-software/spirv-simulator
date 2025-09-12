@@ -25,7 +25,7 @@ TEST_P(ArithmeticsTests, ParametrizedArithmeticOperation)
                                         .words      = words };
 
     ::SPIRVSimulator::Value captured_value;
-    EXPECT_CALL(*this, SetValue(_, _)).WillOnce(SaveArg<1>(&captured_value));
+    EXPECT_CALL(*this, SetValue(_, _, true)).WillOnce(SaveArg<1>(&captured_value));
 
     this->ExecuteInstruction(inst);
 

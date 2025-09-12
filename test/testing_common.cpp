@@ -242,6 +242,8 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
         EXPECT_CALL(*this, HasFlags(_, _)).WillRepeatedly(::testing::Return(false));
         EXPECT_CALL(*this, ExtractFlags(_, _)).Times(::testing::AnyNumber());
         EXPECT_CALL(*this, SetFlags(_, _)).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, SetFlagsPointee(::testing::A<uint32_t>(), ::testing::A<uint64_t>())).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, SetFlagsPointee(::testing::A<::SPIRVSimulator::PointerV&>(), ::testing::A<uint64_t>())).Times(::testing::AnyNumber());
     }
 
     return words;

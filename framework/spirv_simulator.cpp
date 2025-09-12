@@ -193,7 +193,7 @@ void SPIRVSimulator::ParseAll()
 
     // Preinitialize to max result ID
     values_.resize(num_result_ids_, std::monostate{});
-    value_meta_.resize(num_result_ids_, 0);
+    value_meta_.resize(num_result_ids_, {0});
 
     instruction_index = 0;
     for (const auto& instruction : instructions_)
@@ -798,11 +798,11 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
 
     if (branch_bool)
     {
-        SetValue(branching_value_id, (uint64_t)(0));
+        SetValue(branching_value_id, (uint64_t)(0), false);
     }
     else
     {
-        SetValue(branching_value_id, (uint64_t)(1));
+        SetValue(branching_value_id, (uint64_t)(1), false);
     }
 
     ClearIsArbitrary(branching_value_id);
@@ -1055,7 +1055,7 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
     std::cout << std::endl;
 }
 
-bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator)
+bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator) const
 {
     /*
     Checks if a result_id has been decorated with the given decoration.
@@ -1078,7 +1078,7 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator)
     return false;
 }
 
-bool SPIRVSimulator::HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator)
+bool SPIRVSimulator::HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator) const
 {
     /*
     Checks if a given member in a result_id has been decorated with the given decoration.
@@ -1108,7 +1108,7 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, uint32_t member_id, spv::D
     return false;
 }
 
-uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset)
+uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset) const
 {
     /*
     This will abort if the target id does not have the given decorator
@@ -1138,7 +1138,7 @@ uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t result_id, spv::Decoration
 uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t        result_id,
                                              uint32_t        member_id,
                                              spv::Decoration decorator,
-                                             size_t          literal_offset)
+                                             size_t          literal_offset) const
 {
     /*
     This will abort if the target id does not have the given decorator
@@ -1745,7 +1745,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
     }
 }
 
-uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value)
+uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
 {
     /*
     Given a pointer, this will get the correct offset into the memory where its value resides (relative to its base).
@@ -2144,12 +2144,23 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                     "SPIRV simulator: Op_SpecConstant type is not decorated with SpecId");
             uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
 
+            uint64_t byte_offset = 0;
+            if (input_data_.specialization_constants && (input_data_.specialization_constant_offsets.find(spec_id) == input_data_.specialization_constant_offsets.end()))
+            {
+                assertx("SPIRV simulator: No specialization constant data found for the given SpecId");
+            }
+            else if (input_data_.specialization_constants)
+            {
+                byte_offset = input_data_.specialization_constant_offsets[spec_id];
+            }
+
             DataSourceBits data_source;
             data_source.location    = BitLocation::SpecConstant;
+            data_source.source_ptr  = input_data_.specialization_constants;
             data_source.idx         = 0;
             data_source.binding_id  = spec_id;
             data_source.set_id      = 0;
-            data_source.byte_offset = 0;
+            data_source.byte_offset = byte_offset;
             data_source.bit_offset  = 0;
             data_source.bitcount    = GetBitizeOfType(type_id);
             ;
@@ -2171,6 +2182,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
 
                 DataSourceBits data_source;
                 data_source.location      = BitLocation::StorageClass;
+                data_source.source_ptr    = bit_cast<const void*>(pointer.pointer_handle);
                 data_source.storage_class = (spv::StorageClass)pointer.storage_class;
                 data_source.idx           = 0;
 
@@ -2218,6 +2230,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         {
             DataSourceBits data_source;
             data_source.location       = BitLocation::Constant;
+            data_source.source_ptr     = nullptr;
             data_source.idx            = 0;
             data_source.binding_id     = 0;
             data_source.set_id         = 0;
@@ -2225,7 +2238,6 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             data_source.byte_offset    = (instruction_index + header_word_count) * sizeof(uint32_t);
             data_source.bit_offset     = 0;
             data_source.bitcount       = GetBitizeOfType(type_id);
-            ;
             data_source.val_bit_offset = 0;
             results.push_back(data_source);
             break;
@@ -2398,7 +2410,7 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
             {
                 const auto agg = std::get<std::shared_ptr<AggregateV>>(*value);
 
-                assertm(indirection_index < agg->elems.size(), "SPIRV simulator: Arrau index OOB");
+                assertm(indirection_index < agg->elems.size(), "SPIRV simulator: Array index OOB");
 
                 value = &agg->elems[indirection_index];
             }
@@ -2460,9 +2472,14 @@ const Value& SPIRVSimulator::GetValue(uint32_t result_id)
     return values_[result_id];
 }
 
-void SPIRVSimulator::SetValue(uint32_t result_id, const Value& value)
+void SPIRVSimulator::SetValue(uint32_t result_id, const Value& value, bool clear_meta)
 {
     values_[result_id] = value;
+
+    if (clear_meta)
+    {
+        value_meta_[result_id] = {0};
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2481,25 +2498,25 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         case 8:
         { // Floor
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
-                if (type.kind == Type::Kind::Vector) {
-              assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
                       "SPIRV simulator: Operands not of vector type in "
                       "GLSLExtHandler::floor");
 
-              Value result = std::make_shared<VectorV>();
-              auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
+                Value result = std::make_shared<VectorV>();
+                auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
 
-              auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
 
-              for (uint32_t i = 0; i < type.vector.elem_count; ++i) {
-                Value elem_result =
-                    (double)std::floor(std::get<double>(vec->elems[i]));
-                result_vec->elems.push_back(elem_result);
-              }
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::floor(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
 
-              SetValue(result_id, result_vec);
+                SetValue(result_id, result_vec);
             }
             else if (type.kind == Type::Kind::Float)
             {
@@ -2510,12 +2527,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 9:
         { // Ceil
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2544,12 +2562,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 10:
         { // Fract
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2580,12 +2599,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 13:
         { // Sin
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2614,12 +2634,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 14:
         { // Cos
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2648,12 +2669,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 15:
         { // Tan
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2682,14 +2704,14 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 26:
         { // Pow
             const Value& base     = GetValue(operand_words[0]);
             const Value& exponent = GetValue(operand_words[1]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2721,12 +2743,14 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
             break;
         }
         case 31:
         { // Sqrt
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2755,14 +2779,14 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 38:
         { // UMin
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2835,14 +2859,15 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
             break;
         }
         case 39:
         { // SMin
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2915,14 +2940,15 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
             break;
         }
         case 41:
         { // UMax
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -2995,6 +3021,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
             break;
         }
         case 43:
@@ -3002,9 +3031,6 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
             const Value& max_val = GetValue(operand_words[2]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3040,6 +3066,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
             break;
         }
         case 44:
@@ -3047,9 +3077,6 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
             const Value& max_val = GetValue(operand_words[2]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3085,6 +3112,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
             break;
         }
         case 45:
@@ -3092,9 +3123,6 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
             const Value& max_val = GetValue(operand_words[2]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3130,6 +3158,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
             break;
         }
         case 46:
@@ -3137,9 +3169,6 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& x = GetValue(operand_words[0]);
             const Value& y = GetValue(operand_words[1]);
             const Value& a = GetValue(operand_words[2]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3178,6 +3207,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
             break;
         }
         case 50:
@@ -3185,9 +3218,6 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& a_val = GetValue(operand_words[0]);
             const Value& b_val = GetValue(operand_words[1]);
             const Value& c_val = GetValue(operand_words[2]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            TransferFlags(result_id, operand_words[2]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3221,13 +3251,16 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            TransferFlags(result_id, operand_words[2]);
             break;
         }
         case 66:
         { // Length
             const Value& operand      = GetValue(operand_words[0]);
             const Type&  operand_type = GetTypeByResultId(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (operand_type.kind == Type::Kind::Vector)
             {
@@ -3276,12 +3309,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 69:
         { // Normalize
             const Value& operand = GetValue(operand_words[0]);
-            TransferFlags(result_id, operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3318,14 +3352,14 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 79:
         { // NMin
             const Value& x_val = GetValue(operand_words[0]);
             const Value& y_val = GetValue(operand_words[1]);
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -3386,6 +3420,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             {
                 assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
             break;
         }
         default:
@@ -3899,8 +3936,8 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
     PointerV new_pointer{ 0, 0, type_id, result_id, storage_class, {} };
 
-    // All pointer values are abitrary
-    SetFlags(result_id, SPS_FLAG_IS_ARBITRARY);
+    uint64_t pointee_flags = 0;
+    uint64_t pointer_flags = SPS_FLAG_IS_ARBITRARY;
 
     if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
     {
@@ -3909,8 +3946,13 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer) {
-          SetFlags(result_id, SPS_FLAG_UNINITIALIZED);
-          SetFlagsPointee(new_pointer, SPS_FLAG_UNINITIALIZED);
+            pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
+            pointer_flags |= SPS_FLAG_UNINITIALIZED;
+        }
+        else if (PointerIsCandidate(static_cast<const void*>(external_pointer), 0))
+        {
+            // This pointer points to a known candidate
+            pointee_flags |= SPS_FLAG_IS_CANDIDATE;
         }
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
@@ -3942,8 +3984,13 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer)
         {
-          SetFlags(result_id, SPS_FLAG_UNINITIALIZED);
-          SetFlagsPointee(new_pointer, SPS_FLAG_UNINITIALIZED);
+            pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
+            pointer_flags |= SPS_FLAG_UNINITIALIZED;
+        }
+        else if (PointerIsCandidate(static_cast<const void*>(external_pointer), 0))
+        {
+            // This pointer points to a known candidate
+            pointee_flags |= SPS_FLAG_IS_CANDIDATE;
         }
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
@@ -3956,6 +4003,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
              type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
              type.pointer.storage_class == spv::StorageClass::StorageClassPrivate)
     {
+        // TODO: Check init data if it is a candidate? Probably not needed/relevant
         if (instruction.word_count >= 5)
         {
             new_pointer.pointer_handle = HeapAllocate(type.pointer.storage_class, GetValue(instruction.words[4]));
@@ -3969,7 +4017,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
              type.pointer.storage_class == spv::StorageClass::StorageClassOutput)
     {
-        SetFlagsPointee(new_pointer, SPS_FLAG_UNINITIALIZED);
+        pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
         new_pointer.pointer_handle =
                 HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
     }
@@ -3987,11 +4035,20 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         // pointer from this pointer's offsets and storage class
         PointerV ppointer = std::get<PointerV>(ReadPointer(new_pointer));
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
+        if (pointee_flags & SPS_FLAG_IS_CANDIDATE)
+        {
+            ConfirmCandidate(bit_cast<void*>(new_pointer.pointer_handle), 0);
+        }
+        else
+        {
+            std::cout << "SPIRV simulator: Warning: Pointer to physical storage buffer pointer is not marked as candidate by the user, this is probably a symptom of a serious problem" << std::endl;
+        }
+        pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
     }
 
-    // TODO: Compare pointer with candidates here and track
-
     SetValue(result_id, new_pointer);
+    SetFlags(result_id, pointer_flags);
+    SetFlagsPointee(result_id, pointee_flags);
 }
 
 void SPIRVSimulator::Op_ImageTexelPointer(const Instruction& instruction)
@@ -4117,7 +4174,19 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     WritePointer(pointer, GetValue(result_id));
     OverrideFlagsPointee(pointer_id, result_id);
 
-    // TODO: Compare pointer with candidates here and track
+    if (ValueIsCandidate(result_id))
+    {
+        // A candidate value has been written out, inform the user by adding to output candidate list
+        const void* ptr_handle = bit_cast<const void*>(pointer.pointer_handle);
+        PhysicalAddressCandidate output_candidate = {
+            pointer.pointer_handle,
+            GetPointerOffset(pointer),
+            nullptr,
+            ValueHoldsPbufferPtr(result_id)
+        };
+
+        output_candidates_[ptr_handle].push_back(output_candidate);
+    }
 
     // If this is a non-interpolated output value, the shader may be important for pbuffer pointer detection
     if (pointer.storage_class == spv::StorageClass::StorageClassOutput)
@@ -4216,8 +4285,17 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
         // pointer from this pointer's offsets and storage class, but with the caveat that the resulting pointer
         // is itself stored in a physical storage buffer (hence we need the containing buffer to find its actual
         // address)
+        new_pointer.pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
         PointerV ppointer = std::get<PointerV>(ReadPointer(new_pointer));
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
+        if (PointerIsCandidate(new_pointer))
+        {
+            ConfirmCandidate(new_pointer);
+        }
+        else
+        {
+            std::cout << "SPIRV simulator: WARNING: OpAccessChain Pointer to physical storage buffer pointer is not marked as candidate by the user, this is probably a symptom of a serious problem" << std::endl;
+        }
     }
 
     // TODO: Compare pointer with candidates here and track
@@ -4285,7 +4363,7 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
     {
         // Push parameters to the local scope
         values_[function_info.parameter_ids_[parameter_index]] = GetValue(instruction.words[i]);
-
+        value_meta_[function_info.parameter_ids_[parameter_index]] = value_meta_[instruction.words[i]];
         parameter_index += 1;
     }
 }
@@ -4366,13 +4444,17 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
 
         if ((fork_abort_trigger_id_ == condition_id) && (fork_abort_target_id_ == target_label))
         {
-            // Do not fork again, we are entering an infite loop by creating a fork equal to the one that started this
-            // one If this ever happens, we are done so just return
+            // Do not fork again, we are entering an infite loop by creating a fork equal to the one that started this one. If this ever happens, we are done so just return
             call_stack_.clear();
             return;
         }
 
         SPIRVSimulator fork;
+        if (verbose_)
+        {
+            std::cout << "SPIRV simulator: Executing fork at level: " << current_fork_index_ << std::endl;
+        }
+
         fork.CreateExecutionFork(*this, condition_id, target_label);
 
         const auto& fork_results = fork.GetPhysicalAddressData();
@@ -4524,6 +4606,7 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type for Op_FAdd, must be vector or float");
     }
+
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
 }
@@ -5020,11 +5103,13 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         const Value& op1 = GetValue(instruction.words[3]);
         const Value& op2 = GetValue(instruction.words[4]);
 
-        Value result;
+
         if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<uint64_t>(op2))
         {
             uint64_t base_value = std::get<uint64_t>(op1);
             uint64_t sub_value = std::get<uint64_t>(op2);
+
+            uint64_t result;
             if (free_case)
             {
                 // Avoids wrapping which can lead to really long loops
@@ -5037,38 +5122,45 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
             {
                 result = base_value - sub_value;
             }
+
+            SetValue(result_id, result);
         }
         else if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<int64_t>(op2))
         {
             uint64_t base_value = std::get<uint64_t>(op1);
             uint64_t sub_value = std::get<int64_t>(op2);
+            uint64_t result;
             if (free_case)
             {
                 // Avoids wrapping which can lead to really long loops
                 if (base_value < sub_value)
                 {
-                    result = 0;
+                    result = (uint64_t)0;
                 }
             }
             else
             {
                 result = base_value - sub_value;
             }
+
+            SetValue(result_id, result);
         }
         else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<int64_t>(op2))
         {
+            int64_t result;
             result = (std::get<int64_t>(op1) - std::get<int64_t>(op2));
+            SetValue(result_id, result);
         }
         else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<uint64_t>(op2))
         {
+            int64_t result;
             result = (std::get<int64_t>(op1) - std::get<uint64_t>(op2));
+            SetValue(result_id, result);
         }
         else
         {
             assertx("SPIRV simulator: Could not find valid parameter type combination for Op_ISub");
         }
-
-        SetValue(result_id, result);
     }
     else
     {
@@ -6548,6 +6640,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     //
     // Then we map this memory to the result value
     //
+    bool holds_pbuffer_ptr = false;
     Value result;
     if (type.kind == Type::Kind::Vector)
     {
@@ -6621,6 +6714,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         std::memcpy(&pointer_value, bytes.data(), sizeof(uint64_t));
 
         const std::byte* remapped_pointer = nullptr;
+        uint64_t buffer_offset_bytes = 0;
 
         for (const auto& map_entry : input_data_.physical_address_buffers)
         {
@@ -6632,6 +6726,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
             if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
             {
                 remapped_pointer = &(buffer_data[buffer_address - pointer_value]);
+                buffer_offset_bytes = buffer_address - pointer_value;
                 break;
             }
         }
@@ -6648,6 +6743,17 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         pointer_data.bit_components    = FindDataSourcesFromResultID(operand_id);
         pointer_data.raw_pointer_value = pointer_value;
         physical_address_pointer_source_data_.push_back(std::move(pointer_data));
+
+        // If any of the components that made up the pointer is marked as a candidate, propogate this to the input candidate list and confirm them
+        for (const DataSourceBits& component_bits : pointer_data.bit_components)
+        {
+            if (PointerIsCandidate(component_bits.source_ptr, component_bits.byte_offset))
+            {
+                ConfirmCandidate(component_bits.source_ptr, component_bits.byte_offset);
+            }
+        }
+
+        holds_pbuffer_ptr = true;
     }
     else
     {
@@ -6657,6 +6763,16 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     SetValue(result_id, result);
 
     TransferFlags(result_id, instruction.words[3]);
+    if (holds_pbuffer_ptr)
+    {
+        SetHoldsPbufferPtr(result_id);
+        if (!ValueIsCandidate(operand_id))
+        {
+            std::cout << "SPIRV simulator: WARNING: A bitcast to a pbuffer pointer had a operand that was not marked as a candidate, we may miss output candidates here if the value or any of its source components were written out. This is also a symptom of a incomplete input candidate list"
+                    << std::endl;
+            SetHoldsPbufferPtr(operand_id);
+        }
+    }
 }
 
 void SPIRVSimulator::Op_IMul(const Instruction& instruction)
@@ -6792,19 +6908,20 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
         size_t   buffer_size    = map_entry.second.first;
 
         const std::byte* buffer_data = static_cast<std::byte*>(map_entry.second.second);
+        uint64_t        buffer_offset_bytes = 0;
 
         if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
         {
             remapped_pointer = &(buffer_data[buffer_address - pointer_value]);
+            buffer_offset_bytes = buffer_address - pointer_value;
             break;
         }
     }
 
     PointerV new_pointer{ pointer_value, 0, type_id, result_id, type.pointer.storage_class, {} };
+    // TODO: Derive IDX path from buffer_offset_bytes, assume whole array is packed with same type as pointee type
     physical_address_pointers_.push_back(new_pointer);
     SetValue(result_id, new_pointer);
-
-    // TODO: Compare pointer with candidates here and track
 
     // Here we need to find the source of the values that eventually became the pointer above
     // so that any tool using the simulator can extract and deal with them.
@@ -6814,6 +6931,15 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
     physical_address_pointer_source_data_.push_back(std::move(pointer_data));
 
     TransferFlags(result_id, instruction.words[3]);
+    SetHoldsPbufferPtr(result_id);
+
+    // TODO: We must also check if the integer value or any of its source components were written out here
+    if (!ValueIsCandidate(integer_id))
+    {
+        std::cout << "SPIRV simulator: WARNING: A integer cast to a pbuffer pointer was not marked as a candidate, we may miss output candidates here if the value or any of its source components were written out. This is also a symptom of a incomplete input candidate list"
+                  << std::endl;
+        SetHoldsPbufferPtr(integer_id);
+    }
 }
 
 void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
@@ -7333,6 +7459,9 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
                     (cond_vec->elems.size() == type.vector.elem_count),
                 "SPIRV simulator: Operands are vector type but not of equal length in Op_Select");
 
+        bool accessed_4 = false;
+        bool accessed_5 = false;
+
         for (uint32_t i = 0; i < type.vector.elem_count; ++i)
         {
             Value elem_result;
@@ -7342,16 +7471,26 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
             if (cond_val)
             {
                 result_vec->elems.push_back(vec1->elems[i]);
-                TransferFlags(result_id, instruction.words[4]);
+                accessed_4 = true;
             }
             else
             {
                 result_vec->elems.push_back(vec2->elems[i]);
-                TransferFlags(result_id, instruction.words[5]);
+                accessed_5 = true;
             }
         }
 
         SetValue(result_id, result);
+
+        if (accessed_4)
+        {
+            TransferFlags(result_id, instruction.words[4]);
+        }
+
+        if (accessed_5)
+        {
+            TransferFlags(result_id, instruction.words[5]);
+        }
     }
     else
     {
@@ -7359,14 +7498,27 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
                 "SPIRV simulator: Op_Select condition must be a bool or a vector of bools");
         uint64_t condition_int = std::get<uint64_t>(condition_val);
 
+        bool accessed_4 = false;
+        bool accessed_5 = false;
+
         if (condition_int)
         {
             SetValue(result_id, val_op1);
-            TransferFlags(result_id, instruction.words[4]);
+            accessed_4 = true;
         }
         else
         {
             SetValue(result_id, val_op2);
+            accessed_5 = true;
+        }
+
+        if (accessed_4)
+        {
+            TransferFlags(result_id, instruction.words[4]);
+        }
+
+        if (accessed_5)
+        {
             TransferFlags(result_id, instruction.words[5]);
         }
     }
@@ -9724,8 +9876,6 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
         image_operand_mask = instruction.words[5];
     }
 
-    SetIsArbitrary(result_id);
-
     const Type& result_type     = GetTypeByTypeId(result_type_id);
     const Type& image_type      = GetTypeByResultId(image_id);
     const Type& coordinate_type = GetTypeByResultId(coordinate_id);
@@ -9775,6 +9925,8 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
 
         SetValue(result_id, result_value);
     }
+
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageWrite(const Instruction& instruction)
@@ -9843,8 +9995,6 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
 
     const Type& result_type = GetTypeByTypeId(result_type_id);
     const Type& image_type  = GetTypeByResultId(image_id);
-
-    SetIsArbitrary(result_id);
 
     std::vector<uint64_t> size;
     switch (image_type.image.dim)
@@ -9940,6 +10090,8 @@ void SPIRVSimulator::Op_ImageQuerySize(const Instruction& instruction)
     {
         assert(false);
     }
+
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
@@ -9973,8 +10125,6 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
     const Type& image_type  = GetTypeByResultId(image_id);
 
     assertm(image_type.kind == Type::Kind::Image, "SPIRV simulator: Image type is not Image");
-
-    SetIsArbitrary(result_id);
 
     std::vector<uint64_t> size;
     switch (image_type.image.dim)
@@ -10050,6 +10200,8 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
     {
         assertx("SPIRV simulator: Invalid result type in Op_ImageQuerySizeLod");
     }
+
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_FunctionParameter(const Instruction& instruction)
@@ -11056,9 +11208,9 @@ void SPIRVSimulator::Op_GroupNonUniformAll(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(predicate_id));
     TransferFlags(result_id, predicate_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformAny(const Instruction& instruction)
@@ -11088,9 +11240,9 @@ void SPIRVSimulator::Op_GroupNonUniformAny(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(predicate_id));
     TransferFlags(result_id, predicate_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformBallot(const Instruction& instruction)
@@ -11147,8 +11299,8 @@ void SPIRVSimulator::Op_GroupNonUniformBallot(const Instruction& instruction)
     vec->elems[3] = std::get<uint64_t>(predicate_val);
 
     SetValue(result_id, result);
-    SetIsArbitrary(result_id);
     TransferFlags(result_id, predicate_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformBallotBitCount(const Instruction& instruction)
@@ -11193,7 +11345,6 @@ void SPIRVSimulator::Op_GroupNonUniformBallotBitCount(const Instruction& instruc
     SetValue(result_id, (uint64_t)CountSetBits(value, GetTypeID(value_id), &arb_count));
     TransferFlags(result_id, value_id);
     SetIsArbitrary(result_id);
-    TransferFlags(result_id, value_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformBroadcastFirst(const Instruction& instruction)
@@ -11222,9 +11373,9 @@ void SPIRVSimulator::Op_GroupNonUniformBroadcastFirst(const Instruction& instruc
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformElect(const Instruction& instruction)
@@ -11251,8 +11402,8 @@ void SPIRVSimulator::Op_GroupNonUniformElect(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, (uint64_t)1);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformFMax(const Instruction& instruction)
@@ -11293,9 +11444,9 @@ void SPIRVSimulator::Op_GroupNonUniformFMax(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformFMin(const Instruction& instruction)
@@ -11336,9 +11487,9 @@ void SPIRVSimulator::Op_GroupNonUniformFMin(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformIAdd(const Instruction& instruction)
@@ -11376,9 +11527,9 @@ void SPIRVSimulator::Op_GroupNonUniformIAdd(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformShuffle(const Instruction& instruction)
@@ -11412,9 +11563,9 @@ void SPIRVSimulator::Op_GroupNonUniformShuffle(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
@@ -11452,9 +11603,9 @@ void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
 
     // TODO: Group op warnings
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction& instruction)
@@ -11480,8 +11631,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction& instruction)
@@ -11507,8 +11658,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction& i
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionGeometryIndexKHR(const Instruction& instruction)
@@ -11534,8 +11685,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionGeometryIndexKHR(const Instructio
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceCustomIndexKHR(const Instruction& instruction)
@@ -11561,8 +11712,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceCustomIndexKHR(const Inst
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceIdKHR(const Instruction& instruction)
@@ -11588,8 +11739,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceIdKHR(const Instruction& 
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetKHR(const Instruction& instruction)
@@ -11615,8 +11766,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionInstanceShaderBindingTableRecordO
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionPrimitiveIndexKHR(const Instruction& instruction)
@@ -11642,8 +11793,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionPrimitiveIndexKHR(const Instructi
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionTKHR(const Instruction& instruction)
@@ -11669,8 +11820,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionTKHR(const Instruction& instructi
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionTypeKHR(const Instruction& instruction)
@@ -11696,8 +11847,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionTypeKHR(const Instruction& instru
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionWorldToObjectKHR(const Instruction& instruction)
@@ -11723,8 +11874,8 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionWorldToObjectKHR(const Instructio
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryGetWorldRayDirectionKHR(const Instruction& instruction)
@@ -11749,8 +11900,8 @@ void SPIRVSimulator::Op_RayQueryGetWorldRayDirectionKHR(const Instruction& instr
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_RayQueryInitializeKHR(const Instruction& instruction)
@@ -11789,8 +11940,8 @@ void SPIRVSimulator::Op_RayQueryProceedKHR(const Instruction& instruction)
 
     Value result = MakeDefault(type_id);
 
-    SetIsArbitrary(result_id);
     SetValue(result_id, result);
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_DecorateString(const Instruction& instruction)
