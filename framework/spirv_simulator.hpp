@@ -649,11 +649,11 @@ bit_cast(const From& src) noexcept
 
 // On x86 platforms, pointers are not 64bit
 // This template should catch any reads from a pointer and safely convert it into x64 value
-template <class From>
-typename std::enable_if_t<std::is_pointer_v<From> && sizeof(std::uintptr_t) != sizeof(uint64_t), uint64_t>
+template <class To, class From>
+typename std::enable_if_t<std::is_pointer_v<From> && std::is_integral_v<To> && sizeof(std::uintptr_t) <= sizeof(To), To>
 bit_cast(From p) noexcept
 {
-    return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(p));
+    return static_cast<To>(reinterpret_cast<std::uintptr_t>(p));
 }
 
 // On x86 platforms, pointers are not 64bit
