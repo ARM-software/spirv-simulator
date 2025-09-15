@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iomanip>
 #include <variant>
+#include <sstream>
 
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
