@@ -117,7 +117,7 @@ struct TestParametersBuilder
     TestParametersBuilder& add_push_constants(const std::vector<T>& push_constants)
     {
         auto     bytes      = reinterpret_cast<const std::uint8_t*>(push_constants.data());
-        uint32_t byte_count = push_constants.size() * sizeof(T);
+        size_t byte_count = push_constants.size() * sizeof(T);
 
         params.push_constants_.insert(params.push_constants_.end(), bytes, bytes + byte_count);
 
@@ -128,7 +128,7 @@ struct TestParametersBuilder
     TestParametersBuilder& add_push_constant(const T& push_constant)
     {
         auto     bytes      = reinterpret_cast<const std::uint8_t*>(&push_constant);
-        uint32_t byte_count = sizeof(T);
+        size_t   byte_count = sizeof(T);
 
         params.push_constants_.insert(params.push_constants_.end(), bytes, bytes + byte_count);
 
@@ -244,7 +244,7 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     using SPIRVSimulator::SPIRVSimulator::ExecuteInstruction;
 
   protected:
-    uint32_t                    NextId() { return id_counter++; }
+    size_t                    NextId() { return id_counter++; }
     std::vector<uint32_t>       prepare_submission(const TestParameters& parameters);
     ::SPIRVSimulator::InputData prepare_input_data(const TestParameters& parameters);
 
@@ -269,7 +269,7 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     }
 
   protected:
-    uint32_t id_counter;
+    size_t id_counter;
 };
 
 #endif

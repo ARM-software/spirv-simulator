@@ -14,13 +14,19 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(DEBUG_BUILD)
 endif()
 
+if(MSVC)
+    set(COMPILE_OPTIONS /W4 /permissive- /fp:strict)
+else()
+    set(COMPILE_OPTIONS -Wall -Wextra -Wpedantic -Wshadow -fno-fast-math)
+endif()
+
 add_subdirectory(framework)
 add_subdirectory(test)
 
 add_executable(spirv_simulator ${PROJECT_SOURCE_DIR}/main.cpp)
-target_compile_options(spirv_simulator PRIVATE -Wall -Wextra -Wpedantic -Wshadow -std=c++20 -fno-fast-math)
+target_compile_options(spirv_simulator PRIVATE ${COMPILE_OPTIONS})
 target_link_libraries(spirv_simulator PRIVATE spirv_simulator_lib)
 
 add_executable(spirv_opcode_support_checker ${PROJECT_SOURCE_DIR}/main_opcode_checker.cpp)
-target_compile_options(spirv_opcode_support_checker PRIVATE -Wall -Wextra -Wpedantic -Wshadow -std=c++20 -fno-fast-math)
+target_compile_options(spirv_opcode_support_checker PRIVATE ${COMPILE_OPTIONS})
 target_link_libraries(spirv_opcode_support_checker PRIVATE spirv_simulator_lib)

@@ -2,6 +2,7 @@
 #include "spirv.hpp"
 #include "spirv_simulator.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <variant>
@@ -37,12 +38,12 @@ std::ostream& operator<<(std::ostream& os, const SPIRVSimulator::Value& value)
     {
         const std::shared_ptr<SPIRVSimulator::MatrixV>& inner   = *inner_mat;
         const std::vector<SPIRVSimulator::Value>&       columns = inner->cols;
-        const uint32_t rows = std::get<std::shared_ptr<SPIRVSimulator::VectorV>>(columns[0])->elems.size();
+        const size_t rows = std::get<std::shared_ptr<SPIRVSimulator::VectorV>>(columns[0])->elems.size();
         os << '(';
-        for (uint32_t i = 0; i < rows; ++i)
+        for (size_t i = 0; i < rows; ++i)
         {
             os << '(';
-            for (uint32_t j = 0; j < columns.size() - 1; ++j)
+            for (size_t j = 0; j < columns.size() - 1; ++j)
             {
                 os << std::get<std::shared_ptr<SPIRVSimulator::VectorV>>(columns[j])->elems[i] << ',';
             }
@@ -107,8 +108,8 @@ std::string opcode_to_string(spv::Op opcode)
 std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParameters& parameters)
 {
 
-    const uint32_t        result_id = NextId();
-    std::vector<uint32_t> words{ parameters.opcode };
+    const size_t          result_id = NextId();
+    std::vector<uint32_t> words{ static_cast<uint32_t>(parameters.opcode) };
     uint32_t              type_id = 0;
     for (uint32_t op = 0; op < parameters.operands.size(); ++op)
     {
@@ -135,12 +136,12 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
                         uint64_t value = std::get<1>(value_variant);
                         if (width == 64)
                         {
-                            words.push_back(value);
-                            words.push_back(value >> 32);
+                            words.push_back(static_cast<uint32_t>(value));
+                            words.push_back(static_cast<uint32_t>(value >> 32));
                         }
                         else
                         {
-                            words.push_back(value);
+                            words.push_back(static_cast<uint32_t>(value));
                         }
                         break;
                     }
@@ -151,12 +152,12 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
 
                         if (width == 64)
                         {
-                            words.push_back(value);
-                            words.push_back(value >> 32);
+                            words.push_back(static_cast<uint32_t>(value));
+                            words.push_back(static_cast<uint32_t>(value >> 32));
                         }
                         else
                         {
-                            words.push_back(value);
+                            words.push_back(static_cast<uint32_t>(value));
                         }
                         break;
                     }
@@ -168,12 +169,12 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
                         {
                             float halves[2];
                             std::memcpy(halves, &value, sizeof(value));
-                            words.push_back(halves[0]);
-                            words.push_back(halves[1]);
+                            words.push_back(::SPIRVSimulator::bit_cast<uint32_t>(halves[0]));
+                            words.push_back(::SPIRVSimulator::bit_cast<uint32_t>(halves[1]));
                         }
                         else
                         {
-                            words.push_back(value);
+                            words.push_back(static_cast<uint32_t>(value));
                         }
                         break;
                     }
@@ -184,7 +185,7 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
             }
             else if (type_id == CommonTypes::storage_class)
             {
-                words.push_back(std::get<1>(value_variant));
+                words.push_back(static_cast<uint32_t>(std::get<1>(value_variant)));
                 continue;
             }
         }
@@ -227,23 +228,27 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
 
             EXPECT_CALL(*this, GetTypeByTypeId(type_id)).WillRepeatedly(ReturnRef(types_[type_id]));
         }
-        const uint32_t op_id = NextId();
+        const size_t op_id = NextId();
         if (op == 0)
         {
             words.push_back(type_id);
         }
 
         uint64_t dummy_flags = 0;
-        words.push_back(op_id);
+        words.push_back(static_cast<uint32_t>(op_id));
         EXPECT_CALL(*this, GetTypeByResultId(op_id)).WillRepeatedly(ReturnRef(types_[type_id]));
         EXPECT_CALL(*this, GetValue(op_id)).WillRepeatedly(ReturnRefOfCopy(parameters.operands.at(op)));
-        EXPECT_CALL(*this, TransferFlags(::testing::A<uint32_t>(), ::testing::A<uint32_t>())).Times(::testing::AnyNumber());
-        EXPECT_CALL(*this, TransferFlags(::testing::A<uint32_t>(), ::testing::A<uint64_t>())).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, TransferFlags(::testing::A<uint32_t>(), ::testing::A<uint32_t>()))
+            .Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, TransferFlags(::testing::A<uint32_t>(), ::testing::A<uint64_t>()))
+            .Times(::testing::AnyNumber());
         EXPECT_CALL(*this, HasFlags(_, _)).WillRepeatedly(::testing::Return(false));
         EXPECT_CALL(*this, ExtractFlags(_, _)).Times(::testing::AnyNumber());
         EXPECT_CALL(*this, SetFlags(_, _)).Times(::testing::AnyNumber());
-        EXPECT_CALL(*this, SetFlagsPointee(::testing::A<uint32_t>(), ::testing::A<uint64_t>())).Times(::testing::AnyNumber());
-        EXPECT_CALL(*this, SetFlagsPointee(::testing::A<::SPIRVSimulator::PointerV&>(), ::testing::A<uint64_t>())).Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, SetFlagsPointee(::testing::A<uint32_t>(), ::testing::A<uint64_t>()))
+            .Times(::testing::AnyNumber());
+        EXPECT_CALL(*this, SetFlagsPointee(::testing::A<::SPIRVSimulator::PointerV&>(), ::testing::A<uint64_t>()))
+            .Times(::testing::AnyNumber());
     }
 
     return words;
