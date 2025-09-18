@@ -567,6 +567,10 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_UDiv)
         case spv::Op::OpUMod:
             R(Op_UMod)
+        case spv::Op::OpSMod:
+            R(Op_SMod)
+        case spv::Op::OpSRem:
+            R(Op_SRem)
         case spv::Op::OpULessThan:
             R(Op_ULessThan)
         case spv::Op::OpConstantTrue:
@@ -625,6 +629,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_BitwiseOr)
         case spv::Op::OpBitwiseAnd:
             R(Op_BitwiseAnd)
+        case spv::Op::OpNot:
+            R(Op_Not)
         case spv::Op::OpSwitch:
             R(Op_Switch)
         case spv::Op::OpAll:
@@ -2301,6 +2307,20 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
 
 uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
 {
+    for (const auto& entry : input_data_.physical_address_buffers)
+    {
+        uint64_t buffer_address = entry.first;
+        size_t   buffer_size    = entry.second.first;
+
+        const std::byte* buffer_data = static_cast<std::byte*>(entry.second.second);
+
+        uint64_t host_pointer_start = bit_cast<uint64_t>(&buffer_data[0]);
+        uint64_t host_pointer_end   = bit_cast<uint64_t>(&buffer_data[buffer_size-1]);
+        if (host_pointer >= host_pointer_start && host_pointer < host_pointer_end)
+        {
+            return buffer_address;
+        }
+    }
     return 0;
 }
 
@@ -7140,6 +7160,229 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
     TransferFlags(result_id, operand2_id);
 }
 
+void SPIRVSimulator::Op_SRem(const Instruction& instruction)
+{
+    /*
+    OpSRem
+
+    Signed remainder operation for the remainder whose sign matches the sign of Operand 1.
+
+    Result Type must be a scalar or vector of integer type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
+    They must have the same number of components as Result Type.
+    They must have the same component width as Result Type.
+
+    Results are computed per component. Behavior is undefined if Operand 2 is 0.
+    Behavior is undefined if Operand 2 is -1 and Operand 1 is the minimum representable value for the operands' type, causing signed overflow.
+    Otherwise, the result is the remainder r of Operand 1 divided by Operand 2 where if r != 0, the sign of r is the same as the sign of Operand 1.
+    */
+    assert(instruction.opcode == spv::Op::OpSRem);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    const Value& operand_1 = GetValue(operand1_id);
+    const Value& operand_2 = GetValue(operand2_id);
+    const Type&  type      = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                "SPIRV simulator: Operands set to be vector type, but they are not, illegal input parameters");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(operand_1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<int64_t>(vec1->elems[i]) &&
+                        std::holds_alternative<int64_t>(vec2->elems[i]),
+                    "SPIRV simulator: Found non-signed int operand in vector operands for Op_SRem");
+
+            int64_t val_1 = std::get<int64_t>(vec1->elems[i]);
+            int64_t val_2 = std::get<int64_t>(vec2->elems[i]);
+
+            if (val_2 == 0)
+            {
+                val_2 = 1;
+                if (!ValueIsArbitrary(operand2_id))
+                {
+                    std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_SRem, shader has undefined behaviour"
+                              << std::endl;
+                }
+            }
+            if (val_2 == -1 && val_1 == INT64_MIN)
+            {
+                std::cout << "SPIRV simulator: WARNING: elem value of second operand is -1 and that of first operand is minimum in Op_SRem. Causing signed overflow."
+                          << std::endl;
+            }
+
+            int64_t elem_result = val_1 % val_2;
+            result_vec->elems.push_back(elem_result);
+        }
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        assertm(std::holds_alternative<int64_t>(operand_1) && std::holds_alternative<int64_t>(operand_2),
+                "SPIRV simulator: Found non-signed int operand in Op_SRem");
+
+        int64_t val_1 = std::get<int64_t>(operand_1);
+        int64_t val_2 = std::get<int64_t>(operand_2);
+
+        if (val_2 == 0)
+        {
+            val_2 = 1;
+            if (!ValueIsArbitrary(operand2_id))
+            {
+                std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_SRem, shader has undefined behaviour"
+                          << std::endl;
+            }
+        }
+        if (val_2 == -1 && val_1 == INT64_MIN)
+        {
+            std::cout << "SPIRV simulator: WARNING: Second operand is -1 and first operand is minimum in Op_SRem. Causing signed overflow."
+                      << std::endl;
+        }
+
+        int64_t result = val_1 % val_2;
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or signed-integer");
+    }
+
+    TransferFlags(result_id, operand1_id);
+    TransferFlags(result_id, operand2_id);
+}
+
+void SPIRVSimulator::Op_SMod(const Instruction& instruction)
+{
+    /*
+    OpSMod
+
+    Signed remainder operation for the remainder whose sign matches the sign of Operand 2.
+
+    Result Type must be a scalar or vector of integer type.
+
+    The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
+    They must have the same number of components as Result Type.
+    They must have the same component width as Result Type.
+
+    Results are computed per component. Behavior is undefined if Operand 2 is 0.
+    Behavior is undefined if Operand 2 is -1 and Operand 1 is the minimum representable value for the operands' type, causing signed overflow.
+    Otherwise, the result is the remainder r of Operand 1 divided by Operand 2 where if r != 0, the sign of r is the same as the sign of Operand 2.
+    */
+    assert(instruction.opcode == spv::Op::OpSMod);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    const Value& operand_1 = GetValue(operand1_id);
+    const Value& operand_2 = GetValue(operand2_id);
+    const Type&  type      = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                "SPIRV simulator: Operands set to be vector type, but they are not, illegal input parameters");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(operand_1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<int64_t>(vec1->elems[i]) &&
+                        std::holds_alternative<int64_t>(vec2->elems[i]),
+                    "SPIRV simulator: Found non-signed int operand in vector operands for Op_SMod");
+
+            int64_t val_1 = std::get<int64_t>(vec1->elems[i]);
+            int64_t val_2 = std::get<int64_t>(vec2->elems[i]);
+
+            if (val_2 == 0)
+            {
+                val_2 = 1;
+                if (!ValueIsArbitrary(operand2_id))
+                {
+                    std::cout
+                        << "SPIRV simulator: WARNING: Second operand is 0 in Op_SMod, shader has undefined behaviour"
+                        << std::endl;
+                }
+            }
+            if (val_2 == -1 && val_1 == INT64_MIN)
+            {
+                std::cout << "SPIRV simulator: WARNING: elem value of second operand is -1 and that of first operand is minimum in Op_SMod. Causing signed overflow."
+                          << std::endl;
+            }
+
+            int64_t elem_result = val_1 % val_2;
+            if (elem_result != 0 && std::signbit(elem_result != std::signbit(val_2)))
+            {
+                elem_result += val_2;
+            }
+            result_vec->elems.push_back(elem_result);
+        }
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        assertm(std::holds_alternative<int64_t>(operand_1) && std::holds_alternative<int64_t>(operand_2),
+                "SPIRV simulator: Found non-signed int operand in Op_SMod");
+
+        int64_t val_1 = std::get<int64_t>(operand_1);
+        int64_t val_2 = std::get<int64_t>(operand_2);
+
+        if (val_2 == 0)
+        {
+            val_2 = 1;
+            if (!ValueIsArbitrary(operand2_id))
+            {
+                std::cout << "SPIRV simulator: WARNING: Second operand is 0 in Op_SMod, shader has undefined behaviour"
+                          << std::endl;
+            }
+        }
+        if (val_2 == -1 && val_1 == INT64_MIN)
+        {
+            std::cout << "SPIRV simulator: WARNING: Second operand is -1 and first operand is minimum in Op_SMod. Causing signed overflow."
+                      << std::endl;
+        }
+
+        int64_t result = val_1 % val_2;
+        if (result != 0 && std::signbit(result) != std::signbit(val_2))
+        {
+            result += val_2;
+        }
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type, must be vector or signed-integer");
+    }
+
+    TransferFlags(result_id, operand1_id);
+    TransferFlags(result_id, operand2_id);
+}
+
 void SPIRVSimulator::Op_ULessThan(const Instruction& instruction)
 {
     /*
@@ -8666,6 +8909,110 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
 
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
+}
+
+void SPIRVSimulator::Op_Not(const Instruction& instruction)
+{
+    /*
+    OpNot
+
+    Complement the bits of Operand.
+
+    Results are computed per component, and within each component, per bit.
+
+    Result Type must be a scalar or vector of integer type.
+
+    Operand's type must be a scalar or vector of integer type.
+    It must have the same number of components as Result Type.
+    The component width must equal the component width in Result Type.
+    */
+    assert(instruction.opcode == spv::Op::OpNot);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t op_id     = instruction.words[3];
+
+    const Type&  type    = GetTypeByTypeId(type_id);
+    const Value& op_val  = GetValue(op_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(op_val),
+                "SPIRV simulator: Operand set to be vector type, but it is not, illegal input parameters");
+
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Int, "SPIRV simulator: Vector element type is not Int in OpNot");
+
+        auto vec = std::get<std::shared_ptr<VectorV>>(op_val);
+        assertm(vec->elems.size() == type.vector.elem_count,
+                "SPIRV simulator: Operands are vector type but not of equal length");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; i++)
+        {
+            uint64_t val;
+            if (std::holds_alternative<int64_t>(vec->elems[i]))
+            {
+                val = bit_cast<uint64_t>(std::get<int64_t>(vec->elems[i]));
+            }
+            else if (std::holds_alternative<uint64_t>(vec->elems[i]))
+            {
+                val = std::get<uint64_t>(vec->elems[i]);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid vector element type encountered in OpNot operands");
+            }
+
+            Value elem_result;
+            if (elem_type.scalar.is_signed)
+            {
+                elem_result = (int64_t)(~val);
+            }
+            else
+            {
+                elem_result = (uint64_t)(~val);
+            }
+
+            result_vec->elems.push_back(elem_result);
+        }
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        uint64_t val;
+        if (std::holds_alternative<int64_t>(op_val))
+        {
+            val = bit_cast<uint64_t>(std::get<int64_t>(op_val));
+        }
+        else if (std::holds_alternative<uint64_t>(op_val))
+        {
+            val = std::get<uint64_t>(op_val);
+        }
+        else
+        {
+            assertx("SPIRV simulator: Invalid type encountered in OpNot operands");
+        }
+
+        Value result;
+        if (type.scalar.is_signed)
+        {
+            result = (int64_t)(~val);
+        }
+        else
+        {
+            result = (uint64_t)(~val);
+        }
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in OpNot, must be vector or int");
+    }
+
+    TransferFlags(result_id, instruction.words[3]);
 }
 
 void SPIRVSimulator::Op_All(const Instruction& instruction)

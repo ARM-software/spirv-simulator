@@ -1128,6 +1128,8 @@ class SPIRVSimulator
     void Op_ConvertUToPtr(const Instruction&);
     void Op_UDiv(const Instruction&);
     void Op_UMod(const Instruction&);
+    void Op_SMod(const Instruction&);
+    void Op_SRem(const Instruction&);
     void Op_ULessThan(const Instruction&);
     void Op_ConstantTrue(const Instruction&);
     void Op_ConstantFalse(const Instruction&);
@@ -1157,6 +1159,7 @@ class SPIRVSimulator
     void Op_ShiftLeftLogical(const Instruction&);
     void Op_BitwiseOr(const Instruction&);
     void Op_BitwiseAnd(const Instruction&);
+    void Op_Not(const Instruction&);
     void Op_Switch(const Instruction&);
     void Op_All(const Instruction&);
     void Op_Any(const Instruction&);
