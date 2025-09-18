@@ -11,11 +11,11 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    SPIRVSimulator::InputData      inputs;
-    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(argv[1]), inputs, true);
+    SPIRVSimulator::SimulationData      sim_data;
+    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(argv[1]), sim_data, true);
     sim.Run();
 
-    auto physical_address_data = sim.GetPhysicalAddressData();
+    auto physical_address_data = sim_data.physical_address_data;
 
     std::cout << "Pointers to pbuffers:" << std::endl;
     for (const auto& pointer_t : physical_address_data)

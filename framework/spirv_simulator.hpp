@@ -16,6 +16,13 @@
 #include <cassert>
 #include <limits>
 #include <stdexcept>
+#include <queue>
+
+#ifdef DEBUG_BUILD
+#define MAX_LOOP_COUNT 100
+#else
+#define MAX_LOOP_COUNT 10000
+#endif
 
 //  Flip SPIRV_HEADERS_PRESENT to 1 to auto‑pull the SPIR‑V-Headers from the environment.
 #define SPV_ENABLE_UTILITY_CODE 1
@@ -29,15 +36,22 @@
 #include "spirv.hpp"
 #endif
 
+#include "spirv-tools/libspirv.h"
+
 namespace SPIRVSimulator
 {
 
 // Any result ID or pointer object ID in this set, can be treated as if it has
 // any valid value for the given type
-#define SPS_FLAG_IS_ARBITRARY       1
-#define SPS_FLAG_UNINITIALIZED      2
-#define SPS_FLAG_IS_CANDIDATE       4
-#define SPS_FLAG_IS_PBUFFER_PTR     8
+#define SPS_FLAG_IS_ARBITRARY           1
+// Used for values that are uninitialized due to simulator assumptions
+#define SPS_FLAG_UNINITIALIZED          2
+// Used to track descriptor and pbuffer candidate values
+#define SPS_FLAG_IS_CANDIDATE           4
+// Used for values that are confirmed to be pbuffer pointer values
+#define SPS_FLAG_IS_PBUFFER_PTR         8
+// Used for values that contain or are affected by per-thread builtins (workgroup or vertex ids etc.)
+#define SPS_FLAG_THREAD_SPECIFIC       16
 
 // Used by tracing tools to pass in potential pbuffer candidates.
 // This is optional but allows for easier remapping user side in most cases
@@ -58,12 +72,12 @@ struct PhysicalAddressCandidate
 // enable some optimizations.
 struct InternalPersistentData
 {
-    // Any shader whose InputData shader ID is found here can be safely skipped
+    // Any shader whose SimulationData shader ID is found here can be safely skipped
     std::set<uint64_t> uninteresting_shaders;
 };
 
 // ---------------------------------------------------------------------------
-//  Input structure
+//  Input/output structure
 //
 //  This structure defines the shader inputs.
 //  This must be populated and passed to the run(...) method to
@@ -73,8 +87,13 @@ struct InternalPersistentData
 //  to a binding with the std430 layout, the data in the byte vectors must obey the rules of
 //  that layout
 
-struct InputData
+struct PhysicalAddressData;
+
+struct SimulationData
 {
+    // The following are input values that should be populated by the user
+    //////////////////////////////////////////////////////////////////////
+
     // The SpirV ID of the entry point to use
     uint32_t entry_point_id = 0;
     // The OpName label (function name) of the entry point to use, takes priority over entry_point_id if it is set.
@@ -114,9 +133,32 @@ struct InputData
     // for cases where the same shader is dispatched multiple times throughout a session.
     uint64_t shader_id = 0;
 
-    // Used for internal optimization between dispatches.
+
+    // The following are output values that will be populated by the simulator
+    //////////////////////////////////////////////////////////////////////////
+
+    // Written to by the simulator
+    std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> output_candidates;
+    std::vector<PhysicalAddressData> physical_address_data;
+
+    // Set to true if the simulator encountered a case that requires all threads in a dispatch to run in order to guarantee no pointers are missed
+    bool full_dispatch_needed = false;
+
+    // Set to true if the simulator encountered a physical address pointer that was not listed in the input candidates
+    bool unlisted_candidate_found = false;
+
+    // Set to true if the simulator encounters a loop lasting longer than MAX_LOOP_COUNT iterations, this wil l cause it to abort the loop and continue (simulator will assume a hang dues to invalid inputs)
+    bool aborted_long_loop = false;
+
+    // Set to true if any arbitrary data was written to external memory
+    bool had_arbitrary_write = false;
+
+    // Used for internal optimization between dispatches, should never be touched by the user.
     InternalPersistentData persistent_data;
 };
+
+// For backwards compatibility
+using InputData = SimulationData;
 
 // ---------------------------------------------------------------------------
 // Output structure
@@ -657,7 +699,6 @@ bit_cast(const From& src) noexcept
     return dst;
 }
 
-
 // On x86 platforms, pointers are not 64bit
 // This template should catch any reads from a pointer and safely convert it into x64 value
 template <class To, class From>
@@ -683,29 +724,149 @@ typename std::enable_if_t<std::is_pointer_v<To>, To> bit_cast(std::uint64_t v) n
 }
 
 
+/// Operand chain related code
+static inline bool IsIdKind(spv_operand_type_t t) {
+    switch (t) {
+        //case SPV_OPERAND_TYPE_TYPE_ID:
+        case SPV_OPERAND_TYPE_RESULT_ID:
+        //case SPV_OPERAND_TYPE_ID:
+        //case SPV_OPERAND_TYPE_SCOPE_ID:
+        //case SPV_OPERAND_TYPE_MEMORY_SEMANTICS_ID:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline uint32_t CountImageOperandsExtraWords(uint32_t mask) {
+    uint32_t n = 0;
+    if (mask & (1u << 0)) n += 1; // Bias
+    if (mask & (1u << 1)) n += 1; // Lod
+    if (mask & (1u << 2)) n += 2; // Grad
+    if (mask & (1u << 3)) n += 1; // ConstOffset
+    if (mask & (1u << 4)) n += 1; // Offset
+    if (mask & (1u << 5)) n += 2; // ConstOffsets (minimum; adjust if you parse fully)
+    if (mask & (1u << 6)) n += 1; // Sample
+    if (mask & (1u << 7)) n += 1; // MinLod
+    if (mask & (1u << 8)) n += 1; // MakeTexelAvailable
+    if (mask & (1u << 9)) n += 1; // MakeTexelVisible
+    return n; // others add 0
+}
+
+static inline uint32_t CountMemoryAccessExtraWords(uint32_t mask) {
+    uint32_t n = 0;
+    if (mask & (1u << 0)) n += 1; // Aligned -> alignment literal
+    if (mask & (1u << 2)) n += 1; // MakePointerAvailable -> scope (literal or *_ID per grammar)
+    if (mask & (1u << 3)) n += 1; // MakePointerVisible   -> scope (literal or *_ID per grammar)
+    if (mask & (1u << 5)) n += 1; // KHR variants
+    if (mask & (1u << 6)) n += 1;
+    return n;
+}
+
+inline spv_result_t OnParsedHeader(void* user_data, spv_endianness_t endian, uint32_t magic, uint32_t version, uint32_t generator, uint32_t id_bound, uint32_t reserved) {
+    (void)user_data;
+    (void)endian;
+    (void)magic;
+    (void)version;
+    (void)generator;
+    (void)id_bound;
+    (void)reserved;
+
+    return SPV_SUCCESS;
+}
+
+struct ParseState {
+    const uint32_t* module_words = nullptr;
+    std::vector<std::vector<uint32_t>>*     out_table    = nullptr;
+};
+
+inline spv_result_t OnParsedInst(void* user, const spv_parsed_instruction_t* inst) {
+    auto* st = static_cast<ParseState*>(user);
+
+    std::vector<uint32_t> ids;
+
+    for (uint16_t oi = 0; oi < inst->num_operands; ++oi) {
+        const spv_parsed_operand_t& op = inst->operands[oi];
+        const spv_operand_type_t& ot = op.type;
+
+        uint32_t operand_offset = inst->type_id ? 1 : 0 + inst->result_id ? 1 : 0;
+        uint32_t cursor = operand_offset;
+
+        if (IsIdKind(ot)) {
+            ids.push_back(inst->words[cursor++]);
+            continue;
+        }
+
+        if (ot == SPV_OPERAND_TYPE_VARIABLE_ID) {
+            while (cursor < inst->num_words) {
+                ids.push_back(inst->words[cursor++]);
+            }
+            break;
+        }
+
+        if (ot == SPV_OPERAND_TYPE_OPTIONAL_IMAGE) {
+            if (cursor < inst->num_words) {
+                const uint32_t mask = inst->words[cursor++];
+                cursor += CountImageOperandsExtraWords(mask);
+            }
+            continue;
+        }
+
+        if (ot == SPV_OPERAND_TYPE_OPTIONAL_MEMORY_ACCESS) {
+            if (cursor < inst->num_words) {
+                const uint32_t mask = inst->words[cursor++];
+                cursor += CountMemoryAccessExtraWords(mask);
+            }
+            continue;
+        }
+
+        ++cursor;
+    }
+
+    st->out_table->emplace_back(std::move(ids));
+    return SPV_SUCCESS;
+}
+
+
+/// Control flow
+struct BlockInfo {
+    uint32_t label = 0;                   // %label (from OpLabel result-id)
+    std::vector<uint32_t> succs;          // CFG successors (label ids)
+    uint32_t loop_merge = 0;              // %merge if this is a loop header (0 otherwise)
+    uint32_t loop_continue = 0;           // %continue if this is a loop header
+};
+
+struct CFG {
+    // Block id -> BlockInfo
+    std::unordered_map<uint32_t, BlockInfo> blocks;
+    // For reverse edges (optional but useful)
+    std::unordered_map<uint32_t, std::vector<uint32_t>> preds;
+    // Maintain function boundaries if you have multiple functions
+    std::vector<uint32_t> block_order;    // in module order (optional)
+};
+
+struct LoopInfo {
+    uint32_t header = 0;
+    uint32_t merge = 0;
+    uint32_t cont = 0;
+    std::vector<uint32_t> blocks;             // excludes merge
+    std::set<uint32_t> block_set;
+};
+
+LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header);
+
+
+/// Main class
 class SPIRVSimulator
 {
   public:
     explicit SPIRVSimulator(const std::vector<uint32_t>& program_words,
-                            const InputData&             input_data,
+                            SimulationData&              input_data,
                             bool                         verbose = false);
 
     // Actually interpret the SPIRV. If we return true, then this means we have to execute
     // every thread of the invokation.
     bool Run();
-
-    // When called (after a Run()) will write the outputs to the input_data mapped pointers
-    void WriteOutputs();
-
-    const std::vector<PhysicalAddressData>& GetPhysicalAddressData() const
-    {
-        return physical_address_pointer_source_data_;
-    }
-
-    const std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>>& GetOutputCandidateData() const
-    {
-        return output_candidates_;
-    }
 
     std::set<std::string> unsupported_opcodes;
 
@@ -725,13 +886,15 @@ class SPIRVSimulator
     uint32_t current_heap_index_ = 1;
 
     // Parsing artefacts
-    InputData input_data_;
+    SimulationData* input_data_;
     // Contains entry point ID -> entry point OpName labels (labels may be
     // non-existent/empty)
     std::unordered_map<uint32_t, std::string>           entry_points_;
     std::vector<uint32_t>                               program_words_;
     std::span<const uint32_t>                           stream_;
     std::vector<Instruction>                            instructions_;
+    std::vector<std::vector<uint32_t>>                  ids_per_instruction_;
+    std::vector<uint32_t>                               block_label_per_instruction_;
     std::unordered_map<uint32_t, std::vector<uint32_t>> spec_instr_words_;
     std::unordered_map<uint32_t, Instruction>           spec_instructions_;
     std::unordered_map<uint32_t, size_t>                result_id_to_inst_index_;
@@ -751,15 +914,14 @@ class SPIRVSimulator
     // Debug only
     bool verbose_;
 
+    // Counts how many times each branch instruction was taken, used to abort infinite loops
+    std::unordered_map<uint32_t, uint64_t> branch_counters_;
+
     // These hold information about any pointers that reference physical storage
     // buffers
     std::vector<PointerV>                        physical_address_pointers_;
     std::vector<std::pair<PointerV, PointerV>>   pointers_to_physical_address_pointers_;
-    std::vector<PhysicalAddressData>             physical_address_pointer_source_data_;
     std::unordered_map<uint32_t, DataSourceBits> data_source_bits_;
-
-    // TODO: Proper
-    std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> output_candidates_;
 
     // Control flow
     struct FunctionInfo
@@ -769,20 +931,27 @@ class SPIRVSimulator
         std::vector<uint32_t> parameter_ids_;
         std::vector<uint32_t> parameter_type_ids_;
     };
+    struct ActiveLoop {
+        uint32_t header;
+        uint32_t merge;
+    };
+
     uint32_t                                   prev_defined_func_id_;
     std::unordered_map<uint32_t, FunctionInfo> funcs_;
+
+    // Control flow graph of the whole program, used for loop detection and analysis
+    CFG cfg_;
+    std::unordered_map<uint32_t, LoopInfo> loops_;
+    std::vector<ActiveLoop> loop_stack_;
 
     uint32_t prev_block_id_             = 0;
     uint32_t current_block_id_          = 0;
     uint32_t current_merge_block_id_    = 0;
     uint32_t current_continue_block_id_ = 0;
 
-    // Execution fork data, used to prevent infinte loops in SPIRV loop constructs
-    // If we encounter a conditional that branches to the target ID based on the trigger ID, we assume completion
-    // and return from the fork. The result ID of the boolean value that triggered the fork
-    uint32_t fork_abort_trigger_id_ = 0;
-    // The result ID of the label we would have branched to, but diverged away from, when creating the fork
-    uint64_t fork_abort_target_id_ = 0;
+    // Execution fork data, used to prevent infinte loops in SPIRV loop constructs and double forks
+    std::set<uint32_t>* visisted_fork_branches_ = nullptr;
+    std::set<uint32_t> forked_blocks_;
 
     // Heaps & frames
     struct Frame
@@ -803,6 +972,20 @@ class SPIRVSimulator
     // storage_class -> heap_index -> Heap Value for all non-function storage classes
     std::unordered_map<uint32_t, std::vector<Value>> heaps_;
 
+    void BuildAllLoops()
+    {
+        for (auto [bid, bi] : cfg_.blocks) {
+            if (bi.loop_merge) {
+                loops_.emplace(bid, BuildLoopRegion(cfg_, bid));
+            }
+        }
+    }
+
+    virtual void on_loop_begin(uint32_t header);
+    virtual void on_loop_exit (uint32_t header);
+    virtual void on_loop_iteration(uint32_t header);
+    virtual void OnEnterBlockHandleLoops();
+
     // Handlers used by the OpExtInst handler
     // Implementation of the operations in the GLSL extended set
     void GLSLExtHandler(uint32_t                         type_id,
@@ -815,9 +998,30 @@ class SPIRVSimulator
     virtual void DecodeHeader();
     virtual void ParseAll();
     virtual void Validate();
+    virtual void BuildCFGFromWords();
+    virtual void InitializeIdOpsTable() {
+        ParseState parse_state = { program_words_.data(), &ids_per_instruction_ };
+
+        spv_context   ctx  = spvContextCreate(SPV_ENV_UNIVERSAL_1_6);
+        spv_diagnostic diag = nullptr;
+
+        // calls OnParsedInst once per instruction.
+        spvBinaryParse(
+            ctx,
+            &parse_state,
+            program_words_.data(),
+            program_words_.size(),
+            OnParsedHeader,
+            OnParsedInst,
+            &diag
+        );
+
+        spvDiagnosticDestroy(diag);
+        spvContextDestroy(ctx);
+    };
     virtual bool ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void ExecuteInstructions();
-    virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, uint32_t target_block_id);
+    virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, std::set<uint32_t>* visited_set, SimulationData* fork_input_data = nullptr);
 
     virtual std::string  GetValueString(const Value&);
     virtual std::string  GetTypeString(const Type&);
@@ -841,6 +1045,7 @@ class SPIRVSimulator
     virtual uint32_t GetTargetPointerType(const PointerV& pointer);
     virtual size_t   GetBitizeOfTargetType(const PointerV& pointer);
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
+
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
     virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator) const;
@@ -856,6 +1061,9 @@ class SPIRVSimulator
     virtual bool ValueIsCandidate(uint32_t result_id) const {
         return value_meta_[result_id].flags & SPS_FLAG_IS_CANDIDATE;
     };
+    virtual bool ValueIsThreadSpecific(u_int32_t result_id) const {
+        return value_meta_[result_id].flags & SPS_FLAG_THREAD_SPECIFIC;
+    }
 
     virtual bool ValueHoldsPbufferPtr(uint32_t result_id) const {
         return value_meta_[result_id].flags & SPS_FLAG_IS_PBUFFER_PTR;
@@ -878,6 +1086,13 @@ class SPIRVSimulator
         value_meta_[result_id].flags &= ~SPS_FLAG_IS_ARBITRARY;
     };
 
+    virtual void SetIsThreadSpecific(uint32_t result_id) {
+        value_meta_[result_id].flags |= SPS_FLAG_THREAD_SPECIFIC;
+    };
+    virtual void ClearIsThreadSpecific(uint32_t result_id) {
+        value_meta_[result_id].flags &= ~SPS_FLAG_THREAD_SPECIFIC;
+    };
+
     virtual void SetIsCandidate(uint32_t result_id) {
         value_meta_[result_id].flags |= SPS_FLAG_IS_CANDIDATE;
     };
@@ -886,9 +1101,9 @@ class SPIRVSimulator
     };
 
     virtual bool PointerIsCandidate(const void* potential_ptr, uint64_t offset) const {
-        if (input_data_.candidates.find(potential_ptr) != input_data_.candidates.end())
+        if (input_data_->candidates.find(potential_ptr) != input_data_->candidates.end())
         {
-            for (const auto& candidate : input_data_.candidates.at(potential_ptr))
+            for (const auto& candidate : input_data_->candidates.at(potential_ptr))
             {
                 if (candidate.offset == offset)
                 {
@@ -901,10 +1116,10 @@ class SPIRVSimulator
 
     virtual bool PointerIsCandidate(const PointerV& pointer_value) const {
         const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (input_data_.candidates.find(potential_raw_ptr) != input_data_.candidates.end())
+        if (input_data_->candidates.find(potential_raw_ptr) != input_data_->candidates.end())
         {
             uint64_t pointee_offset = GetPointerOffset(pointer_value);
-            for (const auto& candidate : input_data_.candidates.at(potential_raw_ptr))
+            for (const auto& candidate : input_data_->candidates.at(potential_raw_ptr))
             {
                 if (candidate.offset == pointee_offset)
                 {
@@ -916,9 +1131,9 @@ class SPIRVSimulator
     };
 
     virtual void ConfirmCandidate(const void* potential_ptr, uint64_t offset) {
-        if (input_data_.candidates.find(potential_ptr) != input_data_.candidates.end())
+        if (input_data_->candidates.find(potential_ptr) != input_data_->candidates.end())
         {
-            for (auto& candidate : input_data_.candidates.at(potential_ptr))
+            for (auto& candidate : input_data_->candidates.at(potential_ptr))
             {
                 if (candidate.offset == offset)
                 {
@@ -931,10 +1146,10 @@ class SPIRVSimulator
 
     virtual void ConfirmCandidate(const PointerV& pointer_value) {
         const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (input_data_.candidates.find(potential_raw_ptr) != input_data_.candidates.end())
+        if (input_data_->candidates.find(potential_raw_ptr) != input_data_->candidates.end())
         {
             uint64_t pointee_offset = GetPointerOffset(pointer_value);
-            for (auto& candidate : input_data_.candidates.at(potential_raw_ptr))
+            for (auto& candidate : input_data_->candidates.at(potential_raw_ptr))
             {
                 if (candidate.offset == pointee_offset)
                 {
