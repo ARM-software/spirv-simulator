@@ -2368,7 +2368,8 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
 
         std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
 
-        WriteValue(external_pointer, type.pointer.pointee_type_id, out_value);
+        uint32_t target_type_id = GetTargetPointerType(ptr);
+        WriteValue(external_pointer, target_type_id, out_value);
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
@@ -2449,10 +2450,11 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
         const std::byte* external_pointer = bit_cast<const std::byte*>(ptr.pointer_handle) + offset;
 
         std::vector<uint32_t> buffer_data;
-        ReadWords(external_pointer, type.pointer.pointee_type_id, buffer_data);
+        uint32_t target_type_id = GetTargetPointerType(ptr);
+        ReadWords(external_pointer, target_type_id, buffer_data);
 
         const uint32_t* buffer_pointer = buffer_data.data();
-        return MakeDefault(type.pointer.pointee_type_id, &(buffer_pointer));
+        return MakeDefault(target_type_id, &(buffer_pointer));
     }
     else
     {
