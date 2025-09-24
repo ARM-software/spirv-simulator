@@ -38,17 +38,44 @@ void DecodeInstruction(std::span<const uint32_t>& program_words, Instruction& in
     program_words     = program_words.subspan(instruction.word_count);
 }
 
-SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const InputData& input_data, bool verbose) :
+LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header)
+{
+    const auto& H = cfg.blocks.at(header);
+    LoopInfo L{header, H.loop_merge, H.loop_continue, {}, {}};
+
+    std::queue<uint32_t> q;
+    std::set<uint32_t> seen;
+    q.push(header);
+    seen.insert(header);
+
+    while (!q.empty()) {
+        uint32_t b = q.front(); q.pop();
+        L.blocks.push_back(b);
+        for (uint32_t s : cfg.blocks.at(b).succs) {
+            if (s == L.merge) continue;                // don’t cross merge
+            if (seen.insert(s).second) q.push(s);
+        }
+    }
+    L.block_set.insert(L.blocks.begin(), L.blocks.end());
+    return L;
+}
+
+SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, SimulationData& input_data, bool verbose) :
     program_words_(std::move(program_words)), verbose_(verbose)
 {
-    if (input_data.shader_id && (input_data_.persistent_data.uninteresting_shaders.contains(input_data.shader_id)))
+    input_data_ = &input_data;
+
+    if (input_data_->shader_id && (input_data_->persistent_data.uninteresting_shaders.contains(input_data_->shader_id)))
     {
         done_ = true;
         return;
     }
 
-    stream_     = program_words_;
-    input_data_ = input_data;
+    InitializeIdOpsTable();
+    BuildCFGFromWords();
+    BuildAllLoops();
+
+    stream_ = program_words_;
 
     void_type_.kind   = Type::Kind::Void;
     void_type_.scalar = { 0, false };
@@ -59,6 +86,80 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, const
 
     ParseAll();
     Validate();
+}
+
+void SPIRVSimulator::BuildCFGFromWords()
+{
+    for (size_t i = 5; i < program_words_.size(); ) {
+        uint32_t first    = program_words_[i];
+        const uint16_t wc = first >> kWordCountShift;
+        const uint16_t op = (spv::Op)(first & kOpcodeMask);
+
+        auto succ = [&](uint32_t tgt){
+            if (!current_block_id_ || !tgt) return;
+            auto& bi = cfg_.blocks[current_block_id_];
+            bi.succs.push_back(tgt);
+            cfg_.preds[tgt].push_back(current_block_id_);
+        };
+
+        switch (op) {
+            case spv::Op::OpLabel: {
+                // Block starts: words[i+1] = result-id == block id
+                current_block_id_ = program_words_[i + 1];
+                auto& bi = cfg_.blocks[current_block_id_];
+                if (bi.label == 0)
+                {
+                    bi.label = current_block_id_;
+                    cfg_.block_order.push_back(current_block_id_);
+                }
+                break;
+            }
+
+            case spv::Op::OpLoopMerge: {
+                // operands: merge block id (words[i+1]), continue target id (words[i+2])
+                auto& bi = cfg_.blocks[current_block_id_];
+                bi.loop_merge    = program_words_[i + 1];
+                bi.loop_continue = program_words_[i + 2];
+                break;
+            }
+
+            // ---- Terminators: add edges ----
+            case spv::Op::OpBranch: {
+                // words[i+1] = target label
+                succ(program_words_[i + 1]);
+                break;
+            }
+            case spv::Op::OpBranchConditional: {
+                // Layout: condition-id, true-label, false-label [, weights...]
+                succ(program_words_[i + 2]);
+                succ(program_words_[i + 3]);
+                break;
+            }
+            case spv::Op::OpSwitch: {
+                // Layout: selector-id, default-label, (literal, label)*
+                const uint32_t default_label = program_words_[i + 2];
+                succ(default_label);
+                // Each pair adds another target label
+                for (uint32_t k = i + 3; k < i + wc; k += 2)
+                {
+                    const uint32_t target = program_words_[k + 1];
+                    succ(target);
+                }
+                break;
+            }
+            // No successors:
+            case spv::Op::OpReturn:
+            case spv::Op::OpReturnValue:
+            case spv::Op::OpUnreachable:
+            case spv::Op::OpKill:
+            case spv::Op::OpTerminateInvocation:
+                break;
+
+            default: break;
+        }
+
+        i += wc;
+    }
 }
 
 void SPIRVSimulator::DecodeHeader()
@@ -160,6 +261,13 @@ void SPIRVSimulator::ParseAll()
             }
         }
 
+        if ((spv::Op)instruction.opcode == spv::Op::OpLabel)
+        {
+            current_block_id_ = instruction.words[1];
+        }
+
+        block_label_per_instruction_.push_back(current_block_id_);
+
         bool has_result = false;
         bool has_type   = false;
         spv::HasResultAndType(instruction.opcode, &has_result, &has_type);
@@ -180,6 +288,8 @@ void SPIRVSimulator::ParseAll()
 
         instruction_index += 1;
     }
+
+    current_block_id_ = 0;
 
     if (!unimplemented_opcodes.empty())
     {
@@ -256,11 +366,11 @@ bool SPIRVSimulator::Run()
 
     uint32_t entry_point_function_id = 0;
 
-    if (input_data_.entry_point_op_name != "")
+    if (input_data_->entry_point_op_name != "")
     {
         for (const auto& it : entry_points_)
         {
-            if (it.second == input_data_.entry_point_op_name)
+            if (it.second == input_data_->entry_point_op_name)
             {
                 if (verbose_)
                     std::cout << "SPIRV simulator: Using entry point with OpName label: " << it.second << std::endl;
@@ -275,18 +385,18 @@ bool SPIRVSimulator::Run()
 
     if (entry_point_function_id == 0)
     {
-        if (entry_points_.find(input_data_.entry_point_id) == entry_points_.end())
+        if (entry_points_.find(input_data_->entry_point_id) == entry_points_.end())
         {
             if (verbose_)
-                std::cout << "SPIRV simulator: Warning, entry point function with index: " << input_data_.entry_point_id
+                std::cout << "SPIRV simulator: Warning, entry point function with index: " << input_data_->entry_point_id
                           << " not found, using first available" << std::endl;
             entry_point_function_id = entry_points_.begin()->first;
         }
         else
         {
             if (verbose_)
-                std::cout << "SPIRV simulator: Using entry point with ID: " << input_data_.entry_point_id << std::endl;
-            entry_point_function_id = input_data_.entry_point_id;
+                std::cout << "SPIRV simulator: Using entry point with ID: " << input_data_->entry_point_id << std::endl;
+            entry_point_function_id = input_data_->entry_point_id;
         }
     }
 
@@ -302,9 +412,9 @@ bool SPIRVSimulator::Run()
     call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_ });
     ExecuteInstructions();
 
-    if ((!has_buffer_writes_) && (physical_address_pointer_source_data_.size() == 0) && input_data_.shader_id)
+    if ((!has_buffer_writes_) && (input_data_->physical_address_data.size() == 0) && input_data_->shader_id)
     {
-        input_data_.persistent_data.uninteresting_shaders.insert(input_data_.shader_id);
+        input_data_->persistent_data.uninteresting_shaders.insert(input_data_->shader_id);
     }
 
     return false;
@@ -381,13 +491,8 @@ void SPIRVSimulator::ExecuteInstructions()
         PhysicalAddressData output_result;
         output_result.raw_pointer_value = RemapHostToClientPointer(phys_pointer.pointer_handle);
         output_result.bit_components.push_back(source_data);
-        physical_address_pointer_source_data_.push_back(output_result);
+        input_data_->physical_address_data.push_back(output_result);
     }
-}
-
-void SPIRVSimulator::WriteOutputs()
-{
-    assertx("SPIRV simulator: Value writeout not implemented yet");
 }
 
 bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dummy_exec)
@@ -760,10 +865,14 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
 
 void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
                                          uint32_t              branching_value_id,
-                                         uint32_t              target_block_id)
+                                         std::set<uint32_t>*   visited_set,
+                                         SimulationData*       fork_input_data)
 {
     // Do a shallow copy
     *this = source;
+    input_data_ = fork_input_data;
+
+    visisted_fork_branches_ = visited_set;
 
     // Then duplicate the values
     for (auto& value : values_)
@@ -786,9 +895,6 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
 
     is_execution_fork = true;
     current_fork_index_ += 1;
-
-    fork_abort_trigger_id_ = branching_value_id;
-    fork_abort_target_id_  = target_block_id;
 
     auto& stack_frame = call_stack_.back();
     stack_frame.pc -= 1;
@@ -814,6 +920,73 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
     ClearIsArbitrary(branching_value_id);
 
     ExecuteInstructions();
+}
+
+void SPIRVSimulator::on_loop_begin(uint32_t header)
+{
+    branch_counters_[header] = 0;
+}
+
+void SPIRVSimulator::on_loop_exit(uint32_t header)
+{
+
+}
+
+void SPIRVSimulator::on_loop_iteration(uint32_t header)
+{
+    branch_counters_[header] += 1;
+    if (branch_counters_[header] > MAX_LOOP_COUNT)
+    {
+        // Just jump to the merge block of the current loop
+        const LoopInfo& current_loop = loops_[header];
+        call_stack_.back().pc = result_id_to_inst_index_.at(current_loop.merge);
+        std::cout << "SPIRV simulator: WARNING: Loop reached the max number of debug iterations, jumping to merge block and exiting loop" << std::endl;
+        input_data_->aborted_long_loop = true;
+    }
+}
+
+void SPIRVSimulator::OnEnterBlockHandleLoops()
+{
+    // Called when we enter a new structured control flow block
+    while (!loop_stack_.empty()) {
+        const auto& top = loop_stack_.back();
+        const auto& L   = loops_.at(top.header);
+        const bool inside = L.block_set.count(current_block_id_) != 0;
+        if (inside || (current_block_id_ == top.merge)){
+            break;
+        }
+        on_loop_exit(top.header);
+        loop_stack_.pop_back();
+    }
+
+    // Exited to merge of top loop?
+    while (!loop_stack_.empty() && (current_block_id_ == loop_stack_.back().merge))
+    {
+        auto top = loop_stack_.back();
+        loop_stack_.pop_back();
+        on_loop_exit(top.header);
+    }
+
+    // Is curr a loop header?
+    auto it = loops_.find(current_block_id_);
+    if (it != loops_.end()) {
+        const auto& L = it->second;
+        const bool prev_inside = L.block_set.count(prev_block_id_) != 0;
+
+        if (!prev_inside) {
+            // First entry from outside → one-off
+            loop_stack_.push_back({L.header, L.merge});
+            on_loop_begin(L.header);
+        } else {
+            // Back-edge / next iteration
+            if (!loop_stack_.empty() && (loop_stack_.back().header == L.header)) {
+                on_loop_iteration(L.header);
+            } else {
+                // (Rare) stack drift; fix it:
+                loop_stack_.push_back({L.header, L.merge});
+            }
+        }
+    }
 }
 
 void SPIRVSimulator::HandleUnimplementedOpcode(const Instruction& instruction)
@@ -2062,7 +2235,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
 
                 const std::byte* remapped_pointer = nullptr;
 
-                for (const auto& map_entry : input_data_.physical_address_buffers)
+                for (const auto& map_entry : input_data_->physical_address_buffers)
                 {
                     uint64_t buffer_address = map_entry.first;
                     size_t   buffer_size    = map_entry.second.first;
@@ -2102,7 +2275,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
 {
     std::vector<DataSourceBits> results;
 
-    uint32_t           instruction_index = result_id_to_inst_index_[result_id];
+    uint32_t           instruction_index = result_id_to_inst_index_.at(result_id);
     const Instruction& instruction       = instructions_[instruction_index];
 
     bool has_result = false;
@@ -2120,6 +2293,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         std::cout << execIndent << "Tracing value source backwards through: " << spv::OpToString(instruction.opcode)
                   << ": " << result_id << std::endl;
     }
+
+    const std::vector<uint32_t> id_operands = ids_per_instruction_[result_id_to_inst_index_.at(result_id)];
 
     switch (instruction.opcode)
     {
@@ -2151,18 +2326,18 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
 
             uint64_t byte_offset = 0;
-            if (input_data_.specialization_constants && (input_data_.specialization_constant_offsets.find(spec_id) == input_data_.specialization_constant_offsets.end()))
+            if (input_data_->specialization_constants && (input_data_->specialization_constant_offsets.find(spec_id) == input_data_->specialization_constant_offsets.end()))
             {
                 assertx("SPIRV simulator: No specialization constant data found for the given SpecId");
             }
-            else if (input_data_.specialization_constants)
+            else if (input_data_->specialization_constants)
             {
-                byte_offset = input_data_.specialization_constant_offsets[spec_id];
+                byte_offset = input_data_->specialization_constant_offsets[spec_id];
             }
 
             DataSourceBits data_source;
             data_source.location    = BitLocation::SpecConstant;
-            data_source.source_ptr  = input_data_.specialization_constants;
+            data_source.source_ptr  = input_data_->specialization_constants;
             data_source.idx         = 0;
             data_source.binding_id  = spec_id;
             data_source.set_id      = 0;
@@ -2217,8 +2392,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
 
                 data_source.byte_offset = GetPointerOffset(pointer);
                 data_source.bit_offset  = 0;
-                // This does not account for padding, but its probably fine here since it makes little sense to load
-                // complex constructs here
+                // This does not account for padding, but its probably fine here since it makes little sense to load complex constructs here
                 data_source.bitcount       = GetBitizeOfTargetType(pointer);
                 data_source.val_bit_offset = 0;
                 results.push_back(data_source);
@@ -2248,9 +2422,38 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             results.push_back(data_source);
             break;
         }
+
+        case spv::Op::OpSelect:
+        {
+            // TODO: Properly implement this, propogate based on conditional
+            break;
+        }
+        case spv::Op::OpPhi:
+        {
+            // TODO: Properly implement this, propogate based on conditional
+            break;
+        }
+        case spv::Op::OpCompositeConstruct:
+        {
+            for (const auto& id : id_operands) {
+                auto sub = FindDataSourcesFromResultID(id);
+                results.insert(results.end(), sub.begin(), sub.end());
+            }
+            DataSourceBits* prev = nullptr;
+            for (auto& comp : results) {
+                if (prev)
+                    comp.val_bit_offset += prev->val_bit_offset + prev->bitcount;
+                prev = &comp;
+            }
+            break;
+        }
         default:
         {
-            assertx("SPIRV simulator: Unimplemented opcode in FindDataSourcesFromResultID");
+            for (const auto& id : id_operands) {
+                auto sub = FindDataSourcesFromResultID(id);
+                results.insert(results.end(), sub.begin(), sub.end());
+            }
+            break;
         }
     }
 
@@ -2431,7 +2634,41 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
             {
                 const auto agg = std::get<std::shared_ptr<AggregateV>>(*value);
 
-                assertm(indirection_index < agg->elems.size(), "SPIRV simulator: Array index OOB");
+                if (indirection_index >= agg->elems.size())
+                {
+                    uint32_t target_type_id = GetTargetPointerType(ptr);
+                    const Type& target_type = GetTypeByTypeId(target_type_id);
+
+                    if (target_type.kind == Type::Kind::RuntimeArray || target_type.kind == Type::Kind::Array)
+                    {
+                        #ifdef DEBUG_BUILD
+                        {
+                            std::cout << "SPIRV simulator: Array access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
+
+                            indirection_index = agg->elems.size() - 1;
+                        }
+                        #else
+                        {
+                            if (indirection_index < agg->elems.size())
+                            {
+                                std::cout << "SPIRV simulator: ERROR: Array index OOB" << std::endl;
+                            }
+                        }
+                        #endif
+                    }
+                    else
+                    {
+                        std::cout << "SPIRV simulator: ERROR: Struct index OOB" << std::endl;
+                        #ifdef DEBUG_BUILD
+                        if (is_execution_fork)
+                        {
+                            std::cout << "SPIRV simulator: Corrupt struct access in execution fork, assuming the problem is due to uninitialized data during a debug run and terminating the fork." << std::endl;
+                            call_stack_.clear();
+                            return Value();
+                        }
+                        #endif
+                    }
+                }
 
                 value = &agg->elems[indirection_index];
             }
@@ -2439,7 +2676,20 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
             {
                 auto vec = std::get<std::shared_ptr<VectorV>>(*value);
 
-                assertm(indirection_index < vec->elems.size(), "SPIRV simulator: Vector index OOB");
+                #ifdef DEBUG_BUILD
+                {
+                    std::cout << "SPIRV simulator: Vector access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
+
+                    indirection_index = vec->elems.size() - 1;
+                }
+                #else
+                {
+                    if (indirection_index < vec->elems.size())
+                    {
+                        std::cout << "SPIRV simulator: ERROR: Vector index OOB" << std::endl;
+                    }
+                }
+                #endif
 
                 value = &vec->elems[indirection_index];
             }
@@ -2447,7 +2697,20 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
             {
                 auto matrix = std::get<std::shared_ptr<MatrixV>>(*value);
 
-                assertm(indirection_index < matrix->cols.size(), "SPIRV simulator: Matrix index OOB");
+                #ifdef DEBUG_BUILD
+                {
+                    std::cout << "SPIRV simulator: Matrix column access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
+
+                    indirection_index = matrix->cols.size() - 1;
+                }
+                #else
+                {
+                    if (indirection_index < matrix->cols.size())
+                    {
+                        std::cout << "SPIRV simulator: ERROR: Matrix column index OOB" << std::endl;
+                    }
+                }
+                #endif
 
                 value = &matrix->cols[indirection_index];
             }
@@ -3781,12 +4044,12 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
     if (HasDecorator(result_id, spv::Decoration::DecorationSpecId))
     {
         uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
-        if (input_data_.specialization_constant_offsets.find(spec_id) !=
-            input_data_.specialization_constant_offsets.end())
+        if (input_data_->specialization_constant_offsets.find(spec_id) !=
+            input_data_->specialization_constant_offsets.end())
         {
-            size_t           spec_id_offset = input_data_.specialization_constant_offsets.at(spec_id);
+            size_t           spec_id_offset = input_data_->specialization_constant_offsets.at(spec_id);
             const std::byte* raw_spec_const_data =
-                static_cast<const std::byte*>(input_data_.specialization_constants) + spec_id_offset;
+                static_cast<const std::byte*>(input_data_->specialization_constants) + spec_id_offset;
             std::vector<uint32_t> buffer_data;
             ReadWords(raw_spec_const_data, type_id, buffer_data);
 
@@ -3963,8 +4226,8 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
     if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
     {
-        const std::byte* external_pointer = static_cast<const std::byte*>(input_data_.push_constants);
-        new_pointer.pointer_handle        = bit_cast<uint64_t>(input_data_.push_constants);
+        const std::byte* external_pointer = static_cast<const std::byte*>(input_data_->push_constants);
+        new_pointer.pointer_handle        = bit_cast<uint64_t>(input_data_->push_constants);
 
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer) {
@@ -3993,11 +4256,11 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
         const std::byte* external_pointer = nullptr;
 
-        if (input_data_.bindings.find(descriptor_set) != input_data_.bindings.end())
+        if (input_data_->bindings.find(descriptor_set) != input_data_->bindings.end())
         {
-            if (input_data_.bindings.at(descriptor_set).find(binding) != input_data_.bindings.at(descriptor_set).end())
+            if (input_data_->bindings.at(descriptor_set).find(binding) != input_data_->bindings.at(descriptor_set).end())
             {
-                external_pointer = static_cast<std::byte*>(input_data_.bindings.at(descriptor_set).at(binding));
+                external_pointer = static_cast<std::byte*>(input_data_->bindings.at(descriptor_set).at(binding));
             }
         }
 
@@ -4042,6 +4305,22 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
         new_pointer.pointer_handle =
                 HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
+
+        if (HasDecorator(result_id, spv::Decoration::DecorationBuiltIn))
+        {
+            pointee_flags |= SPS_FLAG_THREAD_SPECIFIC;
+        }
+        else if (type.pointer.pointee_type_id != 0 && GetTypeByTypeId(type.pointer.pointee_type_id).kind == Type::Kind::Struct)
+        {
+            for (uint32_t member_id : struct_members_[type.pointer.pointee_type_id])
+            {
+                if (HasDecorator(result_id, member_id, spv::Decoration::DecorationBuiltIn))
+                {
+                    pointee_flags |= SPS_FLAG_THREAD_SPECIFIC;
+                    break;
+                }
+            }
+        }
     }
     else
     {
@@ -4064,6 +4343,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         else
         {
             std::cout << "SPIRV simulator: Warning: Pointer to physical storage buffer pointer is not marked as candidate by the user, this is probably a symptom of a serious problem" << std::endl;
+            input_data_->unlisted_candidate_found = true;
         }
         pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
     }
@@ -4207,7 +4487,12 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
             ValueHoldsPbufferPtr(result_id)
         };
 
-        output_candidates_[ptr_handle].push_back(output_candidate);
+        input_data_->output_candidates[ptr_handle].push_back(output_candidate);
+    }
+
+    if (ValueIsArbitrary(result_id))
+    {
+        input_data_->had_arbitrary_write = true;
     }
 
     // If this is a non-interpolated output value, the shader may be important for pbuffer pointer detection
@@ -4223,8 +4508,7 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     else if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) &&
              (pointer.storage_class != spv::StorageClass::StorageClassImage))
     {
-        // If we are writing to any storage class that is not function or image, the shader may be important for pbuffer
-        // pointer detection
+        // If we are writing to any storage class that is not function or image, the shader may be important for pbuffer pointer detection
         has_buffer_writes_ = true;
     }
 
@@ -4317,6 +4601,7 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
         else
         {
             std::cout << "SPIRV simulator: WARNING: OpAccessChain Pointer to physical storage buffer pointer is not marked as candidate by the user, this is probably a symptom of a serious problem" << std::endl;
+            input_data_->unlisted_candidate_found = true;
         }
     }
 
@@ -4401,9 +4686,16 @@ void SPIRVSimulator::Op_Label(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpLabel);
 
+    // We are entering a block, track metadata
     uint32_t result_id = instruction.words[1];
     prev_block_id_     = current_block_id_;
     current_block_id_  = result_id;
+
+    // If we entered a new block, handle any loop related transitions
+    if (current_block_id_ != prev_block_id_)
+    {
+        OnEnterBlockHandleLoops();
+    }
 
     if ((current_block_id_ == current_merge_block_id_) && is_execution_fork)
     {
@@ -4463,24 +4755,34 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     // (eg. target id is not the continue)
     if (ValueIsArbitrary(condition_id) && (target_label != current_continue_block_id_))
     {
-
-        if ((fork_abort_trigger_id_ == condition_id) && (fork_abort_target_id_ == target_label))
+        uint32_t fork_target_label = condition ? label_2_id : label_1_id;
+        if ((visisted_fork_branches_ != nullptr) && (visisted_fork_branches_->contains(fork_target_label)))
         {
-            // Do not fork again, we are entering an infite loop by creating a fork equal to the one that started this one. If this ever happens, we are done so just return
+            // Do not fork again, this may create an infite loop and is a waste. If this ever happens, we are done so just return
             call_stack_.clear();
             return;
         }
 
-        SPIRVSimulator fork;
         if (verbose_)
         {
             std::cout << "SPIRV simulator: Executing fork at level: " << current_fork_index_ << std::endl;
         }
 
-        fork.CreateExecutionFork(*this, condition_id, target_label);
+        SimulationData fork_data;
+        SPIRVSimulator fork;
+        if (visisted_fork_branches_ == nullptr)
+        {
+            std::set<uint32_t> visited_set;
+            visited_set.insert(target_label);
+            fork.CreateExecutionFork(*this, condition_id, &visited_set, &fork_data);
+        }
+        else
+        {
+            visisted_fork_branches_->insert(target_label);
+            fork.CreateExecutionFork(*this, condition_id, visisted_fork_branches_, &fork_data);
+        }
 
-        const auto& fork_results = fork.GetPhysicalAddressData();
-
+        const auto& fork_results = fork_data.physical_address_data;
         if (fork_results.size())
         {
             if (verbose_)
@@ -4492,10 +4794,17 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
                        "is not implemented, there is a chance that the pbuffer pointer metadata is incomplete."
                     << std::endl;
             }
-
-            physical_address_pointer_source_data_.insert(
-                physical_address_pointer_source_data_.end(), fork_results.begin(), fork_results.end());
+            input_data_->physical_address_data.insert(
+                input_data_->physical_address_data.end(), fork_results.begin(), fork_results.end());
         }
+
+        const auto& fork_candidate_results = fork_data.output_candidates;
+        // TODO: Continue here, merge into current outputs
+    }
+
+    if (visisted_fork_branches_ != nullptr)
+    {
+        visisted_fork_branches_->insert(target_label);
     }
 
     call_stack_.back().pc = result_id_to_inst_index_.at(target_label);
@@ -5421,12 +5730,12 @@ void SPIRVSimulator::Op_ArrayLength(const Instruction& instruction)
 
     if (array_pointer)
     {
-        if (input_data_.rt_array_lengths.find(array_pointer) != input_data_.rt_array_lengths.end())
+        if (input_data_->rt_array_lengths.find(array_pointer) != input_data_->rt_array_lengths.end())
         {
-            if (input_data_.rt_array_lengths[array_pointer].find(array_offset) !=
-                input_data_.rt_array_lengths[array_pointer].end())
+            if (input_data_->rt_array_lengths[array_pointer].find(array_offset) !=
+                input_data_->rt_array_lengths[array_pointer].end())
             {
-                SetValue(result_id, (uint64_t)input_data_.rt_array_lengths[array_pointer][array_offset]);
+                SetValue(result_id, (uint64_t)input_data_->rt_array_lengths[array_pointer][array_offset]);
             }
             else
             {
@@ -5515,7 +5824,7 @@ void SPIRVSimulator::Op_SpecConstantFalse(const Instruction& instruction)
             "SPIRV simulator: Op_SpecConstantFalse type is not decorated with SpecId");
 
     uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
-    if (input_data_.specialization_constant_offsets.find(spec_id) != input_data_.specialization_constant_offsets.end())
+    if (input_data_->specialization_constant_offsets.find(spec_id) != input_data_->specialization_constant_offsets.end())
     {
         assertx("SPIRV simulator: Specialized Op_SpecConstantFalse branch not implemented yet, extract the instruction "
                 "and execute");
@@ -5548,7 +5857,7 @@ void SPIRVSimulator::Op_SpecConstantTrue(const Instruction& instruction)
             "SPIRV simulator: Op_SpecConstantFalse type is not decorated with SpecId");
 
     uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
-    if (input_data_.specialization_constant_offsets.find(spec_id) != input_data_.specialization_constant_offsets.end())
+    if (input_data_->specialization_constant_offsets.find(spec_id) != input_data_->specialization_constant_offsets.end())
     {
         assertx("SPIRV simulator: Specialized Op_SpecConstantTrue branch not implemented yet, extract the instruction "
                 "and execute");
@@ -6738,7 +7047,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         const std::byte* remapped_pointer = nullptr;
         uint64_t buffer_offset_bytes = 0;
 
-        for (const auto& map_entry : input_data_.physical_address_buffers)
+        for (const auto& map_entry : input_data_->physical_address_buffers)
         {
             uint64_t buffer_address = map_entry.first;
             size_t   buffer_size    = map_entry.second.first;
@@ -6764,7 +7073,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         PhysicalAddressData pointer_data;
         pointer_data.bit_components    = FindDataSourcesFromResultID(operand_id);
         pointer_data.raw_pointer_value = pointer_value;
-        physical_address_pointer_source_data_.push_back(std::move(pointer_data));
+        input_data_->physical_address_data.push_back(std::move(pointer_data));
 
         // If any of the components that made up the pointer is marked as a candidate, propogate this to the input candidate list and confirm them
         for (const DataSourceBits& component_bits : pointer_data.bit_components)
@@ -6793,6 +7102,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
             std::cout << "SPIRV simulator: WARNING: A bitcast to a pbuffer pointer had a operand that was not marked as a candidate, we may miss output candidates here if the value or any of its source components were written out. This is also a symptom of a incomplete input candidate list"
                     << std::endl;
             SetHoldsPbufferPtr(operand_id);
+            input_data_->unlisted_candidate_found = true;
         }
     }
 }
@@ -6924,7 +7234,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
 
     const std::byte* remapped_pointer = nullptr;
 
-    for (const auto& map_entry : input_data_.physical_address_buffers)
+    for (const auto& map_entry : input_data_->physical_address_buffers)
     {
         uint64_t buffer_address = map_entry.first;
         size_t   buffer_size    = map_entry.second.first;
@@ -6950,7 +7260,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
     PhysicalAddressData pointer_data;
     pointer_data.bit_components    = FindDataSourcesFromResultID(integer_id);
     pointer_data.raw_pointer_value = pointer_value;
-    physical_address_pointer_source_data_.push_back(std::move(pointer_data));
+    input_data_->physical_address_data.push_back(std::move(pointer_data));
 
     TransferFlags(result_id, instruction.words[3]);
     SetHoldsPbufferPtr(result_id);
@@ -6961,6 +7271,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
         std::cout << "SPIRV simulator: WARNING: A integer cast to a pbuffer pointer was not marked as a candidate, we may miss output candidates here if the value or any of its source components were written out. This is also a symptom of a incomplete input candidate list"
                   << std::endl;
         SetHoldsPbufferPtr(integer_id);
+        input_data_->unlisted_candidate_found = true;
     }
 }
 
@@ -8312,6 +8623,15 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
             break;
         }
     }
+
+    if ((visisted_fork_branches_ != nullptr) && (visisted_fork_branches_->contains(label_id)))
+    {
+        // Do not fork again, we are entering an infite loop by creating a fork equal to the one that started this one. If this ever happens, we are done so just return
+        call_stack_.clear();
+        return;
+    }
+
+    // TODO: Create a execution for if appropriate
 
     call_stack_.back().pc = result_id_to_inst_index_.at(label_id);
 }

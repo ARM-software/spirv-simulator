@@ -248,6 +248,8 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     std::vector<uint32_t>       prepare_submission(const TestParameters& parameters);
     ::SPIRVSimulator::InputData prepare_input_data(const TestParameters& parameters);
 
+    ::SPIRVSimulator::InputData local_data;
+
     // needs to be rewritten through std::visit for mismatching variants
     // Mismatching variants currently occur only for when comparing value to pointer
     // assuming that that means use wanted to compare to pointee
