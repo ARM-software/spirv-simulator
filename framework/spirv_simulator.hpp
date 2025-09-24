@@ -147,7 +147,7 @@ struct SimulationData
     // Set to true if the simulator encountered a physical address pointer that was not listed in the input candidates
     bool unlisted_candidate_found = false;
 
-    // Set to true if the simulator encounters a loop lasting longer than MAX_LOOP_COUNT iterations, this wil l cause it to abort the loop and continue (simulator will assume a hang dues to invalid inputs)
+    // Set to true if the simulator encounters a loop lasting longer than MAX_LOOP_COUNT iterations, this will cause it to abort the loop and continue (simulator will assume a hang due to invalid inputs)
     bool aborted_long_loop = false;
 
     // Set to true if any arbitrary data was written to external memory
