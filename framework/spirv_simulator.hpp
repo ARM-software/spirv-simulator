@@ -3,6 +3,7 @@
 #ifndef ARM_SPIRV_SIMULATOR_HPP
 #define ARM_SPIRV_SIMULATOR_HPP
 
+#include <iostream>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -721,6 +722,31 @@ typename std::enable_if_t<std::is_pointer_v<To>, To> bit_cast(std::uint64_t v) n
         assert(v <= std::numeric_limits<uint32_t>::max() && "uint64_t value doesn't fit in uintptr_t");
     }
     return reinterpret_cast<To>(static_cast<std::uintptr_t>(v));
+}
+
+inline std::string read_instruction_literal(const Instruction& instruction,
+                                             uint32_t start_word)
+{
+    std::vector<char> bytes;
+
+    uint32_t word_index = start_word;
+    while (word_index < instruction.word_count) {
+        uint32_t word = instruction.words[word_index];
+
+        for (int b = 0; b < 4; ++b) {
+            uint8_t byte = static_cast<uint8_t>((word >> (8 * b)) & 0xFFu);
+            if (byte == 0) {
+                return std::string(bytes.begin(), bytes.end());
+            }
+
+            bytes.push_back(static_cast<char>(byte));
+        }
+        ++word_index;
+    }
+
+    std::cout << "SPIRV simulator: WARNING: read_instruction_literal reached end of range without seeing NUL terminator\n" << std::endl;
+
+    return std::string(bytes.begin(), bytes.end());;
 }
 
 

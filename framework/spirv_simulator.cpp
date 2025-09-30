@@ -1,7 +1,6 @@
 #include "spirv_simulator.hpp"
 #include "util.hpp"
 
-#include <iostream>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -334,7 +333,7 @@ void SPIRVSimulator::ParseAll()
             case spv::Op::OpEntryPoint:
             {
                 uint32_t entry_point_id       = instruction.words[2];
-                entry_points_[entry_point_id] = "";
+                entry_points_[entry_point_id] = read_instruction_literal(instruction, 3);
                 break;
             }
             default:
@@ -2510,7 +2509,7 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
 
 uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
 {
-    for (const auto& entry : input_data_.physical_address_buffers)
+    for (const auto& entry : input_data_->physical_address_buffers)
     {
         uint64_t buffer_address = entry.first;
         size_t   buffer_size    = entry.second.first;
