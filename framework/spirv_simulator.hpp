@@ -1415,6 +1415,8 @@ class SPIRVSimulator
     void Op_SGreaterThan(const Instruction&);
     void Op_SDiv(const Instruction&);
     void Op_SNegate(const Instruction&);
+    void Op_LogicalEqual(const Instruction& instruction);
+    void Op_LogicalNotEqual(const Instruction& instruction);
     void Op_LogicalOr(const Instruction&);
     void Op_LogicalAnd(const Instruction&);
     void Op_MatrixTimesMatrix(const Instruction&);
