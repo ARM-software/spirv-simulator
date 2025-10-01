@@ -2593,8 +2593,29 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         uint32_t target_type_id = GetTargetPointerType(ptr);
         WriteValue(external_pointer, target_type_id, out_value);
     }
+    else if (type.pointer.storage_class == spv::StorageClass::StorageClassUniform)
+    {
+        uint32_t pointee_type_id = type.pointer.pointee_type_id;
+
+        const Type& type = GetTypeByTypeId(pointee_type_id);
+
+        // storageBuffer: opTypeStruct + BufferBlock
+        if ((type.kind == Type::Kind::Struct) && (HasDecorator(pointee_type_id, spv::Decoration::DecorationBlock) ||
+             HasDecorator(pointee_type_id, spv::Decoration::DecorationBufferBlock)))
+        {
+            auto offset = GetPointerOffset(ptr);
+
+            std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
+
+            uint32_t target_type_id = GetTargetPointerType(ptr);
+            WriteValue(external_pointer, target_type_id, out_value);
+        }
+        else
+        {
+            assertx("SPIRV simulator: Write to Uniform storage class");
+        }
+    }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
-             type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant)
     {
         assertx("SPIRV simulator: Write to invalid/constant storage class");
