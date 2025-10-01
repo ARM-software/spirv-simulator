@@ -2648,10 +2648,7 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
                         }
                         #else
                         {
-                            if (indirection_index < agg->elems.size())
-                            {
-                                std::cout << "SPIRV simulator: ERROR: Array index OOB" << std::endl;
-                            }
+                            std::cout << "SPIRV simulator: ERROR: Array index OOB" << std::endl;
                         }
                         #endif
                     }
@@ -2674,43 +2671,39 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
             else if (std::holds_alternative<std::shared_ptr<VectorV>>(*value))
             {
                 auto vec = std::get<std::shared_ptr<VectorV>>(*value);
-
-                #ifdef DEBUG_BUILD
+                if (indirection_index >= vec->elems.size())
                 {
-                    std::cout << "SPIRV simulator: Vector access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
+                    #ifdef DEBUG_BUILD
+                    {
+                        std::cout << "SPIRV simulator: Vector access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
 
-                    indirection_index = vec->elems.size() - 1;
-                }
-                #else
-                {
-                    if (indirection_index < vec->elems.size())
+                        indirection_index = vec->elems.size() - 1;
+                    }
+                    #else
                     {
                         std::cout << "SPIRV simulator: ERROR: Vector index OOB" << std::endl;
                     }
+                   #endif
                 }
-                #endif
-
                 value = &vec->elems[indirection_index];
             }
             else if (std::holds_alternative<std::shared_ptr<MatrixV>>(*value))
             {
                 auto matrix = std::get<std::shared_ptr<MatrixV>>(*value);
-
-                #ifdef DEBUG_BUILD
+                if (indirection_index >= matrix->cols.size())
                 {
-                    std::cout << "SPIRV simulator: Matrix column access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
+                    #ifdef DEBUG_BUILD
+                    {
+                        std::cout << "SPIRV simulator: Matrix column access index: " << indirection_index << " is out of bounds, clamping to last element as a workaround while debugging" << std::endl;
 
-                    indirection_index = matrix->cols.size() - 1;
-                }
-                #else
-                {
-                    if (indirection_index < matrix->cols.size())
+                        indirection_index = matrix->cols.size() - 1;
+                    }
+                    #else
                     {
                         std::cout << "SPIRV simulator: ERROR: Matrix column index OOB" << std::endl;
                     }
+                    #endif
                 }
-                #endif
-
                 value = &matrix->cols[indirection_index];
             }
             else
@@ -5383,25 +5376,11 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
                     // Avoids wrapping which can lead to really long loops
                     if (base_value < sub_value)
                     {
-                        elem_result = 0;
+                        elem_result = (uint64_t)0;
                     }
-                }
-                else
-                {
-                    elem_result = base_value - sub_value;
-                }
-            }
-            else if (std::holds_alternative<uint64_t>(vec1->elems[i]) &&
-                     std::holds_alternative<int64_t>(vec2->elems[i]))
-            {
-                uint64_t base_value = std::get<uint64_t>(vec1->elems[i]);
-                uint64_t sub_value = std::get<int64_t>(vec2->elems[i]);
-                if (free_case)
-                {
-                    // Avoids wrapping which can lead to really long loops
-                    if (base_value < sub_value)
+                    else
                     {
-                        elem_result = 0;
+                        elem_result = base_value - sub_value;
                     }
                 }
                 else
@@ -5412,11 +5391,6 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
             {
                 elem_result = (std::get<int64_t>(vec1->elems[i]) - std::get<int64_t>(vec2->elems[i]));
-            }
-            else if (std::holds_alternative<int64_t>(vec1->elems[i]) &&
-                     std::holds_alternative<uint64_t>(vec2->elems[i]))
-            {
-                elem_result = (std::get<int64_t>(vec1->elems[i]) - std::get<uint64_t>(vec2->elems[i]));
             }
             else
             {
@@ -5433,7 +5407,6 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         const Value& op1 = GetValue(instruction.words[3]);
         const Value& op2 = GetValue(instruction.words[4]);
 
-
         if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<uint64_t>(op2))
         {
             uint64_t base_value = std::get<uint64_t>(op1);
@@ -5447,25 +5420,9 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
                 {
                     result = 0;
                 }
-            }
-            else
-            {
-                result = base_value - sub_value;
-            }
-
-            SetValue(result_id, result);
-        }
-        else if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<int64_t>(op2))
-        {
-            uint64_t base_value = std::get<uint64_t>(op1);
-            uint64_t sub_value = std::get<int64_t>(op2);
-            uint64_t result;
-            if (free_case)
-            {
-                // Avoids wrapping which can lead to really long loops
-                if (base_value < sub_value)
+                else
                 {
-                    result = (uint64_t)0;
+                    result = base_value - sub_value;
                 }
             }
             else
@@ -5479,12 +5436,6 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         {
             int64_t result;
             result = (std::get<int64_t>(op1) - std::get<int64_t>(op2));
-            SetValue(result_id, result);
-        }
-        else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<uint64_t>(op2))
-        {
-            int64_t result;
-            result = (std::get<int64_t>(op1) - std::get<uint64_t>(op2));
             SetValue(result_id, result);
         }
         else
