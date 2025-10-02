@@ -8309,13 +8309,17 @@ void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
     {
         std::shared_ptr<VectorV> new_column = std::make_shared<VectorV>();
 
-        for (uint64_t source_row = 0; source_row < type.matrix.col_count; ++source_row)
+        for (uint64_t source_column = 0; source_column < col_type.vector.elem_count; ++source_column)
         {
-            for (uint64_t source_column = 0; source_column < col_type.vector.elem_count; ++source_column)
-            {
-                new_column->elems.push_back(CopyValue(
-                    std::get<std::shared_ptr<VectorV>>(source_matrix->cols[source_column])->elems[source_row]));
-            }
+            assertm(std::holds_alternative<std::shared_ptr<VectorV>>(source_matrix->cols[source_column]),
+                    "SPIRV simulator: Simulator value does not hold a vectorV in Matrix shared pointer in Op_Transpose");
+
+            const std::shared_ptr<VectorV>& source_col = std::get<std::shared_ptr<VectorV>>(source_matrix->cols[source_column]);
+
+            assertm((source_col->elems.size() == type.matrix.col_count),
+                     "SPIRV simulator: length of column in source matrix mismatch number of column of target Matrix");
+
+            new_column->elems.push_back(CopyValue(source_col->elems[target_column]));
         }
 
         new_matrix->cols.push_back(new_column);
@@ -8672,24 +8676,31 @@ void SPIRVSimulator::Op_MatrixTimesVector(const Instruction& instruction)
     const std::shared_ptr<VectorV>& vector = std::get<std::shared_ptr<VectorV>>(GetValue(vector_id));
     const std::shared_ptr<MatrixV>& matrix = std::get<std::shared_ptr<MatrixV>>(GetValue(matrix_id));
 
+    assertm((vector->elems.size() == matrix->cols.size()),
+             "SPIRV simulator: number of components in Vector mismatch number of columns in Matrix");
+
     std::vector<double> tmp_result;
-    tmp_result.resize(type.vector.elem_count);
+    tmp_result.resize(type.vector.elem_count, 0.0);
 
     for (uint32_t col_index = 0; col_index < matrix->cols.size(); ++col_index)
     {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(matrix->cols[col_index]),
+                "SPIRV simulator: Non-vector column value found in matrix operand");
+        assertm(std::holds_alternative<double>(vector->elems[col_index]),
+                "SPIRV simulator: Non-floating point value found in vector operand");
+
+        const std::shared_ptr<VectorV>& col_vector = std::get<std::shared_ptr<VectorV>>(matrix->cols[col_index]);
+        assertm(col_vector->elems.size() == type.vector.elem_count,
+                "SPIRV simulator: Column type of Matrix mismatch result type");
+
+        double vec_val = std::get<double>(vector->elems[col_index]);
+
         for (uint32_t row_index = 0; row_index < type.vector.elem_count; ++row_index)
         {
-            assertm(std::holds_alternative<std::shared_ptr<VectorV>>(matrix->cols[col_index]),
-                    "SPIRV simulator: Non-vector column value found in matrix operand");
-            assertm(std::holds_alternative<double>(vector->elems[row_index]),
-                    "SPIRV simulator: Non-floating point value found in vector operand");
-
-            const std::shared_ptr<VectorV>& col_vector = std::get<std::shared_ptr<VectorV>>(matrix->cols[col_index]);
             assertm(std::holds_alternative<double>(col_vector->elems[row_index]),
                     "SPIRV simulator: Non-floating point value found in column vector operand");
 
-            tmp_result[row_index] +=
-                std::get<double>(col_vector->elems[row_index]) * std::get<double>(vector->elems[col_index]);
+            tmp_result[row_index] += std::get<double>(col_vector->elems[row_index]) * vec_val;
         }
     }
 
@@ -9579,19 +9590,28 @@ void SPIRVSimulator::Op_VectorTimesMatrix(const Instruction& instruction)
     const std::shared_ptr<VectorV>& vector = std::get<std::shared_ptr<VectorV>>(GetValue(vector_id));
     const std::shared_ptr<MatrixV>& matrix = std::get<std::shared_ptr<MatrixV>>(GetValue(matrix_id));
 
+    assertm((matrix->cols.size() == type.vector.elem_count),
+             "SPIRV simulator: number of columns mismatch number of components in result.");
+
     std::vector<double> tmp_result;
-    tmp_result.resize(type.vector.elem_count);
+    tmp_result.resize(type.vector.elem_count, 0.0);
 
     for (uint32_t col_index = 0; col_index < matrix->cols.size(); ++col_index)
     {
-        for (uint32_t row_index = 0; row_index < type.vector.elem_count; ++row_index)
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(matrix->cols[col_index]),
+                "SPIRV simulator: Non-vector column value found in matrix operand");
+
+        const std::shared_ptr<VectorV>& col_vector = std::get<std::shared_ptr<VectorV>>(matrix->cols[col_index]);
+
+        assertm((vector->elems.size() == col_vector->elems.size()),
+                 "SPIRV simulator: vector size mismatch between Vector and each column in Matrix.");
+
+        for (uint32_t row_index = 0; row_index < col_vector->elems.size(); ++row_index)
+        //for (uint32_t row_index = 0; row_index < type.vector.elem_count; ++row_index)
         {
-            assertm(std::holds_alternative<std::shared_ptr<VectorV>>(matrix->cols[col_index]),
-                    "SPIRV simulator: Non-vector column value found in matrix operand");
             assertm(std::holds_alternative<double>(vector->elems[row_index]),
                     "SPIRV simulator: Non-floating point value found in vector operand");
 
-            const std::shared_ptr<VectorV>& col_vector = std::get<std::shared_ptr<VectorV>>(matrix->cols[col_index]);
             assertm(std::holds_alternative<double>(col_vector->elems[row_index]),
                     "SPIRV simulator: Non-floating point value found in column vector operand");
 
@@ -10354,27 +10374,37 @@ void SPIRVSimulator::Op_MatrixTimesMatrix(const Instruction& instruction)
 
     for (uint32_t right_col_index = 0; right_col_index < matrix_right->cols.size(); ++right_col_index)
     {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(matrix_right->cols[right_col_index]),
+                "SPIRV simulator: Non-vector column value found in RightMatrix");
+
         const auto& right_col_vec = std::get<std::shared_ptr<VectorV>>(matrix_right->cols[right_col_index]);
 
+        assertm((right_col_vec->elems.size() == matrix_left->cols.size()),
+                 "SPIRV simulator: number of components in column in RightMatrix mismatch number of columns in LeftMatrix");
+
         std::vector<double> tmp_result;
-        tmp_result.resize(left_col_type.vector.elem_count);
+        tmp_result.resize(left_col_type.vector.elem_count, 0.0);
 
         for (uint32_t left_col_index = 0; left_col_index < matrix_left->cols.size(); ++left_col_index)
         {
             assertm(std::holds_alternative<std::shared_ptr<VectorV>>(matrix_left->cols[left_col_index]),
-                    "SPIRV simulator: Non-vector column value found in matrix operand");
+                    "SPIRV simulator: Non-vector column value found in LeftMatrix operand");
             assertm(std::holds_alternative<double>(right_col_vec->elems[left_col_index]),
-                    "SPIRV simulator: Non-floating point value found in vector operand");
+                    "SPIRV simulator: Non-floating point value found in column vector in RightMatrix operand");
 
             const std::shared_ptr<VectorV>& left_col_vector =
                 std::get<std::shared_ptr<VectorV>>(matrix_left->cols[left_col_index]);
 
+            double val = std::get<double>(right_col_vec->elems[left_col_index]);
+
+            assertm((left_col_vector->elems.size() == left_col_type.vector.elem_count),
+                     "SPIRV simulator: column type is not the same between LeftMatrix and result type");
+
             for (uint32_t row_index = 0; row_index < left_col_vector->elems.size(); ++row_index)
             {
                 assertm(std::holds_alternative<double>(left_col_vector->elems[row_index]),
-                        "SPIRV simulator: Non-floating point value found in column vector operand");
-                tmp_result[row_index] += std::get<double>(left_col_vector->elems[row_index]) *
-                                         std::get<double>(right_col_vec->elems[left_col_index]);
+                        "SPIRV simulator: Non-floating point value found in column vector in LeftMatrix operand");
+                tmp_result[row_index] += std::get<double>(left_col_vector->elems[row_index]) * val;
             }
         }
 
