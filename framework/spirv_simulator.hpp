@@ -928,6 +928,7 @@ class SPIRVSimulator
     std::unordered_map<uint32_t, std::vector<uint32_t>> struct_members_;
     std::unordered_map<uint32_t, uint32_t>              forward_type_declarations_; // Unused, consider removing this
     std::unordered_map<uint32_t, std::vector<DecorationInfo>>                               decorators_;
+    // struct result_id -> struct member_literal -> array of Decoration
     std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<DecorationInfo>>> struct_decorators_;
     std::unordered_map<uint32_t, std::string>                                               extended_imports_;
 
@@ -1071,6 +1072,7 @@ class SPIRVSimulator
     virtual uint32_t GetTargetPointerType(const PointerV& pointer);
     virtual size_t   GetBitizeOfTargetType(const PointerV& pointer);
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
+    virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal);
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
