@@ -763,6 +763,10 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_SDiv)
         case spv::Op::OpSNegate:
             R(Op_SNegate)
+        case spv::Op::OpLogicalEqual:
+            R(Op_LogicalEqual)
+        case spv::Op::OpLogicalNotEqual:
+            R(Op_LogicalNotEqual)
         case spv::Op::OpLogicalOr:
             R(Op_LogicalOr)
         case spv::Op::OpLogicalAnd:
@@ -2260,6 +2264,14 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                         "PhysicalStorageBuffer");
                 return 0;
             }
+        }
+        case Type::Kind::AccelerationStructureKHR:
+        case Type::Kind::RayQueryKHR:
+        {
+            assertm(!initial_data,
+                    "SPIRV simulator: Cannot create RayQuery or AccelerationStructure with initial_data unless we know the size of the "
+                    "opaque types");
+            return (uint64_t)0;
         }
         default:
         {
@@ -9972,6 +9984,152 @@ void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
     }
 
     TransferFlags(result_id, instruction.words[3]);
+}
+
+void SPIRVSimulator::Op_LogicalEqual(const Instruction& instruction)
+{
+    /*
+    OpLogicalEqual
+
+    Result is true if Operand 1 and Operand 2 have the same value.
+    Result is false if Operand 1 and Operand 2 have different values.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 must be the same as Result Type.
+    The type of Operand 2 must be the same as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpLogicalEqual);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    const Type&  type     = GetTypeByTypeId(type_id);
+    const Value& operand1 = GetValue(operand1_id);
+    const Value& operand2 = GetValue(operand2_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand1),
+                "SPIRV simulator: Non-vector value for operand 1 in OpLogicalEqual when using vector type");
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand2),
+                "SPIRV simulator: Non-vector value for operand 2 in OpLogicalEqual when using vector type");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(operand1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(operand2);
+
+        assertm(std::holds_alternative<uint64_t>(vec1->elems[0]),
+                "SPIRV simulator: Non-bool value in vector component for operand 1 in OpLogicalEqual");
+        assertm(std::holds_alternative<uint64_t>(vec2->elems[0]),
+                "SPIRV simulator: Non-bool value in vector component for operand 2 in OpLogicalEqual");
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                 "SPIRV simulator: elem length mismatch in OpLogicalEqual");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            result_vec->elems.push_back(
+                (uint64_t)(std::get<uint64_t>(vec1->elems[i]) == std::get<uint64_t>(vec2->elems[i])));
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        assertm(std::holds_alternative<uint64_t>(operand1),
+                "SPIRV simulator: Non-bool value for operand 1 in OpLogicalEqual when using bool type");
+        assertm(std::holds_alternative<uint64_t>(operand2),
+                "SPIRV simulator: Non-bool value for operand 2 in OpLogicalEqual when using bool type");
+        Value result = (uint64_t)(std::get<uint64_t>(operand1) == std::get<uint64_t>(operand2));
+
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type for OpLogicalEqual, must be vector or bool");
+    }
+
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
+}
+
+void SPIRVSimulator::Op_LogicalNotEqual(const Instruction& instruction)
+{
+    /*
+    OpLogicalNotEqual
+
+    Result is true if Operand 1 and Operand 2 have different values.
+    Result is false if Operand 1 and Operand 2 have the same value.
+
+    Result Type must be a scalar or vector of Boolean type.
+
+    The type of Operand 1 must be the same as Result Type.
+    The type of Operand 2 must be the same as Result Type.
+
+    Results are computed per component.
+    */
+    assert(instruction.opcode == spv::Op::OpLogicalNotEqual);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    const Type&  type     = GetTypeByTypeId(type_id);
+    const Value& operand1 = GetValue(operand1_id);
+    const Value& operand2 = GetValue(operand2_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand1),
+                "SPIRV simulator: Non-vector value for operand 1 in OpLogicalNotEqual when using vector type");
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand2),
+                "SPIRV simulator: Non-vector value for operand 2 in OpLogicalNotEqual when using vector type");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(operand1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(operand2);
+
+        assertm(std::holds_alternative<uint64_t>(vec1->elems[0]),
+                "SPIRV simulator: Non-bool value in vector component for operand 1 in OpLogicalNotEqual");
+        assertm(std::holds_alternative<uint64_t>(vec2->elems[0]),
+                "SPIRV simulator: Non-bool value in vector component for operand 2 in OpLogicalNotEqual");
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                 "SPIRV simulator: elem length mismatch in OpLogicalNotEqual");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            result_vec->elems.push_back(
+                (uint64_t)(std::get<uint64_t>(vec1->elems[i]) != std::get<uint64_t>(vec2->elems[i])));
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        assertm(std::holds_alternative<uint64_t>(operand1),
+                "SPIRV simulator: Non-bool value for operand 1 in OpLogicalNotEqual when using bool type");
+        assertm(std::holds_alternative<uint64_t>(operand2),
+                "SPIRV simulator: Non-bool value for operand 2 in OpLogicalNotEqual when using bool type");
+        Value result = (uint64_t)(std::get<uint64_t>(operand1) != std::get<uint64_t>(operand2));
+
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type for OpLogicalNotEqual, must be vector or bool");
+    }
+
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_LogicalOr(const Instruction& instruction)
