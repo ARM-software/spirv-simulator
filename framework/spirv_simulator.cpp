@@ -5446,9 +5446,35 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
                     elem_result = base_value - sub_value;
                 }
             }
+            else if (std::holds_alternative<uint64_t>(vec1->elems[i]) &&
+                     std::holds_alternative<int64_t>(vec2->elems[i]))
+            {
+                uint64_t base_value = std::get<uint64_t>(vec1->elems[i]);
+                uint64_t sub_value = std::get<int64_t>(vec2->elems[i]);
+                if (free_case)
+                {
+                    // Avoids wrapping which can lead to really long loops
+                    if (base_value < sub_value)
+                    {
+                        elem_result = 0;
+                    }
+                    else
+                    {
+                        elem_result = base_value - sub_value;
+                    }
+                }
+                else
+                {
+                    elem_result = base_value - sub_value;
+                }
+            }
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
             {
                 elem_result = (std::get<int64_t>(vec1->elems[i]) - std::get<int64_t>(vec2->elems[i]));
+            }
+            else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<uint64_t>(vec2->elems[i]))
+            {
+                elem_result = (std::get<int64_t>(vec1->elems[i]) - std::get<uint64_t>(vec2->elems[i]));
             }
             else
             {
@@ -5482,6 +5508,27 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
                 {
                     result = base_value - sub_value;
                 }
+
+            }
+            else
+            {
+                result = base_value - sub_value;
+            }
+
+            SetValue(result_id, result);
+        }
+        else if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<int64_t>(op2))
+        {
+            uint64_t base_value = std::get<uint64_t>(op1);
+            uint64_t sub_value = std::get<int64_t>(op2);
+            uint64_t result;
+            if (free_case)
+            {
+                // Avoids wrapping which can lead to really long loops
+                if (base_value < sub_value)
+                {
+                    result = (uint64_t)0;
+                }
             }
             else
             {
@@ -5494,6 +5541,12 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         {
             int64_t result;
             result = (std::get<int64_t>(op1) - std::get<int64_t>(op2));
+            SetValue(result_id, result);
+        }
+        else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<uint64_t>(op2))
+        {
+            int64_t result;
+            result = (std::get<int64_t>(op1) - std::get<uint64_t>(op2));
             SetValue(result_id, result);
         }
         else
