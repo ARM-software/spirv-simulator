@@ -1737,6 +1737,8 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
     {
         uint32_t struct_id      = 0;
         uint32_t member_literal = 0;
+        uint32_t component_stride = 0;
+        bool     row_major        = false;
         bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
         if (isMember)
         {
@@ -1745,6 +1747,13 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
             assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationRowMajor) ||
                         HasDecorator(struct_id, member_literal, spv::Decoration::DecorationColMajor),
                     "SPIRV simulator: No RowMajor or ColMajor decorator for input matrix as a struct member");
+            component_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
+            row_major        = HasDecorator(struct_id, member_literal, spv::Decoration::DecorationRowMajor);
+        }
+        else
+        {
+            component_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            row_major        = HasDecorator(type_id, spv::Decoration::DecorationRowMajor);
         }
 
         const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
@@ -1755,9 +1764,6 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
         // Always extract to a column major order to simplify stuff later
         uint32_t col_count = type.matrix.col_count;
         uint32_t row_count = col_type.vector.elem_count;
-
-        uint32_t component_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
-        bool     row_major        = HasDecorator(struct_id, member_literal, spv::Decoration::DecorationRowMajor);
 
         uint32_t bytes_per_subcomponent = std::ceil((double)(GetBitizeOfType(col_type.vector.elem_type_id) / 8));
 
