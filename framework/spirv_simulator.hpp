@@ -1091,7 +1091,7 @@ class SPIRVSimulator
     };
     virtual bool ValueIsThreadSpecific(uint32_t result_id) const {
         return value_meta_[result_id].flags & SPS_FLAG_THREAD_SPECIFIC;
-    }
+    };
 
     virtual bool ValueHoldsPbufferPtr(uint32_t result_id) const {
         return value_meta_[result_id].flags & SPS_FLAG_IS_PBUFFER_PTR;
