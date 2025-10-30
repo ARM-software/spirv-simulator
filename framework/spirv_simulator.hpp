@@ -1072,7 +1072,7 @@ class SPIRVSimulator
     virtual uint32_t GetTargetPointerType(const PointerV& pointer);
     virtual size_t   GetBitizeOfTargetType(const PointerV& pointer);
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
-    virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal);
+    virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
@@ -1450,6 +1450,7 @@ class SPIRVSimulator
     void Op_GroupNonUniformIAdd(const Instruction&);
     void Op_GroupNonUniformShuffle(const Instruction&);
     void Op_GroupNonUniformUMax(const Instruction&);
+    void Op_GroupNonUniformBitwiseAnd(const Instruction&);
     void Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction&);
     void Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction&);
     void Op_RayQueryGetIntersectionGeometryIndexKHR(const Instruction&);

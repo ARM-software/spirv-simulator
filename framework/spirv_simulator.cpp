@@ -829,6 +829,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_GroupNonUniformShuffle)
         case spv::Op::OpGroupNonUniformUMax:
             R(Op_GroupNonUniformUMax)
+        case spv::Op::OpGroupNonUniformBitwiseAnd:
+            R(Op_GroupNonUniformBitwiseAnd)
         case spv::Op::OpRayQueryGetIntersectionBarycentricsKHR:
             R(Op_RayQueryGetIntersectionBarycentricsKHR)
         case spv::Op::OpRayQueryGetIntersectionFrontFaceKHR:
@@ -1664,8 +1666,22 @@ void SPIRVSimulator::GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& out
     }
 }
 
-bool SPIRVSimulator::IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal)
+bool SPIRVSimulator::IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const
 {
+    // whether an array of matrix is a member of struct
+    const Type& type = GetTypeByTypeId(member_id);
+    if (type.kind == Type::Kind::Matrix)
+    {
+        for (const auto& it : types_)
+        {
+            if ((it.second.kind == Type::Kind::Array) && (it.second.array.elem_type_id == member_id))
+            {
+                member_id = it.first;
+                break;
+            }
+        }
+    }
+
     for (const auto& it : struct_members_)
     {
         uint32_t literal = 0;
@@ -1866,20 +1882,32 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
     }
     else if (type.kind == Type::Kind::Matrix)
     {
-        assertm(HasDecorator(type_id, spv::Decoration::DecorationMatrixStride),
-                "SPIRV simulator: No MatrixStride decorator for input matrix");
-        assertm(HasDecorator(type_id, spv::Decoration::DecorationRowMajor) ||
-                    HasDecorator(type_id, spv::Decoration::DecorationColMajor),
-                "SPIRV simulator: No RowMajor or ColMajor decorator for input matrix");
+        uint32_t struct_id      = 0;
+        uint32_t member_literal = 0;
+        uint32_t component_stride = 0;
+        bool     row_major        = false;
+        bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
+        if (isMember)
+        {
+            assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationMatrixStride),
+                    "SPIRV simulator: No MatrixStride decorator for output matrix as a struct member");
+            assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationRowMajor) ||
+                        HasDecorator(struct_id, member_literal, spv::Decoration::DecorationColMajor),
+                    "SPIRV simulator: No RowMajor or ColMajor decorator for output matrix as a struct member");
+            component_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
+            row_major        = HasDecorator(struct_id, member_literal, spv::Decoration::DecorationRowMajor);
+        }
+        else
+        {
+            component_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            row_major        = HasDecorator(type_id, spv::Decoration::DecorationRowMajor);
+        }
 
         const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
         assertm(col_type.kind == Type::Kind::Vector, "SPIRV simulator: Non-vector column type found in matrix");
 
         uint32_t col_count = type.matrix.col_count;
         uint32_t row_count = col_type.vector.elem_count;
-
-        uint32_t component_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
-        bool     row_major        = HasDecorator(type_id, spv::Decoration::DecorationRowMajor);
 
         uint32_t bytes_per_subcomponent = std::ceil((double)(GetBitizeOfType(col_type.vector.elem_type_id) / 8));
 
@@ -1997,11 +2025,23 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
         }
         else if (type->kind == Type::Kind::Matrix)
         {
-            assertm(HasDecorator(type_id, spv::Decoration::DecorationColMajor),
-                    "SPIRV simulator: Attempt to get pointer offset to row-major matrix, this is illegal and violates "
-                    "contiguity requirements");
+            uint32_t struct_id      = 0;
+            uint32_t member_literal = 0;
+            uint32_t matrix_stride    = 0;
 
-            uint32_t matrix_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
+            if (isMember)
+            {
+                assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationColMajor),
+                        "SPIRV simulator: Attempt to get pointer offset to row-major matrix, this is illegal and violates "
+                        "contiguity requirements");
+                matrix_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
+            }
+            else
+            {
+                matrix_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            }
+
             offset += indirection_index * matrix_stride;
             type_id = type->matrix.col_type_id;
             type    = &GetTypeByTypeId(type_id);
@@ -3443,7 +3483,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
                 SetValue(result_id, result_vec);
             }
-            else if (type.kind == Type::Kind::Float)
+            else if (type.kind == Type::Kind::Int)
             {
                 Value result = (uint64_t)std::clamp(
                     std::get<uint64_t>(operand), std::get<uint64_t>(min_val), std::get<uint64_t>(max_val));
@@ -3489,7 +3529,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
                 SetValue(result_id, result_vec);
             }
-            else if (type.kind == Type::Kind::Float)
+            else if (type.kind == Type::Kind::Int)
             {
                 Value result = (int64_t)std::clamp(
                     std::get<int64_t>(operand), std::get<int64_t>(min_val), std::get<int64_t>(max_val));
@@ -10794,49 +10834,9 @@ void SPIRVSimulator::Op_ImageRead(const Instruction& instruction)
 
     const Type& sampled_type = GetTypeByTypeId(image_type.image.sampled_type_id);
 
-    if (result_type.kind == Type::Kind::Int)
-    {
-        assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == Type::Kind::Int);
-        if (result_type.scalar.is_signed)
-        {
-            SetValue(result_id, int64_t(std::numeric_limits<int64_t>::max()));
-        }
-        else
-        {
-            SetValue(result_id, uint64_t(std::numeric_limits<uint64_t>::max()));
-        }
-    }
-    if (result_type.kind == Type::Kind::Float)
-    {
-        SetValue(result_id, std::numeric_limits<double>::max());
-    }
-    if (result_type.kind == Type::Kind::Vector)
-    {
-        const Type& result_elem_type = GetTypeByTypeId(result_type.vector.elem_type_id);
-
-        std::shared_ptr<VectorV> result_value = std::make_shared<VectorV>();
-        if (result_elem_type.kind == Type::Kind::Float)
-        {
-            result_value->elems.resize(result_type.vector.elem_count, std::numeric_limits<double>::max());
-        }
-        else if (result_elem_type.kind == Type::Kind::Int)
-        {
-            if (result_elem_type.scalar.is_signed)
-            {
-                result_value->elems.resize(result_type.vector.elem_count, std::numeric_limits<int64_t>::max());
-            }
-            else
-            {
-                result_value->elems.resize(result_type.vector.elem_count, std::numeric_limits<uint64_t>::max());
-            }
-        }
-        else
-        {
-            assertx("SPIRV simulator: Invalid type in output vector for OpImageRead");
-        }
-
-        SetValue(result_id, result_value);
-    }
+    assert(sampled_type.kind == Type::Kind::Void || sampled_type.kind == Type::Kind::Int ||
+           sampled_type.kind == Type::Kind::Float);
+    SetValue(result_id, MakeDefault(result_type_id));
 
     SetIsArbitrary(result_id);
 }
@@ -12505,6 +12505,45 @@ void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
     restricted tangle have executed all dynamic instances that are program-ordered before X'.
     */
     assert(instruction.opcode == spv::Op::OpGroupNonUniformUMax);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t Operation      = instruction.words[4];
+    uint32_t value_id       = instruction.words[5];
+    uint32_t clustersize_id = instruction.words[6];
+
+    // TODO: Group op warnings
+
+    SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GroupNonUniformBitwiseAnd(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformBitwiseAnd
+
+    A bitwise and group operation of all Value operands contributed by all tangled invocations within the
+    Execution scope.
+
+    Result Type must be a scalar or vector of integer type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The identity I for Operation is ~0. If Operation is ClusteredReduce, ClusterSize must be present.
+
+    The type of Value must be the same as Result Type.
+
+    ClusterSize is the size of cluster to use. ClusterSize must be a scalar of integer type, whose Signedness operand is 0.
+    ClusterSize must come from a constant instruction. Behavior is undefined unless ClusterSize is at least 1 and a power of 2.
+    If ClusterSize is greater than the size of the scope, executing this instruction results in undefined behavior.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope
+    restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformBitwiseAnd);
 
     uint32_t type_id        = instruction.words[1];
     uint32_t result_id      = instruction.words[2];
