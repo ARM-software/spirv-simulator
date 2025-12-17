@@ -549,6 +549,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_EntryPoint)
         case spv::Op::OpExtInstImport:
             R(Op_ExtInstImport)
+        case spv::Op::OpString:
+            R(Op_String)
         case spv::Op::OpConstant:
             R(Op_Constant)
         case spv::Op::OpConstantComposite:
@@ -1181,6 +1183,11 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
     {
         std::cout << instruction.words[1] << " " << instruction.words[2] << " ";
         std::cout << std::string((char*)(&instruction.words[3]), (instruction.word_count - 3) * 4);
+    }
+    else if (instruction.opcode == spv::Op::OpString)
+    {
+        std::cout << instruction.words[1] << " ";
+        std::cout << read_instruction_literal(instruction, 2);
     }
     else if (instruction.opcode == spv::Op::OpDecorateString)
     {
@@ -4113,6 +4120,21 @@ void SPIRVSimulator::Op_ExtInstImport(const Instruction& instruction)
     uint32_t result_id = instruction.words[1];
     // SPIRV string literals are UTF-8 encoded, so basic c++ string functionality can be used to decode them
     extended_imports_[result_id] = std::string((char*)(&instruction.words[2]), (instruction.word_count - 2) * 4);
+}
+
+void SPIRVSimulator::Op_String(const Instruction& instruction)
+{
+    /*
+    OpString
+
+    Declare a string literal and return its Result <id>.
+    The Result <id> can be referenced by instructions that need a literal string operand, such as non-semantic
+    extended instructions.
+    */
+    assert(instruction.opcode == spv::Op::OpString);
+
+    uint32_t result_id = instruction.words[1];
+    string_literals_[result_id] = read_instruction_literal(instruction, 2);
 }
 
 void SPIRVSimulator::Op_Constant(const Instruction& instruction)

@@ -931,6 +931,7 @@ class SPIRVSimulator
     // struct result_id -> struct member_literal -> array of Decoration
     std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<DecorationInfo>>> struct_decorators_;
     std::unordered_map<uint32_t, std::string>                                               extended_imports_;
+    std::unordered_map<uint32_t, std::string>                                               string_literals_;
 
     Type               void_type_;
 
@@ -1311,6 +1312,7 @@ class SPIRVSimulator
     void T_RayQueryKHR(const Instruction&);
     void Op_EntryPoint(const Instruction&);
     void Op_ExtInstImport(const Instruction&);
+    void Op_String(const Instruction&);
     void Op_Constant(const Instruction&);
     void Op_ConstantComposite(const Instruction&);
     void Op_CompositeConstruct(const Instruction&);
