@@ -619,6 +619,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_Name)
         case spv::Op::OpMemberName:
             R(Op_MemberName)
+        case spv::Op::OpLine:
+            R(Op_Line)
         case spv::Op::OpDecorate:
             R(Op_Decorate)
         case spv::Op::OpMemberDecorate:
@@ -1183,6 +1185,18 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
     {
         std::cout << instruction.words[1] << " " << instruction.words[2] << " ";
         std::cout << std::string((char*)(&instruction.words[3]), (instruction.word_count - 3) * 4);
+    }
+    else if (instruction.opcode == spv::Op::OpLine)
+    {
+        uint32_t file_id = instruction.words[1];
+        uint32_t line    = instruction.words[2];
+        uint32_t column  = instruction.words[3];
+        std::cout << file_id << " ";
+        if (string_literals_.find(file_id) != string_literals_.end())
+        {
+            std::cout << "\"" << string_literals_.at(file_id) << "\" ";
+        }
+        std::cout << line << ":" << column;
     }
     else if (instruction.opcode == spv::Op::OpString)
     {
@@ -5721,6 +5735,17 @@ void SPIRVSimulator::Op_SourceExtension(const Instruction& instruction)
 {
     // This is a NOP in our design
     assert(instruction.opcode == spv::Op::OpSourceExtension);
+}
+
+void SPIRVSimulator::Op_Line(const Instruction& instruction)
+{
+    /*
+    OpLine
+
+    Attach source location metadata to subsequent instructions until another OpLine/OpNoLine.
+    File is the <id> from an OpString. Line and Column are source coordinates.
+    */
+    assert(instruction.opcode == spv::Op::OpLine);
 }
 
 void SPIRVSimulator::Op_Name(const Instruction& instruction)

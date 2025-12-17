@@ -1346,6 +1346,7 @@ class SPIRVSimulator
     void Op_SourceExtension(const Instruction&);
     void Op_Name(const Instruction&);
     void Op_MemberName(const Instruction&);
+    void Op_Line(const Instruction&);
     void Op_Decorate(const Instruction&);
     void Op_MemberDecorate(const Instruction&);
     void Op_SpecConstant(const Instruction&);
