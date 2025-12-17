@@ -666,6 +666,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_FOrdEqual)
         case spv::Op::OpFOrdNotEqual:
             R(Op_FOrdNotEqual)
+        case spv::Op::OpFUnordNotEqual:
+            R(Op_FUnordNotEqual)
         case spv::Op::OpCompositeExtract:
             R(Op_CompositeExtract)
         case spv::Op::OpBitcast:
@@ -6950,6 +6952,71 @@ void SPIRVSimulator::Op_FOrdNotEqual(const Instruction& instruction)
     else
     {
         assertx("SPIRV simulator: Invalid result type in Op_FOrdNotEqual, must be vector or float");
+    }
+
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
+}
+
+void SPIRVSimulator::Op_FUnordNotEqual(const Instruction& instruction)
+{
+    /*
+    OpFUnordNotEqual
+
+    Floating-point comparison for being unordered or not equal.
+    */
+    assert(instruction.opcode == spv::Op::OpFUnordNotEqual);
+
+    uint32_t type_id     = instruction.words[1];
+    uint32_t result_id   = instruction.words[2];
+    uint32_t operand1_id = instruction.words[3];
+    uint32_t operand2_id = instruction.words[4];
+
+    Type         type    = GetTypeByTypeId(type_id);
+    const Value& val_op1 = GetValue(operand1_id);
+    const Value& val_op2 = GetValue(operand2_id);
+
+    auto compute_unord_not_equal = [](double a, double b) -> uint64_t
+    {
+        return (uint64_t)(std::isnan(a) || std::isnan(b) || (a != b));
+    };
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(val_op1) &&
+                    std::holds_alternative<std::shared_ptr<VectorV>>(val_op2),
+                "SPIRV simulator: Operands set to be vector type in Op_FUnordNotEqual, but they are not");
+
+        auto vec1 = std::get<std::shared_ptr<VectorV>>(val_op1);
+        auto vec2 = std::get<std::shared_ptr<VectorV>>(val_op2);
+
+        assertm((vec1->elems.size() == vec2->elems.size()) && (vec1->elems.size() == type.vector.elem_count),
+                "SPIRV simulator: Operands are vector type but not of equal length in Op_FUnordNotEqual");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            assertm(std::holds_alternative<double>(vec1->elems[i]) && std::holds_alternative<double>(vec2->elems[i]),
+                    "SPIRV simulator: Found non-floating point operand in Op_FUnordNotEqual vector operands");
+
+            result_vec->elems.push_back(
+                compute_unord_not_equal(std::get<double>(vec1->elems[i]), std::get<double>(vec2->elems[i])));
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        assertm(std::holds_alternative<double>(val_op1) && std::holds_alternative<double>(val_op2),
+                "SPIRV simulator: Operands not of float type in Op_FUnordNotEqual");
+        Value result = compute_unord_not_equal(std::get<double>(val_op1), std::get<double>(val_op2));
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertx("SPIRV simulator: Invalid result type in Op_FUnordNotEqual, must be vector or float");
     }
 
     TransferFlags(result_id, instruction.words[3]);

@@ -1370,6 +1370,7 @@ class SPIRVSimulator
     void Op_FOrdGreaterThanEqual(const Instruction&);
     void Op_FOrdEqual(const Instruction&);
     void Op_FOrdNotEqual(const Instruction&);
+    void Op_FUnordNotEqual(const Instruction&);
     void Op_CompositeExtract(const Instruction&);
     void Op_Bitcast(const Instruction&);
     void Op_IMul(const Instruction&);
