@@ -1341,6 +1341,7 @@ class SPIRVSimulator
     void Op_Capability(const Instruction&);
     void Op_Extension(const Instruction&);
     void Op_MemoryModel(const Instruction&);
+    void Op_MemoryBarrier(const Instruction&);
     void Op_ExecutionMode(const Instruction&);
     void Op_Source(const Instruction&);
     void Op_SourceExtension(const Instruction&);

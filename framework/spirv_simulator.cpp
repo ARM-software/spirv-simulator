@@ -609,6 +609,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_Extension)
         case spv::Op::OpMemoryModel:
             R(Op_MemoryModel)
+        case spv::Op::OpMemoryBarrier:
+            R(Op_MemoryBarrier)
         case spv::Op::OpExecutionMode:
             R(Op_ExecutionMode)
         case spv::Op::OpSource:
@@ -5717,6 +5719,16 @@ void SPIRVSimulator::Op_MemoryModel(const Instruction& instruction)
 {
     // This is a NOP in our design
     assert(instruction.opcode == spv::Op::OpMemoryModel);
+}
+
+void SPIRVSimulator::Op_MemoryBarrier(const Instruction& instruction)
+{
+    /*
+    OpMemoryBarrier
+
+    Insert a memory dependency; modeled as a no-op for the simulator since no threaded execution occurs.
+    */
+    assert(instruction.opcode == spv::Op::OpMemoryBarrier);
 }
 
 void SPIRVSimulator::Op_ExecutionMode(const Instruction& instruction)
