@@ -18,6 +18,91 @@ constexpr uint32_t kWordCountShift = 16u;
 constexpr uint32_t kOpcodeMask     = 0xFFFFu;
 const std::string  execIndent      = "                      # ";
 
+static inline bool SPIRVIsFloatOp(spv::Op op)
+{
+    switch (op) {
+        // ---- Floating-point arithmetic ----
+        case spv::Op::OpFNegate:
+        case spv::Op::OpFAdd:
+        case spv::Op::OpFSub:
+        case spv::Op::OpFMul:
+        case spv::Op::OpFDiv:
+        case spv::Op::OpFRem:
+        case spv::Op::OpFMod:
+            return true;
+
+        // ---- Float conversions ----
+        case spv::Op::OpConvertFToS:
+        case spv::Op::OpConvertFToU:
+        case spv::Op::OpUConvert:
+        case spv::Op::OpSConvert:
+        case spv::Op::OpFConvert:
+        case spv::Op::OpQuantizeToF16:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+static inline bool SPIRVIsArithmeticOp(spv::Op op)
+{
+    switch (op) {
+        // ---- Integer arithmetic ----
+        case spv::Op::OpSNegate:
+        case spv::Op::OpIAdd:
+        case spv::Op::OpISub:
+        case spv::Op::OpIMul:
+        case spv::Op::OpUDiv:
+        case spv::Op::OpSDiv:
+        case spv::Op::OpUMod:
+        case spv::Op::OpSRem:
+        case spv::Op::OpSMod:
+            return true;
+
+        // ---- Floating-point arithmetic (duplicated for clarity) ----
+        case spv::Op::OpFNegate:
+        case spv::Op::OpFAdd:
+        case spv::Op::OpFSub:
+        case spv::Op::OpFMul:
+        case spv::Op::OpFDiv:
+        case spv::Op::OpFRem:
+        case spv::Op::OpFMod:
+            return true;
+
+        // ---- Bitwise operations (counts as arithmetic) ----
+        case spv::Op::OpShiftRightLogical:
+        case spv::Op::OpShiftRightArithmetic:
+        case spv::Op::OpShiftLeftLogical:
+        case spv::Op::OpBitwiseOr:
+        case spv::Op::OpBitwiseXor:
+        case spv::Op::OpBitwiseAnd:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+static bool IsRelationalIntCompare(spv::Op op)
+{
+    switch (op) {
+        case spv::Op::OpULessThan:
+        case spv::Op::OpSLessThan:
+        case spv::Op::OpUGreaterThan:
+        case spv::Op::OpSGreaterThan:
+        case spv::Op::OpULessThanEqual:
+        case spv::Op::OpSLessThanEqual:
+        case spv::Op::OpUGreaterThanEqual:
+        case spv::Op::OpSGreaterThanEqual:
+        case spv::Op::OpIEqual:
+        case spv::Op::OpINotEqual:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void DecodeInstruction(std::span<const uint32_t>& program_words, Instruction& instruction)
 {
     /*
@@ -35,6 +120,150 @@ void DecodeInstruction(std::span<const uint32_t>& program_words, Instruction& in
 
     instruction.words = program_words.first(instruction.word_count);
     program_words     = program_words.subspan(instruction.word_count);
+}
+
+static std::vector<PhiIncoming> GetPhiIncoming(const Instruction& phi)
+{
+    std::vector<PhiIncoming> incoming;
+    const uint32_t wc = phi.word_count;
+
+    // Start at operand index 3 (value,label pairs)
+    for (uint32_t i = 3; i + 1 < wc; i += 2) {
+        PhiIncoming inc;
+        inc.value_id     = phi.words[i + 0];
+        inc.parent_label = phi.words[i + 1];
+        incoming.push_back(inc);
+    }
+
+    return incoming;
+}
+
+bool SPIRVSimulator::IsLoopCounterPhi(uint32_t candidate_id) const
+{
+    /*
+    This function tries to detect if a OpPhi instruction is used for the common loop counter pattern in spirv-code
+    generated using the khronos tools to compile it from higher level languages.
+    */
+    const Instruction& def = instructions_[result_id_to_inst_index_.at(candidate_id)];
+    if (def.opcode != spv::Op::OpPhi)
+    {
+        return false;
+    }
+
+    auto incoming = GetPhiIncoming(def);
+    if (incoming.size() < 2)
+    {
+        return false;
+    }
+
+    // We want an incoming value from the continue block.
+    // Somewhere in that block the loop counter will have been changed with some arithmetic operation
+    uint32_t from_continue_val = 0;
+
+    const BlockInfo& header = cfg_.blocks.at(current_block_id_);
+    assertm(header.loop_continue != 0, "SPIRV-Simulator: DeriveDescriptorSizeID called on a instruction not part of a loop header block");
+
+    uint32_t header_label   = header.label;
+    uint32_t continue_label = header.loop_continue;
+
+    for (auto& inc : incoming) {
+        if (inc.parent_label == continue_label) {
+            from_continue_val = inc.value_id;
+            break;
+        }
+    }
+
+    if (from_continue_val == 0)
+    {
+        return false; // no continue edge feeding this phi
+    }
+
+    // Look inside the continue block for:
+    // from_continue_val = OpIAdd/OpISub(candidate_id, something)
+    const BlockInfo& cont_block = cfg_.blocks.at(continue_label);
+
+    for (uint32_t iindex : cont_block.instruction_indices) {
+        const Instruction& inst = instructions_[iindex];
+        if (inst.opcode != spv::Op::OpIAdd &&
+            inst.opcode != spv::Op::OpISub)
+        {
+            continue;
+        }
+
+        if (inst.word_count < 5)
+            continue;
+
+        uint32_t result_id = inst.words[2];
+        uint32_t op0       = inst.words[3];
+        uint32_t op1       = inst.words[4];
+
+        if (result_id != from_continue_val)
+            continue;
+
+        // Is candidate_id involved in the add/sub?
+        if (op0 == candidate_id || op1 == candidate_id)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+uint32_t SPIRVSimulator::DeriveDescriptorSizeID(const Instruction& branch_inst) const
+{
+    /*
+    This function is used to find the result_id variable reference that holds the size of the descriptor.
+    it should only be called on a OpBranchConditional instruction that is the terminator of a loop header block
+
+    Returns 0 if:
+     - not a loop header branch
+     - not an int compare
+     - or pattern doesn't match a "counter vs loop block constant" comparison
+
+    Otherwise, it will return the result_id of the descriptor size variable.
+
+    TODO: We should verify that the branch_instruction is part of the current control block (it should never be called in such a context, but it will fail in spectacular ways if someone tries to do so)
+    */
+    assertm(branch_inst.opcode == spv::Op::OpBranchConditional, "SPIRV-Simulator: DeriveDescriptorSizeID called on non-OpBranchConditional instruction");
+
+    uint32_t cond_id = branch_inst.words[1];
+    const Instruction& cond_inst = instructions_[result_id_to_inst_index_.at(cond_id)];
+
+    // If this is not a integer comparison, assume the loop is not used for descriptor writeout
+    if (!IsRelationalIntCompare(cond_inst.opcode))
+    {
+        return 0;
+    }
+
+    // Handles general cases not covered by the previous check
+    if (cond_inst.word_count < 5)
+    {
+        return 0;
+    }
+
+    // Relational compare layout:
+    // words[3] = lhs, words[4] = rhs
+    uint32_t lhs = cond_inst.words[3];
+    uint32_t rhs = cond_inst.words[4];
+
+    // Check which side is a loop-counter phi
+    bool lhs_is_counter = IsLoopCounterPhi(lhs);
+    bool rhs_is_counter = IsLoopCounterPhi(rhs);
+
+    // The one that is not the counter should be the size
+    if (lhs_is_counter && !rhs_is_counter) {
+        // while (i < limit)   → bound is rhs
+        return rhs;
+    }
+    if (rhs_is_counter && !lhs_is_counter) {
+        // while (limit > i)   → bound is lhs
+        return lhs;
+    }
+
+    // ambiguous, both or neither look like loop counters
+    // in this case, assume its not a descriptor writeout
+    return 0;
 }
 
 LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header)
@@ -89,6 +318,7 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, Simul
 
 void SPIRVSimulator::BuildCFGFromWords()
 {
+    uint32_t instruction_index = 0;
     for (size_t i = 5; i < program_words_.size(); ) {
         uint32_t first    = program_words_[i];
         const uint16_t wc = first >> kWordCountShift;
@@ -157,7 +387,10 @@ void SPIRVSimulator::BuildCFGFromWords()
             default: break;
         }
 
+        cfg_.blocks[current_block_id_].instruction_indices.push_back(instruction_index);
+
         i += wc;
+        instruction_index += 1;
     }
 }
 
@@ -2353,7 +2586,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
     }
 }
 
-std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t result_id)
+std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags)
 {
     std::vector<DataSourceBits> results;
 
@@ -2376,6 +2609,19 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                   << ": " << result_id << std::endl;
     }
 
+    if (property_flags)
+    {
+        if (SPIRVIsFloatOp(instruction.opcode))
+        {
+            *property_flags |= SPS_FLAG_IS_FLOAT_SOURCE;
+        }
+
+        if (SPIRVIsArithmeticOp(instruction.opcode))
+        {
+            *property_flags |= SPS_FLAG_IS_ARITHMETIC_SOURCE;
+        }
+    }
+
     const std::vector<uint32_t> id_operands = ids_per_instruction_[result_id_to_inst_index_.at(result_id)];
 
     switch (instruction.opcode)
@@ -2385,7 +2631,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             for (uint32_t component_id = 3; component_id < instruction.word_count; ++component_id)
             {
                 std::vector<DataSourceBits> component_result =
-                    FindDataSourcesFromResultID(instruction.words[component_id]);
+                    FindDataSourcesFromResultID(instruction.words[component_id], property_flags);
                 results.insert(results.end(), component_result.begin(), component_result.end());
             }
 
@@ -2483,7 +2729,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             {
                 uint32_t true_source = values_stored_.at(pointer_id);
 
-                std::vector<DataSourceBits> component_result = FindDataSourcesFromResultID(true_source);
+                std::vector<DataSourceBits> component_result = FindDataSourcesFromResultID(true_source, property_flags);
                 results.insert(results.end(), component_result.begin(), component_result.end());
             }
             break;
@@ -2518,7 +2764,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         case spv::Op::OpCompositeConstruct:
         {
             for (const auto& id : id_operands) {
-                auto sub = FindDataSourcesFromResultID(id);
+                auto sub = FindDataSourcesFromResultID(id, property_flags);
                 results.insert(results.end(), sub.begin(), sub.end());
             }
             DataSourceBits* prev = nullptr;
@@ -2532,7 +2778,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         default:
         {
             for (const auto& id : id_operands) {
-                auto sub = FindDataSourcesFromResultID(id);
+                auto sub = FindDataSourcesFromResultID(id, property_flags);
                 results.insert(results.end(), sub.begin(), sub.end());
             }
             break;
@@ -4368,10 +4614,18 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
             pointer_flags |= SPS_FLAG_UNINITIALIZED;
         }
-        else if (PointerIsCandidate(static_cast<const void*>(external_pointer), 0))
+        else
         {
-            // This pointer points to a known candidate
-            pointee_flags |= SPS_FLAG_IS_CANDIDATE;
+            if (PointerIsCandidate(static_cast<const void*>(external_pointer), 0))
+            {
+                // This pointer points to a known candidate
+                pointee_flags |= SPS_FLAG_IS_CANDIDATE;
+            }
+            if (PointerIsDescriptorBuffer(static_cast<const void*>(external_pointer), 0))
+            {
+                // This pointer points to a descriptor buffer
+                pointee_flags |= SPS_FLAG_IS_DESCRIPTOR_BUFFER;
+            }
         }
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
@@ -4568,6 +4822,98 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     uint32_t        pointer_id = instruction.words[1];
     uint32_t        result_id  = instruction.words[2];
     const PointerV& pointer    = std::get<PointerV>(GetValue(pointer_id));
+
+    if (PointeeValueIsDescriptorBuffer(pointer))
+    {
+        // A value is being written to a descriptor buffer, this means we need to mark the output value source as
+        // a potential descriptor candidate
+
+        // If we have already been here, and we are returning from a continue block then skip further calls
+        // if not, we process a potential descriptor writeout
+        size_t pc = call_stack_.back().pc;
+        if ((current_block_id_ != prev_block_id_) || !merged_descriptor_write_count.contains(pc))
+        {
+            if (merged_descriptor_write_count.contains(pc))
+            {
+                merged_descriptor_write_count[pc] += 1;
+            }
+            else
+            {
+                merged_descriptor_write_count[pc] = 0;
+            }
+            // First, find all potential data sources
+            uint32_t should_skip_flags = 0;
+            std::vector<DataSourceBits> data_sources = FindDataSourcesFromResultID(result_id, &should_skip_flags);
+
+            // Then, determine if its unlikely to be candidates.
+            // The current heuristics are:
+            // - If any data source is a float, skip it and assume its not a candidate
+            // - If any data source was operated on using any arithmetic operation, skip it and assume its not a candidate
+            // If none of these conditions are met, we mark all sources as candidates
+            if (!should_skip_flags)
+            {
+                // This is a valid candidate, next we want to check if we are in a loop, and if so we (may) merge consequtive writes into one descriptor value
+                uint32_t descriptor_size_id = 0;
+                bool is_static_writeout = true;
+                if (cfg_.blocks[current_block_id_].loop_merge != 0)
+                {
+                    // For now, only normal loops, if we encounter a do-while here just crash for now and clearly report it so we can add support for it later
+                    uint32_t loop_merge_id = cfg_.blocks[current_block_id_].loop_merge;
+                    uint32_t loop_terminator_id = loop_merge_id + 1;
+
+                    const Instruction& terminator_instruction = instructions_[result_id_to_inst_index_[loop_terminator_id]];
+
+                    // If loop merge is immidiately followed by a OpBranchConditional we take the conditional and use it to derive the size
+                    if (terminator_instruction.opcode == spv::Op::OpBranchConditional)
+                    {
+                        is_static_writeout = false;
+                        uint32_t condition_id = terminator_instruction.words[1];
+                        const Instruction& condition_instruction = instructions_[result_id_to_inst_index_[condition_id]];
+
+                        descriptor_size_id = DeriveDescriptorSizeID(condition_instruction);
+
+                        if (descriptor_size_id == 0)
+                        {
+                            // Assume this is not a descriptor writeout and stop further processing
+                            // TODO: Here we could save some state to not do the work again in the future if
+                            //       the code loops back to the same instruction sequence
+                        }
+                        else
+                        {
+                            size_t chunk_bitsize = GetBitizeOfTargetType(pointer);
+                            size_t bitsize_of_size_type = GetBitizeOfType(GetTypeID(descriptor_size_id));
+
+                            std::vector<DataSourceBits> dsize_variable_data_sources = FindDataSourcesFromResultID(descriptor_size_id);
+
+                            // We now have (or can trivially get in one function call):
+                            // - The size and type of the chunks in which the descriptor is written out
+                            // - The input source of all the bits in the chunks that together became a potential descriptor
+                            // - The value, size and type of the descriptor size variable
+                            // - The input source of all bits that eventually became the descriptor size variable
+                            // These should all be written out to the descriptor candidate list in a good, clean way.
+                            // For now we hold off on this, as we will need to properly test this on a real use case before
+                            // going further (because all this data can be hard for the user to interpret and process,
+                            // we should ideally automate as much of it as we can with helpers internal to the simulator).
+                            std::cout << "Descriptor size and output candidate found! RID for size was: " <<  descriptor_size_id << " RID for descriptor was: " << result_id << std::endl;
+                            std::cout << "Congratulations on finding a case where full descriptor tracking is needed, contact the SPIRV-simulator devs to add support for this asap!" << std::endl;
+                        }
+                    }
+                    // If the loop merge is followed by a OpBranch we assume its a do-while and crash for now
+                    else if (terminator_instruction.opcode == spv::Op::OpBranch)
+                    {
+                        std::cout << "SPIRV simulator: DoWhile loops not handled by descriptor code. Add support for this." << std::endl;
+                        assertx("SPIRV simulator: DoWhile loops not handled by descriptor code. Add support for this.");
+                    }
+                }
+
+                // Here we assume this is not a descriptor, but raise a warning just in case (could be a non-portable app)
+                if (is_static_writeout)
+                {
+                    std::cout << "SPIRV simulator: WARNING: Write of non-dynamic size value to descriptor buffer. This may be fine, but could also indicate non portable code if this actually is a fixed size descriptor." << std::endl;
+                }
+            }
+        }
+    }
 
     WritePointer(pointer, GetValue(result_id));
     OverrideFlagsPointee(pointer_id, result_id);

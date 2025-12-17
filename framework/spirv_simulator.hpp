@@ -44,15 +44,30 @@ namespace SPIRVSimulator
 
 // Any result ID or pointer object ID in this set, can be treated as if it has
 // any valid value for the given type
-#define SPS_FLAG_IS_ARBITRARY           1
+#define SPS_FLAG_IS_ARBITRARY              1
 // Used for values that are uninitialized due to simulator assumptions
-#define SPS_FLAG_UNINITIALIZED          2
-// Used to track descriptor and pbuffer candidate values
-#define SPS_FLAG_IS_CANDIDATE           4
+#define SPS_FLAG_UNINITIALIZED             2
+// Used to track pbuffer candidate values
+#define SPS_FLAG_IS_CANDIDATE              4
 // Used for values that are confirmed to be pbuffer pointer values
-#define SPS_FLAG_IS_PBUFFER_PTR         8
+#define SPS_FLAG_IS_PBUFFER_PTR            8
 // Used for values that contain or are affected by per-thread builtins (workgroup or vertex ids etc.)
-#define SPS_FLAG_THREAD_SPECIFIC       16
+#define SPS_FLAG_THREAD_SPECIFIC          16
+// Used to track descriptor candidate values
+#define SPS_FLAG_IS_DESCRIPTOR_CANDIDATE  32
+// Used to track descriptor candidate values
+#define SPS_FLAG_IS_DESCRIPTOR_BUFFER     64
+
+// Used to track metadata about value source chains
+#define SPS_FLAG_IS_FLOAT_SOURCE        1
+#define SPS_FLAG_IS_ARITHMETIC_SOURCE   2
+#define SPS_FLAG_IS_INTERPOLATED_SOURCE 4
+
+// Used for descriptor loop tracking
+struct PhiIncoming {
+    uint32_t value_id;
+    uint32_t parent_label;
+};
 
 // Used by tracing tools to pass in potential pbuffer candidates.
 // This is optional but allows for easier remapping user side in most cases
@@ -67,6 +82,16 @@ struct PhysicalAddressCandidate
     // metadata contained in this struct, thereby confirming there is indeed a pbuffer pointer
     // in a given buffer with these properties/values.
     bool verified = false;
+};
+
+struct DescriptorCandidate
+{
+    uint64_t address;
+    uint64_t offset;
+
+    uint32_t size_value_id;
+
+    void* payload;
 };
 
 // Used internally by the simulator, can be passed between invocations by copying it from one invocation to another to
@@ -128,6 +153,11 @@ struct SimulationData
     // and raise an error if it finds a physical address pointer with no candidate in this list.
     // If the map is empty all candidate related code and functionality will be skipped.
     std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> candidates;
+
+    // Optional map of buffers to descriptor candidates in said buffers.
+    // Any buffer that has the VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT set must have a corresponding entry here.
+    // Unlike the PhysicalAddressCandidate map, the vector of DescriptorCandidate's can be empty, no errors will be raised if a descriptor is found without a candidate in this list.
+    std::unordered_map<const void*, std::vector<DescriptorCandidate>> descriptor_candidates;
 
     // Optional value, a unique identifier for the input shader.
     // If provided, this can allow the simulator to massively speed up simulation time
@@ -860,6 +890,7 @@ struct BlockInfo {
     std::vector<uint32_t> succs;          // CFG successors (label ids)
     uint32_t loop_merge = 0;              // %merge if this is a loop header (0 otherwise)
     uint32_t loop_continue = 0;           // %continue if this is a loop header
+    std::vector<uint32_t> instruction_indices;
 };
 
 struct CFG {
@@ -949,6 +980,10 @@ class SPIRVSimulator
     std::vector<PointerV>                        physical_address_pointers_;
     std::vector<std::pair<PointerV, PointerV>>   pointers_to_physical_address_pointers_;
     std::unordered_map<uint32_t, DataSourceBits> data_source_bits_;
+
+    // These hold information about descriptor buffer stuff
+    // Descriptor writeout OpStore instruction id -> write counter for that writeout code
+    std::unordered_map<uint32_t, uint32_t> merged_descriptor_write_count;
 
     // Control flow
     struct FunctionInfo
@@ -1074,11 +1109,14 @@ class SPIRVSimulator
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
-    virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id);
+    virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags = nullptr);
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
     virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator) const;
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0) const;
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, uint32_t member_id, spv::Decoration decorator, size_t literal_offset = 0) const;
+
+    virtual bool IsLoopCounterPhi(uint32_t candidate_id) const;
+    virtual uint32_t DeriveDescriptorSizeID(const Instruction& condition_instruction) const;
 
     virtual bool ValueIsArbitrary(uint32_t result_id) const {
         return value_meta_[result_id].flags & SPS_FLAG_IS_ARBITRARY;
@@ -1190,6 +1228,34 @@ class SPIRVSimulator
 
     virtual bool PointeeValueIsCandidate(const PointerV& pointer) const {
         return pointer.pointee_flags & SPS_FLAG_IS_CANDIDATE;
+    };
+
+    virtual void SetIsDescriptorCandidate(uint32_t result_id) {
+        value_meta_[result_id].flags |= SPS_FLAG_IS_DESCRIPTOR_CANDIDATE;
+    };
+    virtual void ClearIsDescriptorCandidate(uint32_t result_id) {
+        value_meta_[result_id].flags &= ~SPS_FLAG_IS_DESCRIPTOR_CANDIDATE;
+    };
+
+    virtual bool PointerIsDescriptorBuffer(const void* potential_ptr, uint64_t offset) const {
+        if (input_data_->descriptor_candidates.find(potential_ptr) != input_data_->descriptor_candidates.end())
+        {
+            return true;
+        }
+        return false;
+    };
+
+    virtual bool PointerIsDescriptorBuffer(const PointerV& pointer_value) const {
+        const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
+        if (input_data_->descriptor_candidates.find(potential_raw_ptr) != input_data_->descriptor_candidates.end())
+        {
+            return true;
+        }
+        return false;
+    };
+
+    virtual bool PointeeValueIsDescriptorBuffer(const PointerV& pointer) const {
+        return pointer.pointee_flags & SPS_FLAG_IS_DESCRIPTOR_BUFFER;
     };
 
     virtual void TransferFlags(uint32_t target_rid, uint32_t source_rid) {
