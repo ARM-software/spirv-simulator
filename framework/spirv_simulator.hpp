@@ -1400,6 +1400,7 @@ class SPIRVSimulator
     void Op_ImageQuerySize(const Instruction&);
     void Op_ImageQuerySizeLod(const Instruction&);
     void Op_FNegate(const Instruction&);
+    void Op_MatrixTimesScalar(const Instruction&);
     void Op_MatrixTimesVector(const Instruction&);
     void Op_UGreaterThan(const Instruction&);
     void Op_FOrdLessThan(const Instruction&);
