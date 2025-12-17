@@ -334,6 +334,8 @@ void SPIRVSimulator::ParseAll()
             {
                 uint32_t entry_point_id       = instruction.words[2];
                 entry_points_[entry_point_id] = read_instruction_literal(instruction, 3);
+                entry_point_models_[entry_point_id] =
+                    static_cast<spv::ExecutionModel>(instruction.words[1]);
                 break;
             }
             default:
@@ -399,11 +401,10 @@ bool SPIRVSimulator::Run()
         }
     }
 
-    if (verbose_)
-    {
-        std::cout << "SPIRV simulator: Starting execution at entry point with function ID: " << entry_point_function_id
-                  << std::endl;
-    }
+    auto stage_it = entry_point_models_.find(entry_point_function_id);
+    std::cout << "SPIRV simulator: Starting execution at entry point with function ID " << entry_point_function_id;
+    if (stage_it != entry_point_models_.end()) std::cout << " and shader stage " << spv::ExecutionModelToString(stage_it->second);
+    std::cout << std::endl;
 
     FunctionInfo& function_info = funcs_[entry_point_function_id];
 
