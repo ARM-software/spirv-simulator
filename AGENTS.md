@@ -36,6 +36,8 @@
 ## Adding support for a new SPIRV OpCode
 - Opcodes are handled in the c++ files `framework/spirv_simulator.cpp` and `framework/spirv_simulator.hpp`, and the class `SPIRVSimulator`
 - Each Opcode has a function handler of the form `void Op_<name>(const Instruction&);`
+- Build with `make -j`
+- Run tests with `ctest --output-on-failure`
 
 Minimal function implementation:
 ```cpp
@@ -53,3 +55,8 @@ void SPIRVSimulator::Op_<name>(const Instruction& instruction)
     // do more work here
 }
 ```
+
+## Adding Unit Tests
+- Place new cases in the closest suite under `test/` (use `misc_test.cpp` as the fallback if no other suite fits)
+- Build with `make -j`. Fix any errors shown.
+- Run tests with `ctest --output-on-failure`. Fix any errors shown.
