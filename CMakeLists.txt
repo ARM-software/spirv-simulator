@@ -3,9 +3,8 @@ cmake_minimum_required(VERSION 3.10)
 # Note, this MUST NOT be compile with -ffinite-math or -ffast-math (or any optimization option that affects nan of inf representations), this will break nan operations that we need for correct SPIRV simulation.
 # In general, leave the -fno-fast-math option below alone so that we keep full IEEE 754 compliance.
 
+project(spirv_simulator VERSION 0.0.1 DESCRIPTION "SPIRV simulator for finding memory and pointer usage information from shaders" LANGUAGES CXX)
 enable_testing()
-
-project(spirv_simulator)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +25,7 @@ add_subdirectory(test)
 add_executable(spirv_simulator ${PROJECT_SOURCE_DIR}/main.cpp)
 target_compile_options(spirv_simulator PRIVATE ${COMPILE_OPTIONS})
 target_link_libraries(spirv_simulator PRIVATE spirv_simulator_lib)
+target_compile_definitions(spirv_simulator PRIVATE PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} PROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR} PROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 
 add_executable(spirv_opcode_support_checker ${PROJECT_SOURCE_DIR}/main_opcode_checker.cpp)
 target_compile_options(spirv_opcode_support_checker PRIVATE ${COMPILE_OPTIONS})

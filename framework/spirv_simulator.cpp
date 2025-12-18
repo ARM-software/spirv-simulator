@@ -782,6 +782,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_EntryPoint)
         case spv::Op::OpExtInstImport:
             R(Op_ExtInstImport)
+        case spv::Op::OpString:
+            R(Op_String)
         case spv::Op::OpConstant:
             R(Op_Constant)
         case spv::Op::OpConstantComposite:
@@ -840,6 +842,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_Extension)
         case spv::Op::OpMemoryModel:
             R(Op_MemoryModel)
+        case spv::Op::OpMemoryBarrier:
+            R(Op_MemoryBarrier)
         case spv::Op::OpExecutionMode:
             R(Op_ExecutionMode)
         case spv::Op::OpSource:
@@ -850,6 +854,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_Name)
         case spv::Op::OpMemberName:
             R(Op_MemberName)
+        case spv::Op::OpLine:
+            R(Op_Line)
         case spv::Op::OpDecorate:
             R(Op_Decorate)
         case spv::Op::OpMemberDecorate:
@@ -1414,6 +1420,23 @@ void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
     {
         std::cout << instruction.words[1] << " " << instruction.words[2] << " ";
         std::cout << std::string((char*)(&instruction.words[3]), (instruction.word_count - 3) * 4);
+    }
+    else if (instruction.opcode == spv::Op::OpLine)
+    {
+        uint32_t file_id = instruction.words[1];
+        uint32_t line    = instruction.words[2];
+        uint32_t column  = instruction.words[3];
+        std::cout << file_id << " ";
+        if (string_literals_.find(file_id) != string_literals_.end())
+        {
+            std::cout << "\"" << string_literals_.at(file_id) << "\" ";
+        }
+        std::cout << line << ":" << column;
+    }
+    else if (instruction.opcode == spv::Op::OpString)
+    {
+        std::cout << instruction.words[1] << " ";
+        std::cout << read_instruction_literal(instruction, 2);
     }
     else if (instruction.opcode == spv::Op::OpDecorateString)
     {
@@ -4361,6 +4384,21 @@ void SPIRVSimulator::Op_ExtInstImport(const Instruction& instruction)
     extended_imports_[result_id] = std::string((char*)(&instruction.words[2]), (instruction.word_count - 2) * 4);
 }
 
+void SPIRVSimulator::Op_String(const Instruction& instruction)
+{
+    /*
+    OpString
+
+    Declare a string literal and return its Result <id>.
+    The Result <id> can be referenced by instructions that need a literal string operand, such as non-semantic
+    extended instructions.
+    */
+    assert(instruction.opcode == spv::Op::OpString);
+
+    uint32_t result_id = instruction.words[1];
+    string_literals_[result_id] = read_instruction_literal(instruction, 2);
+}
+
 void SPIRVSimulator::Op_Constant(const Instruction& instruction)
 {
     /*
@@ -6029,6 +6067,16 @@ void SPIRVSimulator::Op_MemoryModel(const Instruction& instruction)
     assert(instruction.opcode == spv::Op::OpMemoryModel);
 }
 
+void SPIRVSimulator::Op_MemoryBarrier(const Instruction& instruction)
+{
+    /*
+    OpMemoryBarrier
+
+    Insert a memory dependency; modeled as a no-op for the simulator since no threaded execution occurs.
+    */
+    assert(instruction.opcode == spv::Op::OpMemoryBarrier);
+}
+
 void SPIRVSimulator::Op_ExecutionMode(const Instruction& instruction)
 {
     // We may need this later
@@ -6045,6 +6093,17 @@ void SPIRVSimulator::Op_SourceExtension(const Instruction& instruction)
 {
     // This is a NOP in our design
     assert(instruction.opcode == spv::Op::OpSourceExtension);
+}
+
+void SPIRVSimulator::Op_Line(const Instruction& instruction)
+{
+    /*
+    OpLine
+
+    Attach source location metadata to subsequent instructions until another OpLine/OpNoLine.
+    File is the <id> from an OpString. Line and Column are source coordinates.
+    */
+    assert(instruction.opcode == spv::Op::OpLine);
 }
 
 void SPIRVSimulator::Op_Name(const Instruction& instruction)
