@@ -959,6 +959,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_ImageQuerySizeLod)
         case spv::Op::OpFNegate:
             R(Op_FNegate)
+        case spv::Op::OpMatrixTimesScalar:
+            R(Op_MatrixTimesScalar)
         case spv::Op::OpMatrixTimesVector:
             R(Op_MatrixTimesVector)
         case spv::Op::OpUGreaterThan:
@@ -8878,6 +8880,82 @@ void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
     }
 
     TransferFlags(result_id, instruction.words[3]);
+}
+
+void SPIRVSimulator::Op_MatrixTimesScalar(const Instruction& instruction)
+{
+    /*
+    OpMatrixTimesScalar
+
+    Linear-algebraic Matrix X Scalar.
+    */
+    assert(instruction.opcode == spv::Op::OpMatrixTimesScalar);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t matrix_id = instruction.words[3];
+    uint32_t scalar_id = instruction.words[4];
+
+    const Type& type        = GetTypeByTypeId(type_id);
+    const Type& matrix_type = GetTypeByResultId(matrix_id);
+    const Type& scalar_type = GetTypeByResultId(scalar_id);
+
+    assertm(type.kind == Type::Kind::Matrix, "SPIRV simulator: Result operand is not a matrix");
+    assertm(matrix_type.kind == Type::Kind::Matrix, "SPIRV simulator: First operand is not a matrix");
+    assertm(scalar_type.kind == Type::Kind::Float, "SPIRV simulator: Second operand is not a floating point scalar");
+
+    const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
+    assertm(col_type.kind == Type::Kind::Vector, "SPIRV simulator: Column type of result is not a vector");
+
+    const Value& matrix_val = GetValue(matrix_id);
+    assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(matrix_val),
+            "SPIRV simulator: Non-matrix value found in Op_MatrixTimesScalar");
+    const auto& matrix = std::get<std::shared_ptr<MatrixV>>(matrix_val);
+
+    assertm(matrix_type.matrix.col_count == type.matrix.col_count,
+            "SPIRV simulator: Matrix operand does not match result column count");
+
+    const Type& elem_type = GetTypeByTypeId(col_type.vector.elem_type_id);
+    assertm(elem_type.kind == Type::Kind::Float,
+            "SPIRV simulator: Matrix element type is not floating point");
+
+    assertm(matrix->cols.size() == type.matrix.col_count,
+            "SPIRV simulator: Matrix column count does not match result type");
+
+    const Value& scalar_val = GetValue(scalar_id);
+    assertm(std::holds_alternative<double>(scalar_val),
+            "SPIRV simulator: Non-floating point scalar in Op_MatrixTimesScalar");
+    const double scalar = std::get<double>(scalar_val);
+
+    auto result_matrix = std::make_shared<MatrixV>();
+    result_matrix->cols.reserve(matrix->cols.size());
+
+    for (const auto& column_val : matrix->cols)
+    {
+        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(column_val),
+                "SPIRV simulator: Non-vector column found in matrix operand");
+        const auto& column_vec = std::get<std::shared_ptr<VectorV>>(column_val);
+
+        assertm(column_vec->elems.size() == col_type.vector.elem_count,
+                "SPIRV simulator: Column size mismatch in Op_MatrixTimesScalar");
+
+        auto new_column = std::make_shared<VectorV>();
+        new_column->elems.reserve(column_vec->elems.size());
+
+        for (const auto& elem_val : column_vec->elems)
+        {
+            assertm(std::holds_alternative<double>(elem_val),
+                    "SPIRV simulator: Non-floating point element found in matrix operand");
+            new_column->elems.push_back(std::get<double>(elem_val) * scalar);
+        }
+
+        result_matrix->cols.push_back(new_column);
+    }
+
+    SetValue(result_id, result_matrix);
+
+    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_UGreaterThan(const Instruction& instruction)
