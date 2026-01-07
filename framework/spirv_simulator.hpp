@@ -947,6 +947,7 @@ class SPIRVSimulator
     // Contains entry point ID -> entry point OpName labels (labels may be
     // non-existent/empty)
     std::unordered_map<uint32_t, std::string>           entry_points_;
+    std::unordered_map<uint32_t, spv::ExecutionModel>   entry_point_models_;
     std::vector<uint32_t>                               program_words_;
     std::span<const uint32_t>                           stream_;
     std::vector<Instruction>                            instructions_;
