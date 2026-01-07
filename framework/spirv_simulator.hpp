@@ -1457,6 +1457,7 @@ class SPIRVSimulator
     void Op_Transpose(const Instruction&);
     void Op_SampledImage(const Instruction&);
     void Op_ImageSampleImplicitLod(const Instruction&);
+    void Op_ImageSampleDrefImplicitLod(const Instruction&);
     void Op_ImageSampleExplicitLod(const Instruction&);
     void Op_ImageFetch(const Instruction&);
     void Op_ImageGather(const Instruction&);

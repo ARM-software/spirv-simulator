@@ -941,6 +941,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_SampledImage)
         case spv::Op::OpImageSampleImplicitLod:
             R(Op_ImageSampleImplicitLod)
+        case spv::Op::OpImageSampleDrefImplicitLod:
+            R(Op_ImageSampleDrefImplicitLod)
         case spv::Op::OpImageSampleExplicitLod:
             R(Op_ImageSampleExplicitLod)
         case spv::Op::OpImageFetch:
@@ -4387,13 +4389,6 @@ void SPIRVSimulator::Op_ExtInstImport(const Instruction& instruction)
 
 void SPIRVSimulator::Op_String(const Instruction& instruction)
 {
-    /*
-    OpString
-
-    Declare a string literal and return its Result <id>.
-    The Result <id> can be referenced by instructions that need a literal string operand, such as non-semantic
-    extended instructions.
-    */
     assert(instruction.opcode == spv::Op::OpString);
 
     uint32_t result_id = instruction.words[1];
@@ -6098,12 +6093,7 @@ void SPIRVSimulator::Op_SourceExtension(const Instruction& instruction)
 
 void SPIRVSimulator::Op_Line(const Instruction& instruction)
 {
-    /*
-    OpLine
-
-    Attach source location metadata to subsequent instructions until another OpLine/OpNoLine.
-    File is the <id> from an OpString. Line and Column are source coordinates.
-    */
+    // This is a NOP in our design
     assert(instruction.opcode == spv::Op::OpLine);
 }
 
@@ -11039,6 +11029,26 @@ void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
 
     SampledImageV new_si{ std::get<uint64_t>(GetValue(image_id)), std::get<uint64_t>(GetValue(sampler_id)) };
     SetValue(result_id, new_si);
+}
+
+void SPIRVSimulator::Op_ImageSampleDrefImplicitLod(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpImageSampleDrefImplicitLod);
+
+    uint32_t type_id          = instruction.words[1];
+    uint32_t result_id        = instruction.words[2];
+    uint32_t sampled_image_id = instruction.words[3];
+    uint32_t coordinate_id    = instruction.words[4];
+    uint32_t dref_id          = instruction.words[5];
+
+    uint32_t image_operand_mask = 0;
+    if (instruction.word_count > 6)
+    {
+        image_operand_mask = instruction.words[6];
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
 }
 
 void SPIRVSimulator::Op_ImageSampleImplicitLod(const Instruction& instruction)
