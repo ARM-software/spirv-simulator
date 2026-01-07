@@ -23,15 +23,21 @@ target_sources(declaration_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} declarat
 target_compile_definitions(declaration_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
 target_link_libraries(declaration_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
 
+add_executable(misc_test)
+target_sources(misc_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} misc_test.cpp)
+target_compile_definitions(misc_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
+target_link_libraries(misc_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
+
 include(CTest)
 include(GoogleTest)
 
 gtest_discover_tests(arithmetic_test REPORTER compact DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(declaration_test REPORTER compact DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(misc_test REPORTER compact DISCOVERY_MODE PRE_TEST)
 
 add_custom_target(run_tests
   COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-  DEPENDS arithmetic_test declaration_test
+  DEPENDS arithmetic_test declaration_test misc_test
 )
 
 file(GLOB SPIRV_FILES ${PROJECT_SOURCE_DIR}/test_shaders/*.spv ${PROJECT_SOURCE_DIR}/test_shaders/*.spirv)
