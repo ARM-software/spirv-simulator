@@ -1240,6 +1240,7 @@ class SPIRVSimulator
     };
 
     virtual bool PointerIsDescriptorBuffer(const void* potential_ptr, uint64_t offset) const {
+        (void)offset;
         if (input_data_->descriptor_candidates.find(potential_ptr) != input_data_->descriptor_candidates.end())
         {
             return true;
