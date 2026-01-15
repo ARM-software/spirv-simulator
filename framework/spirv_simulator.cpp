@@ -883,6 +883,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_ConvertSToF)
         case spv::Op::OpFDiv:
             R(Op_FDiv)
+        case spv::Op::OpFwidth:
+            R(Op_Fwidth)
         case spv::Op::OpFSub:
             R(Op_FSub)
         case spv::Op::OpVectorTimesScalar:
@@ -6787,6 +6789,41 @@ void SPIRVSimulator::Op_FDiv(const Instruction& instruction)
 
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
+}
+
+void SPIRVSimulator::Op_Fwidth(const Instruction& instruction)
+{
+    /*
+    OpFwidth
+
+    Result is the same as computing the sum of the absolute values of OpDPdx and OpDPdy on P.
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its derivative group have executed all dynamic instances that are program-ordered before X'.
+    Result Type must be a scalar or vector of floating-point type using the IEEE 754 encoding. The component width must be 32 bits.
+    The type of P must be the same as Result Type. P is the value to take the derivative of.
+
+    This instruction is only valid in the Fragment Execution Model.
+    */
+    assert(instruction.opcode == spv::Op::OpFwidth);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpFwidth vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float, "SPIRV simulator: OpFwidth result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
 }
 
 void SPIRVSimulator::Op_FSub(const Instruction& instruction)
