@@ -1720,7 +1720,7 @@ size_t SPIRVSimulator::CountSetBits(const Value& value, uint32_t type_id, bool* 
     else if (type.kind == Type::Kind::Array)
     {
         uint32_t                           elem_type_id = type.vector.elem_type_id;
-        uint64_t                           array_len    = std::get<uint64_t>(GetValue(type.array.length_id));
+        uint64_t                           array_len    = GetArrayLength(type.array.length_id);
         const std::shared_ptr<AggregateV>& agg          = std::get<std::shared_ptr<AggregateV>>(value);
 
         for (size_t i = 0; i < array_len; ++i)
@@ -1793,7 +1793,7 @@ size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
     else if (type.kind == Type::Kind::Array)
     {
         uint32_t elem_type_id = type.vector.elem_type_id;
-        uint64_t array_len    = std::get<uint64_t>(GetValue(type.array.length_id));
+        uint64_t array_len    = GetArrayLength(type.array.length_id);
 
         bitcount += GetBitizeOfType(elem_type_id) * array_len;
     }
@@ -1916,7 +1916,7 @@ void SPIRVSimulator::GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& out
     else if (type.kind == Type::Kind::Array || type.kind == Type::Kind::RuntimeArray)
     {
         uint32_t elem_type_id = type.vector.elem_type_id;
-        uint64_t array_len    = std::get<uint64_t>(GetValue(type.array.length_id));
+        uint64_t array_len    = GetArrayLength(type.array.length_id);
         for (uint64_t i = 0; i < array_len; ++i)
         {
             GetBaseTypeIDs(elem_type_id, output);
@@ -2005,7 +2005,7 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
         }
         else
         {
-            uint64_t array_len = std::get<uint64_t>(GetValue(type.array.length_id));
+            uint64_t array_len = GetArrayLength(type.array.length_id);
 
             for (uint64_t array_index = 0; array_index < array_len; ++array_index)
             {
@@ -2137,7 +2137,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
 
         const std::shared_ptr<AggregateV>& agg_ptr = std::get<std::shared_ptr<AggregateV>>(value);
 
-        uint64_t array_len = std::get<uint64_t>(GetValue(type.array.length_id));
+        uint64_t array_len = GetArrayLength(type.array.length_id);
 
         for (uint64_t array_index = 0; array_index < array_len; ++array_index)
         {
@@ -2509,7 +2509,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         }
         case Type::Kind::Array:
         {
-            uint64_t len       = std::get<uint64_t>(GetValue(type.array.length_id));
+            uint64_t len       = GetArrayLength(type.array.length_id);
             auto     aggregate = std::make_shared<AggregateV>();
             aggregate->elems.reserve(len);
             for (uint32_t i = 0; i < len; ++i)
@@ -2524,7 +2524,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
             uint64_t len = 1;
             if (type.array.length_id != 0)
             {
-                len = std::get<uint64_t>(GetValue(type.array.length_id));
+                len = GetArrayLength(type.array.length_id);
             }
 
             auto aggregate = std::make_shared<AggregateV>();
@@ -3129,6 +3129,26 @@ const Value& SPIRVSimulator::GetValue(uint32_t result_id)
             "SPIRV simulator: Access to undefined variable");
 
     return values_[result_id];
+}
+
+uint64_t SPIRVSimulator::GetArrayLength(uint32_t length_id)
+{
+    const Value& length_value = GetValue(length_id);
+
+    if (std::holds_alternative<uint64_t>(length_value))
+    {
+        return std::get<uint64_t>(length_value);
+    }
+
+    if (std::holds_alternative<int64_t>(length_value))
+    {
+        int64_t signed_length = std::get<int64_t>(length_value);
+        assertm(signed_length >= 0, "SPIRV simulator: Array length is negative");
+        return static_cast<uint64_t>(signed_length);
+    }
+
+    assertm(false, "SPIRV simulator: Array length has unexpected type");
+    return 0;
 }
 
 void SPIRVSimulator::SetValue(uint32_t result_id, const Value& value, bool clear_meta)

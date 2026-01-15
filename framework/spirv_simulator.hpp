@@ -1097,6 +1097,7 @@ class SPIRVSimulator
     virtual void         WritePointer(const PointerV& ptr, const Value& value);
     virtual Value        ReadPointer(const PointerV& ptr);
     virtual const Value& GetValue(uint32_t result_id);
+    virtual uint64_t     GetArrayLength(uint32_t length_id);
     virtual void         SetValue(uint32_t result_id, const Value& value, bool clear_meta=true);
     virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
