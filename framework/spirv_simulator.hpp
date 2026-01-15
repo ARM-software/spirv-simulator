@@ -1455,6 +1455,7 @@ class SPIRVSimulator
     void Op_ConstantNull(const Instruction&);
     void Op_AtomicIAdd(const Instruction&);
     void Op_AtomicISub(const Instruction&);
+    void Op_AtomicExchange(const Instruction&);
     void Op_Select(const Instruction&);
     void Op_IEqual(const Instruction&);
     void Op_VectorShuffle(const Instruction&);

@@ -933,6 +933,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_AtomicIAdd)
         case spv::Op::OpAtomicISub:
             R(Op_AtomicISub)
+        case spv::Op::OpAtomicExchange:
+            R(Op_AtomicExchange)
         case spv::Op::OpSelect:
             R(Op_Select)
         case spv::Op::OpIEqual:
@@ -8618,6 +8620,56 @@ void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
 
     TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer, value_id);
+}
+
+void SPIRVSimulator::Op_AtomicExchange(const Instruction& instruction)
+{
+    /*
+    OpAtomicExchange
+
+    Perform the following steps atomically with respect to any other atomic accesses within Memory to the same location:
+    1) load through Pointer to get an Original Value,
+    2) get a New Value from copying Value, and
+    3) store the New Value back through Pointer.
+
+    The instruction’s result is the Original Value.
+
+    Result Type must be a scalar of integer type or floating-point type.
+
+    The type of Value must be the same as Result Type. The type of the value pointed to by Pointer must be the same as Result Type.
+
+    Memory is a memory Scope.
+    */
+    assert(instruction.opcode == spv::Op::OpAtomicExchange);
+
+    uint32_t type_id    = instruction.words[1];
+    uint32_t result_id  = instruction.words[2];
+    uint32_t pointer_id = instruction.words[3];
+    uint32_t scope_id   = instruction.words[4];
+    uint32_t sem_id     = instruction.words[5];
+    uint32_t value_id   = instruction.words[6];
+    (void)scope_id;
+    (void)sem_id;
+
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Value& pointer_val = GetValue(pointer_id);
+    const Value& value       = GetValue(value_id);
+
+    assertm(std::holds_alternative<PointerV>(pointer_val),
+            "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicExchange");
+    assertm(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicExchange");
+
+    const PointerV& pointer     = std::get<PointerV>(pointer_val);
+    const Value&    pointee_val = ReadPointer(pointer);
+
+    assertm(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val) || std::holds_alternative<double>(pointee_val),
+            "SPIRV simulator: Operand type is not int or float in Op_AtomicExchange");
+
+    SetValue(result_id, pointee_val);
+    WritePointer(pointer, value);
+
+    TransferFlagsFromPointee(result_id, pointer);
+    TransferFlagsToPointee(pointer_id, value_id);
 }
 
 void SPIRVSimulator::Op_Select(const Instruction& instruction)
