@@ -797,6 +797,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_ImageTexelPointer)
         case spv::Op::OpLoad:
             R(Op_Load)
+        case spv::Op::OpCopyObject:
+            R(Op_CopyObject)
         case spv::Op::OpStore:
             R(Op_Store)
         case spv::Op::OpAccessChain:
@@ -4862,6 +4864,31 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     }
 
     TransferFlagsFromPointee(result_id, pointer);
+}
+
+void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
+{
+    /*
+    OpCopyObject
+
+    Make a copy of Operand. There are no pointer dereferences involved.
+
+    Result Type must equal Operand type. Result Type can be any type except OpTypeVoid.
+    */
+    assert(instruction.opcode == spv::Op::OpCopyObject);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t object_id = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    const Type& object_type = GetTypeByResultId(object_id);
+
+    assertm(type.kind == object_type.kind,
+            "SPIRV simulator: OpCopyObject result type does not match object type");
+
+    SetValue(result_id, CopyValue(GetValue(object_id)));
+    TransferFlags(result_id, object_id);
 }
 
 void SPIRVSimulator::Op_Store(const Instruction& instruction)

@@ -1388,6 +1388,7 @@ class SPIRVSimulator
     void Op_Variable(const Instruction&);
     void Op_ImageTexelPointer(const Instruction&);
     void Op_Load(const Instruction&);
+    void Op_CopyObject(const Instruction&);
     void Op_Store(const Instruction&);
     void Op_AccessChain(const Instruction&);
     void Op_Function(const Instruction&);
