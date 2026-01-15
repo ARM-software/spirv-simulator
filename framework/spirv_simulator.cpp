@@ -3628,6 +3628,46 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
+        case 40:
+        { // FMax
+            const Value& operand_1 = GetValue(operand_words[0]);
+            const Value& operand_2 = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
+                            std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::fmax");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
+                auto operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    double elem_result =
+                        std::max(std::get<double>(operand_1_val->elems[i]), std::get<double>(operand_2_val->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = std::max(std::get<double>(operand_1), std::get<double>(operand_2));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            break;
+        }
         case 41:
         { // UMax
             const Value& operand_1 = GetValue(operand_words[0]);
@@ -4037,6 +4077,66 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
 
             TransferFlags(result_id, operand_words[0]);
+            break;
+        }
+        case 71:
+        { // Reflect
+            /*
+            For the incident vector I and surface orientation N, the result is the reflection direction:
+
+            I - 2 * dot(N, I) * N
+
+            N must already be normalized in order to achieve the desired result.
+
+            The operands must all be a scalar or vector whose component type is floating-point.
+
+            Result Type and the type of all operands must be the same type.
+            */
+            const Value& i_val = GetValue(operand_words[0]);
+            const Value& n_val = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(i_val) &&
+                            std::holds_alternative<std::shared_ptr<VectorV>>(n_val),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::reflect");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto i_vec = std::get<std::shared_ptr<VectorV>>(i_val);
+                auto n_vec = std::get<std::shared_ptr<VectorV>>(n_val);
+
+                double dot_val = 0.0;
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    dot_val += std::get<double>(i_vec->elems[i]) * std::get<double>(n_vec->elems[i]);
+                }
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    double i_d = std::get<double>(i_vec->elems[i]);
+                    double n_d = std::get<double>(n_vec->elems[i]);
+                    double elem_result = i_d - 2.0 * dot_val * n_d;
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                double i_d = std::get<double>(i_val);
+                double n_d = std::get<double>(n_val);
+                double result = i_d - 2.0 * (i_d * n_d) * n_d;
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
             break;
         }
         case 79:
