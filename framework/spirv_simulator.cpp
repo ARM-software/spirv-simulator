@@ -6484,8 +6484,14 @@ void SPIRVSimulator::Op_SpecConstantFalse(const Instruction& instruction)
     uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
     if (input_data_->specialization_constant_offsets.find(spec_id) != input_data_->specialization_constant_offsets.end())
     {
-        assertx("SPIRV simulator: Specialized Op_SpecConstantFalse branch not implemented yet, extract the instruction "
-                "and execute");
+        size_t spec_id_offset = input_data_->specialization_constant_offsets.at(spec_id);
+        const std::byte* raw_spec_const_data =
+            static_cast<const std::byte*>(input_data_->specialization_constants) + spec_id_offset;
+        std::vector<uint32_t> buffer_data;
+        ReadWords(raw_spec_const_data, type_id, buffer_data);
+
+        const uint32_t* buffer_pointer = buffer_data.data();
+        SetValue(result_id, MakeScalar(type_id, buffer_pointer));
     }
     else
     {
@@ -6517,8 +6523,14 @@ void SPIRVSimulator::Op_SpecConstantTrue(const Instruction& instruction)
     uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
     if (input_data_->specialization_constant_offsets.find(spec_id) != input_data_->specialization_constant_offsets.end())
     {
-        assertx("SPIRV simulator: Specialized Op_SpecConstantTrue branch not implemented yet, extract the instruction "
-                "and execute");
+        size_t spec_id_offset = input_data_->specialization_constant_offsets.at(spec_id);
+        const std::byte* raw_spec_const_data =
+            static_cast<const std::byte*>(input_data_->specialization_constants) + spec_id_offset;
+        std::vector<uint32_t> buffer_data;
+        ReadWords(raw_spec_const_data, type_id, buffer_data);
+
+        const uint32_t* buffer_pointer = buffer_data.data();
+        SetValue(result_id, MakeScalar(type_id, buffer_pointer));
     }
     else
     {
