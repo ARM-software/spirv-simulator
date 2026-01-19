@@ -288,8 +288,8 @@ LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header)
     return L;
 }
 
-SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, SimulationData& input_data, bool verbose) :
-    program_words_(std::move(program_words)), verbose_(verbose)
+SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words, SimulationData& input_data, bool verbose, uint64_t flags) :
+    program_words_(std::move(program_words)), verbose_(verbose), flags_(flags)
 {
     input_data_ = &input_data;
 
@@ -4737,6 +4737,10 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer) {
+            if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+            {
+                assertx("SPIRV simulator: OpVariable tried to access the push constant buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+            }
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
             pointer_flags |= SPS_FLAG_UNINITIALIZED;
         }
@@ -4775,6 +4779,10 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer)
         {
+            if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+            {
+                assertx("SPIRV simulator: OpVariable tried to access a uniform or storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+            }
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
             pointer_flags |= SPS_FLAG_UNINITIALIZED;
         }

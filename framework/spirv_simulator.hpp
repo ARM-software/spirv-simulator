@@ -63,6 +63,14 @@ namespace SPIRVSimulator
 #define SPS_FLAG_IS_ARITHMETIC_SOURCE   2
 #define SPS_FLAG_IS_INTERPOLATED_SOURCE 4
 
+
+// Flags for the simulator, can be OR'ed into the flags argument on initialization
+
+// If set, the simulator will crash when it encounters access to an incomplete buffer.
+// If this is not set, access to such buffers will return the default value of the type.
+#define ERROR_RAISE_ON_BUFFERS_INCOMPLETE 1
+
+
 // Used for descriptor loop tracking
 struct PhiIncoming {
     uint32_t value_id;
@@ -919,7 +927,8 @@ class SPIRVSimulator
   public:
     explicit SPIRVSimulator(const std::vector<uint32_t>& program_words,
                             SimulationData&              input_data,
-                            bool                         verbose = false);
+                            bool                         verbose = false,
+                            uint64_t flags = 0);
 
     // Actually interpret the SPIRV. If we return true, then this means we have to execute
     // every thread of the invokation.
@@ -973,6 +982,7 @@ class SPIRVSimulator
 
     // Debug only
     bool verbose_;
+    uint64_t flags_;
 
     // Counts how many times each branch instruction was taken, used to abort infinite loops
     std::unordered_map<uint32_t, uint64_t> branch_counters_;
