@@ -7,12 +7,17 @@ Currently under active, early development. The whole project and the tool interf
 
 # spirv-simulator
 
-This repo implements a SPIRV simulator that can be used to detect and extract pointers to physical storage buffers in API streams.
+This repo implements a SPIRV simulator that can be used to detect and extract pointers to physical storage buffers and descriptor buffer handles in API streams.
 
 The intended use case is for it to be integrated with tracing and post processing graphics API inspection tools to find and handle pointers to GPU memory embedded in other data sources.
 
+It works by taking SPIRV binary code as an input alongside host side mappings of the inputs to said shaders. It then simulates command execution and detect usage of pbuffer and descriptor handle candidates.
 
-It is not intended for simulating full dispatches of all threads in a batch of GPU work (although it could technically do this to some extent, it is not optimized for it).
+It also populates output structures with data that can be used to track persistent state across multiple passes/draw calls/compute dispatches in a full graphics workload.
+
+
+It is not intended for simulating full dispatches of all threads in a batch of GPU work, and is specialized solely for pbuffer and descriptor handle detection.
+All SPIRV related behaviour not needed to accomplish this goal is dropped or simplified to speed things up and reduce complexity.
 
 
 ## dependencies
