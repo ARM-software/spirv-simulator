@@ -295,7 +295,7 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
                             InternalPersistentData*      persistent_data,
                             bool                         verbose,
                             uint64_t                     flags) :
-    program_words_(std::move(program_words)), verbose_(verbose)
+    program_words_(std::move(program_words)), verbose_(verbose), flags_(flags)
 {
     assertm(simulation_data, "SPIRV simulator: InputData pointer is null");
     assertm(simulator_results, "SPIRV simulator: SimulationResults pointer is null");
