@@ -104,13 +104,6 @@ struct DescriptorCandidate
     void* payload;
 };
 
-// Used internally by the simulator, can be passed between invocations by copying it from one invocation to another to
-// enable some optimizations.
-struct InternalPersistentData
-{
-    // Any shader whose SimulationData shader ID is found here can be safely skipped
-    std::set<uint64_t> uninteresting_shaders;
-};
 
 // ---------------------------------------------------------------------------
 //  Input/output structure
@@ -125,11 +118,10 @@ struct InternalPersistentData
 
 struct PhysicalAddressData;
 
+// The following struct contains input values that should be populated by the user
+//////////////////////////////////////////////////////////////////////
 struct SimulationData
 {
-    // The following are input values that should be populated by the user
-    //////////////////////////////////////////////////////////////////////
-
     // The SpirV ID of the entry point to use
     uint32_t entry_point_id = 0;
     // The OpName label (function name) of the entry point to use, takes priority over entry_point_id if it is set.
@@ -173,11 +165,13 @@ struct SimulationData
     // If provided, this can allow the simulator to massively speed up simulation time
     // for cases where the same shader is dispatched multiple times throughout a session.
     uint64_t shader_id = 0;
+};
 
 
-    // The following are output values that will be populated by the simulator
-    //////////////////////////////////////////////////////////////////////////
-
+// The following struct will contain output values that will be populated by the simulator
+//////////////////////////////////////////////////////////////////////////
+struct SimulationResults
+{
     // Written to by the simulator
     std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> output_candidates;
     std::vector<PhysicalAddressData> physical_address_data;
@@ -193,9 +187,13 @@ struct SimulationData
 
     // Set to true if any arbitrary data was written to external memory
     bool had_arbitrary_write = false;
+};
 
+struct InternalPersistentData
+{
     // Used for internal optimization between dispatches, should never be touched by the user.
-    InternalPersistentData persistent_data;
+    // Any shader whose SimulationData shader ID is found here can be safely skipped
+    std::set<uint64_t> uninteresting_shaders;
 };
 
 // For backwards compatibility
@@ -928,9 +926,11 @@ class SPIRVSimulator
 {
   public:
     explicit SPIRVSimulator(const std::vector<uint32_t>& program_words,
-                            SimulationData&              input_data,
+                            SimulationData*              simulation_data,
+                            SimulationResults*           simulation_results,
+                            InternalPersistentData*      persistent_data = nullptr,
                             bool                         verbose = false,
-                            uint64_t flags = 0);
+                            uint64_t                     flags = 0);
 
     // Actually interpret the SPIRV. If we return true, then this means we have to execute
     // every thread of the invokation.
@@ -954,7 +954,10 @@ class SPIRVSimulator
     uint32_t current_heap_index_ = 1;
 
     // Parsing artefacts
-    SimulationData* input_data_;
+    SimulationData*         simulation_data_;
+    SimulationResults*      simulation_results_;
+    InternalPersistentData* persistent_data_;
+
     // Contains entry point ID -> entry point OpName labels (labels may be
     // non-existent/empty)
     std::unordered_map<uint32_t, std::string>           entry_points_;
@@ -1097,7 +1100,7 @@ class SPIRVSimulator
     };
     virtual bool ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void ExecuteInstructions();
-    virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, std::set<uint32_t>* visited_set, SimulationData* fork_input_data = nullptr);
+    virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, std::set<uint32_t>* visited_set, SimulationData* fork_input_data = nullptr, SimulationResults* fork_simulation_results = nullptr);
 
     virtual std::string  GetValueString(const Value&);
     virtual std::string  GetTypeString(const Type&);
@@ -1182,9 +1185,9 @@ class SPIRVSimulator
     };
 
     virtual bool PointerIsCandidate(const void* potential_ptr, uint64_t offset) const {
-        if (input_data_->candidates.find(potential_ptr) != input_data_->candidates.end())
+        if (simulation_data_->candidates.find(potential_ptr) != simulation_data_->candidates.end())
         {
-            for (const auto& candidate : input_data_->candidates.at(potential_ptr))
+            for (const auto& candidate : simulation_data_->candidates.at(potential_ptr))
             {
                 if (candidate.offset == offset)
                 {
@@ -1197,10 +1200,10 @@ class SPIRVSimulator
 
     virtual bool PointerIsCandidate(const PointerV& pointer_value) const {
         const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (input_data_->candidates.find(potential_raw_ptr) != input_data_->candidates.end())
+        if (simulation_data_->candidates.find(potential_raw_ptr) != simulation_data_->candidates.end())
         {
             uint64_t pointee_offset = GetPointerOffset(pointer_value);
-            for (const auto& candidate : input_data_->candidates.at(potential_raw_ptr))
+            for (const auto& candidate : simulation_data_->candidates.at(potential_raw_ptr))
             {
                 if (candidate.offset == pointee_offset)
                 {
@@ -1212,9 +1215,9 @@ class SPIRVSimulator
     };
 
     virtual void ConfirmCandidate(const void* potential_ptr, uint64_t offset) {
-        if (input_data_->candidates.find(potential_ptr) != input_data_->candidates.end())
+        if (simulation_data_->candidates.find(potential_ptr) != simulation_data_->candidates.end())
         {
-            for (auto& candidate : input_data_->candidates.at(potential_ptr))
+            for (auto& candidate : simulation_data_->candidates.at(potential_ptr))
             {
                 if (candidate.offset == offset)
                 {
@@ -1227,10 +1230,10 @@ class SPIRVSimulator
 
     virtual void ConfirmCandidate(const PointerV& pointer_value) {
         const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (input_data_->candidates.find(potential_raw_ptr) != input_data_->candidates.end())
+        if (simulation_data_->candidates.find(potential_raw_ptr) != simulation_data_->candidates.end())
         {
             uint64_t pointee_offset = GetPointerOffset(pointer_value);
-            for (auto& candidate : input_data_->candidates.at(potential_raw_ptr))
+            for (auto& candidate : simulation_data_->candidates.at(potential_raw_ptr))
             {
                 if (candidate.offset == pointee_offset)
                 {
@@ -1254,7 +1257,7 @@ class SPIRVSimulator
 
     virtual bool PointerIsDescriptorBuffer(const void* potential_ptr, uint64_t offset) const {
         (void)offset;
-        if (input_data_->descriptor_candidates.find(potential_ptr) != input_data_->descriptor_candidates.end())
+        if (simulation_data_->descriptor_candidates.find(potential_ptr) != simulation_data_->descriptor_candidates.end())
         {
             return true;
         }
@@ -1263,7 +1266,7 @@ class SPIRVSimulator
 
     virtual bool PointerIsDescriptorBuffer(const PointerV& pointer_value) const {
         const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (input_data_->descriptor_candidates.find(potential_raw_ptr) != input_data_->descriptor_candidates.end())
+        if (simulation_data_->descriptor_candidates.find(potential_raw_ptr) != simulation_data_->descriptor_candidates.end())
         {
             return true;
         }

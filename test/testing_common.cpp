@@ -254,9 +254,9 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
     return words;
 }
 
-::SPIRVSimulator::InputData SPIRVSimulatorMockBase::prepare_input_data(const TestParameters& parameters)
+::SPIRVSimulator::SimulationData SPIRVSimulatorMockBase::prepare_input_data(const TestParameters& parameters)
 {
-    ::SPIRVSimulator::InputData inputs;
+    ::SPIRVSimulator::SimulationData inputs;
 
     if (!parameters.push_constants_.empty())
     {

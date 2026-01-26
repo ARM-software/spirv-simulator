@@ -24,8 +24,9 @@ int main(int argc, char** argv)
     std::set<std::string> unsupported_instructions;
     while (std::getline(file, line))
     {
-        SPIRVSimulator::InputData      inputs;
-        SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(line), inputs);
+        SPIRVSimulator::SimulationData      inputs;
+        SPIRVSimulator::SimulationResults   outputs;
+        SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(line), &inputs, &outputs);
         unsupported_instructions.insert(sim.unsupported_opcodes.begin(), sim.unsupported_opcodes.end());
     }
 

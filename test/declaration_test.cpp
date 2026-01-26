@@ -25,7 +25,7 @@ TEST_P(DeclarationTests, ParametrizedDeclarationOperation)
                                         .words      = words };
 
     local_data = prepare_input_data(parameters);
-    input_data_ = &local_data;
+    simulation_data_ = &local_data;
 
     ::SPIRVSimulator::Value captured_value;
     EXPECT_CALL(*this, SetValue(_, _, true)).WillOnce(SaveArg<1>(&captured_value));

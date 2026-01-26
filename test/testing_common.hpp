@@ -76,8 +76,8 @@ struct TestParameters
     std::unordered_map<uint32_t, std::vector<SPIRVSimulator::DecorationInfo>>       decorations;
     std::string                                                                     death_message;
 
-    std::vector<uint8_t>        push_constants_;
-    ::SPIRVSimulator::InputData input_data;
+    std::vector<uint8_t>             push_constants_;
+    ::SPIRVSimulator::SimulationData input_data;
 
     friend std::ostream& operator<<(std::ostream& os, TestParameters const& p)
     {
@@ -244,11 +244,11 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     using SPIRVSimulator::SPIRVSimulator::ExecuteInstruction;
 
   protected:
-    size_t                    NextId() { return id_counter++; }
-    std::vector<uint32_t>       prepare_submission(const TestParameters& parameters);
-    ::SPIRVSimulator::InputData prepare_input_data(const TestParameters& parameters);
+    size_t                           NextId() { return id_counter++; }
+    std::vector<uint32_t>            prepare_submission(const TestParameters& parameters);
+    ::SPIRVSimulator::SimulationData prepare_input_data(const TestParameters& parameters);
 
-    ::SPIRVSimulator::InputData local_data;
+    ::SPIRVSimulator::SimulationData local_data;
 
     // needs to be rewritten through std::visit for mismatching variants
     // Mismatching variants currently occur only for when comparing value to pointer

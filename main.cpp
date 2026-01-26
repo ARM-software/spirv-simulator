@@ -58,10 +58,11 @@ int main(int argc, char** argv)
     if (filename.empty()) usage();
 
     SPIRVSimulator::SimulationData sim_data;
-    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(filename.c_str()), sim_data, verbose);
+    SPIRVSimulator::SimulationResults results;
+    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(filename.c_str()), &sim_data, &results, nullptr, verbose);
     sim.Run();
 
-    auto physical_address_data = sim_data.physical_address_data;
+    auto physical_address_data = results.physical_address_data;
 
     if (physical_address_data.size() > 0) std::cout << "Pointers to pbuffers:" << std::endl;
     for (const auto& pointer_t : physical_address_data)
