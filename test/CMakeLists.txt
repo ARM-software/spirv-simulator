@@ -31,12 +31,16 @@ target_link_libraries(misc_test PRIVATE GTest::gtest_main GTest::gmock spirv_sim
 include(CTest)
 include(GoogleTest)
 
-gtest_discover_tests(arithmetic_test REPORTER compact DISCOVERY_MODE PRE_TEST)
-gtest_discover_tests(declaration_test REPORTER compact DISCOVERY_MODE PRE_TEST)
-gtest_discover_tests(misc_test REPORTER compact DISCOVERY_MODE PRE_TEST)
+set(CTEST_OUTPUT_ON_FAILURE ON)
+set(CTEST_ERROR_ON_STDERR ON)
+set(CMAKE_CTEST_ARGUMENTS --output-on-failure --verbose)
+
+gtest_discover_tests(arithmetic_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(declaration_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(misc_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 
 add_custom_target(run_tests
-  COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+  COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -VV
   DEPENDS arithmetic_test declaration_test misc_test
 )
 
