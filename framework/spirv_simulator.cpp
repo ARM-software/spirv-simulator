@@ -299,13 +299,20 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
 {
     assertm(simulation_data, "SPIRV simulator: InputData pointer is null");
     assertm(simulator_results, "SPIRV simulator: SimulationResults pointer is null");
-    assertm(persistent_data, "SPIRV simulator: PersistentData pointer is null");
 
     simulation_data_ = simulation_data;
     simulation_results_ = simulator_results;
     persistent_data_ = persistent_data;
 
-    if (simulation_data_->shader_id && (persistent_data_->uninteresting_shaders.contains(simulation_data_->shader_id)))
+    if (!persistent_data_)
+    {
+        if (verbose_)
+        {
+            std::cout << "SPIRV simulator: Warning, persistent data input not set, the run will be usable only in isolation (single shader content)" << std::endl;
+        }
+    }
+
+    if (simulation_data_->shader_id && persistent_data_ && (persistent_data_->uninteresting_shaders.contains(simulation_data_->shader_id)))
     {
         done_ = true;
         return;
@@ -657,7 +664,7 @@ bool SPIRVSimulator::Run()
     call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_ });
     ExecuteInstructions();
 
-    if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && simulation_data_->shader_id)
+    if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && simulation_data_->shader_id && persistent_data_)
     {
         persistent_data_->uninteresting_shaders.insert(simulation_data_->shader_id);
     }
@@ -3233,6 +3240,42 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
     switch (instruction_literal)
     {
+        case 4:
+        { // FAbs
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                      "SPIRV simulator: Operands not of vector type in "
+                      "GLSLExtHandler::FAbs");
+
+                Value result = std::make_shared<VectorV>();
+                auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::abs(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::abs(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+        }
         case 8:
         { // Floor
             const Value& operand = GetValue(operand_words[0]);
@@ -3484,6 +3527,76 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             TransferFlags(result_id, operand_words[0]);
             TransferFlags(result_id, operand_words[1]);
+            break;
+        }
+    case 29:
+        { // exp2
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::log2");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::exp2(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::exp2(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+        }
+        case 30:
+        { // log2
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::log2");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::log2(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::log2(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
         case 31:

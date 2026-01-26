@@ -196,8 +196,6 @@ struct InternalPersistentData
     std::set<uint64_t> uninteresting_shaders;
 };
 
-// For backwards compatibility
-using InputData = SimulationData;
 
 // ---------------------------------------------------------------------------
 // Output structure
