@@ -1079,6 +1079,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_GroupNonUniformIAdd)
         case spv::Op::OpGroupNonUniformShuffle:
             R(Op_GroupNonUniformShuffle)
+        case spv::Op::OpGroupNonUniformShuffleXor:
+            R(Op_GroupNonUniformShuffleXor)
         case spv::Op::OpGroupNonUniformUMax:
             R(Op_GroupNonUniformUMax)
         case spv::Op::OpGroupNonUniformBitwiseAnd:
@@ -2919,9 +2921,25 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
             {
                 const auto agg = std::get<std::shared_ptr<AggregateV>>(*value);
 
-                assertm(indirection_index < agg->elems.size(), "SPIRV simulator: Arrau index OOB");
-
-                value = &agg->elems[indirection_index];
+                std::cout << indirection_index << " : " << agg->elems.size() << std::endl;
+                if (is_execution_fork)
+                {
+                    // If we are exploring a fork, correctness is not important for array aggregates
+                    // Conditional access to pbuffer pointer arrays will be handled regardless
+                    if (indirection_index < agg->elems.size())
+                    {
+                        value = &agg->elems[indirection_index];
+                    }
+                    else
+                    {
+                        value = &agg->elems[agg->elems.size() - 1];
+                    }
+                }
+                else
+                {
+                    assertm(indirection_index < agg->elems.size(), "SPIRV simulator: Array index OOB");
+                    value = &agg->elems[indirection_index];
+                }
             }
             else if (std::holds_alternative<std::shared_ptr<VectorV>>(*value))
             {
@@ -13289,6 +13307,40 @@ void SPIRVSimulator::Op_GroupNonUniformShuffle(const Instruction& instruction)
     uint32_t exec_id   = instruction.words[3];
     uint32_t value_id  = instruction.words[4];
     uint32_t id_id     = instruction.words[5];
+
+    // TODO: Group op warnings
+
+    SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GroupNonUniformShuffleXor(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformShuffleXor
+
+    Result is the Value of the invocation identified by the current invocation’s id within the scope xor’ed with Mask.
+
+    Result Type must be a scalar or vector of floating-point type, integer type, or Boolean type.
+
+    Execution is the scope defining the scope restricted tangle affected by this command. It must be Subgroup.
+
+    The type of Value must be the same as Result Type.
+
+    Mask must be a scalar of integer type, whose Signedness operand is 0.
+
+    The resulting value is undefined if current invocation’s id within the scope xor’ed with Mask is not part of the scope restricted tangle, or is greater than or equal to the size of the scope.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until all invocations in its scope restricted tangle have executed all dynamic instances that are program-ordered before X'.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformShuffleXor);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t exec_id   = instruction.words[3];
+    uint32_t value_id  = instruction.words[4];
+    uint32_t mask_id   = instruction.words[5];
 
     // TODO: Group op warnings
 
