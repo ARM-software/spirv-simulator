@@ -4757,6 +4757,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         if (!external_pointer) {
             if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
             {
+                std::cout << "SPIRV simulator: WARNING: Access to uninitialized push constant while the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set." << std::endl;
                 assertx("SPIRV simulator: OpVariable tried to access the push constant buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
             }
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
@@ -4799,6 +4800,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         {
             if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
             {
+                std::cout << "SPIRV simulator: WARNING: Access to uninitialized descriptor binding while the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, descriptor set: " << descriptor_set << ", binding: " << binding << std::endl;
                 assertx("SPIRV simulator: OpVariable tried to access a uniform or storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
             }
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
