@@ -1970,6 +1970,78 @@ bool SPIRVSimulator::IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, u
     return false;
 }
 
+uint32_t SPIRVSimulator::GetFallbackTypeSizeBytes(uint32_t type_id) const
+{
+    const Type& type = GetTypeByTypeId(type_id);
+
+    switch (type.kind)
+    {
+        case Type::Kind::BoolT:
+        case Type::Kind::Int:
+        case Type::Kind::Float:
+            return (type.scalar.width + 7) / 8;
+        case Type::Kind::Vector:
+            return GetFallbackTypeSizeBytes(type.vector.elem_type_id) * type.vector.elem_count;
+        case Type::Kind::Matrix:
+            return GetFallbackTypeSizeBytes(type.matrix.col_type_id) * type.matrix.col_count;
+        case Type::Kind::Struct:
+        {
+            uint32_t total = 0;
+            auto     members_it = struct_members_.find(type_id);
+            if (members_it != struct_members_.end())
+            {
+                for (uint32_t member_type_id : members_it->second)
+                {
+                    total += GetFallbackTypeSizeBytes(member_type_id);
+                }
+            }
+            return total ? total : 8;
+        }
+        case Type::Kind::Pointer:
+        case Type::Kind::Image:
+        case Type::Kind::Sampler:
+        case Type::Kind::SampledImage:
+        case Type::Kind::Opaque:
+        case Type::Kind::AccelerationStructureKHR:
+        case Type::Kind::RayQueryKHR:
+            return 8;
+        case Type::Kind::Array:
+        case Type::Kind::RuntimeArray:
+        {
+            uint32_t elem_size = GetFallbackTypeSizeBytes(type.array.elem_type_id);
+            return elem_size ? elem_size : 8;
+        }
+        default:
+            return 8;
+    }
+}
+
+uint32_t SPIRVSimulator::GetArrayStrideBytes(uint32_t type_id) const
+{
+    if (HasDecorator(type_id, spv::Decoration::DecorationArrayStride))
+    {
+        return GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+    }
+
+    const Type& type = GetTypeByTypeId(type_id);
+    assertm(type.kind == Type::Kind::Array || type.kind == Type::Kind::RuntimeArray,
+            "SPIRV simulator: ArrayStride requested for non-array type");
+
+    uint32_t stride = GetFallbackTypeSizeBytes(type.array.elem_type_id);
+    if (stride == 0)
+    {
+        stride = 8;
+    }
+
+    if (verbose_)
+    {
+        std::cout << execIndent << "SPIRV simulator: WARNING: No ArrayStride decorator for array type " << type_id
+                  << ", using fallback stride " << stride << " bytes" << std::endl;
+    }
+
+    return stride;
+}
+
 void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data)
 {
     /*
@@ -1996,12 +2068,7 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
     }
     else if (type.kind == Type::Kind::Array || type.kind == Type::Kind::RuntimeArray)
     {
-        // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
-        assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
-                "SPIRV simulator: No ArrayStride decorator for input array, check if this is a block array and add "
-                "support for it if so");
-
-        uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+        uint32_t array_stride = GetArrayStrideBytes(type_id);
 
         if (type.array.length_id == 0)
         {
@@ -2131,12 +2198,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
     }
     else if (type.kind == Type::Kind::Array || type.kind == Type::Kind::RuntimeArray)
     {
-        // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
-        assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
-                "SPIRV simulator: No ArrayStride decorator for input array, check if this is a block array and add "
-                "support for it if so");
-
-        uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+        uint32_t array_stride = GetArrayStrideBytes(type_id);
 
         assertm(type.array.length_id != 0,
                 "SPIRV simulator: Attempt to write out a runtime array, this should never happen");
@@ -2285,11 +2347,7 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
         }
         else if (type->kind == Type::Kind::Array || type->kind == Type::Kind::RuntimeArray)
         {
-            // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
-            assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
-                    "SPIRV simulator: No ArrayStride decorator for input array");
-
-            uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+            uint32_t array_stride = GetArrayStrideBytes(type_id);
             offset += indirection_index * array_stride;
             type_id = type->array.elem_type_id;
             type    = &GetTypeByTypeId(type_id);
@@ -2458,24 +2516,18 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         }
         case Type::Kind::Image:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create Image handle with initial_data unless we know the size of the "
-                    "opaque types");
-            return (uint64_t)(0);
+            (void)initial_data;
+            return (uint64_t)0;
         }
         case Type::Kind::Sampler:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create Sampler with initial_data unless we know the size of the "
-                    "opaque types");
+            (void)initial_data;
             return (uint64_t)0;
         }
         case Type::Kind::SampledImage:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create SampledImage with initial_data unless we know the size of the "
-                    "opaque types");
             SampledImageV new_sampled_image{ 0, 0 };
+            (void)initial_data;
             return new_sampled_image;
         }
         case Type::Kind::Opaque:
@@ -2610,9 +2662,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         case Type::Kind::AccelerationStructureKHR:
         case Type::Kind::RayQueryKHR:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create RayQuery or AccelerationStructure with initial_data unless we know the size of the "
-                    "opaque types");
+            (void)initial_data;
             return (uint64_t)0;
         }
         default:

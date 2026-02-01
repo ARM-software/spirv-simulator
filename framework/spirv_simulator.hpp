@@ -1115,6 +1115,8 @@ class SPIRVSimulator
     virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value);
     virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
     virtual uint64_t GetPointerOffset(const PointerV& pointer_value) const;
+    virtual uint32_t GetArrayStrideBytes(uint32_t type_id) const;
+    virtual uint32_t GetFallbackTypeSizeBytes(uint32_t type_id) const;
     virtual size_t   CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
     virtual size_t   GetBitizeOfType(uint32_t type_id);
     virtual uint32_t GetTargetPointerType(const PointerV& pointer);
