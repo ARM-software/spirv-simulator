@@ -2458,31 +2458,23 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         }
         case Type::Kind::Image:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create Image handle with initial_data unless we know the size of the "
-                    "opaque types");
+            // Since we mostly ignore image data at present we set these to 0.
+            // If we want to start using it in the future, we should handle bindless cases here
+            // and initialize these using callbacks to translate the logical references to actual
+            // buffer pointers and convert those to uint64_t values.
             return (uint64_t)(0);
         }
         case Type::Kind::Sampler:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create Sampler with initial_data unless we know the size of the "
-                    "opaque types");
             return (uint64_t)0;
         }
         case Type::Kind::SampledImage:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create SampledImage with initial_data unless we know the size of the "
-                    "opaque types");
             SampledImageV new_sampled_image{ 0, 0 };
             return new_sampled_image;
         }
         case Type::Kind::Opaque:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create Opaque value with initial_data unless we know the size of the "
-                    "opaque types");
             return (uint64_t)0;
         }
         case Type::Kind::NamedBarrier:
