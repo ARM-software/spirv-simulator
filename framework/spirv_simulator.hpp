@@ -57,6 +57,8 @@ namespace SPIRVSimulator
 #define SPS_FLAG_IS_DESCRIPTOR_CANDIDATE  32
 // Used to track descriptor candidate values
 #define SPS_FLAG_IS_DESCRIPTOR_BUFFER     64
+// Used to mark pointer pointing to uninitialized bindings, these may be legal and needs special handling
+#define SPS_FLAG_IS_UNINITIALIZED_BINDING 128
 
 // Used to track metadata about value source chains
 #define SPS_FLAG_IS_FLOAT_SOURCE        1

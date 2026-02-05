@@ -2283,6 +2283,10 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
             type_id = struct_members_.at(type_id)[indirection_index];
             type    = &GetTypeByTypeId(type_id);
         }
+        else if (type->kind == Type::Kind::RuntimeArray)
+        {
+            assertx("SPIRV simulator: Pointer offset calculation will be wrong for RuntimeArray composites");
+        }
         else if (type->kind == Type::Kind::Array || type->kind == Type::Kind::RuntimeArray)
         {
             // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
@@ -2961,6 +2965,15 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
              type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
     {
+        if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+        {
+            if (ptr.pointee_flags & SPS_FLAG_IS_UNINITIALIZED_BINDING)
+            {
+                std::cout << "SPIRV simulator: ERROR: OpVariable tried to write to a storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized" << std::endl;
+                assertx("SPIRV simulator: ERROR: OpVariable tried to write to a storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+            }
+        }
+
         auto offset = GetPointerOffset(ptr);
 
         std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
@@ -2970,6 +2983,15 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassUniform)
     {
+        if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+        {
+            if (ptr.pointee_flags & SPS_FLAG_IS_UNINITIALIZED_BINDING)
+            {
+                std::cout << "SPIRV simulator: ERROR: OpVariable tried to write to a uniform buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized" << std::endl;
+                assertx("SPIRV simulator: ERROR: OpVariable tried to write to a uniform buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+            }
+        }
+
         uint32_t pointee_type_id = type.pointer.pointee_type_id;
 
         const Type& type = GetTypeByTypeId(pointee_type_id);
@@ -3117,6 +3139,15 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
              type.pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
              type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer)
     {
+        if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+        {
+            if (ptr.pointee_flags & SPS_FLAG_IS_UNINITIALIZED_BINDING)
+            {
+                std::cout << "SPIRV simulator: ERROR: OpVariable tried to read from a uniform or storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized" << std::endl;
+                assertx("SPIRV simulator: ERROR: OpVariable tried to read from a uniform or storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+            }
+        }
+
         auto             offset           = GetPointerOffset(ptr);
         const std::byte* external_pointer = bit_cast<const std::byte*>(ptr.pointer_handle) + offset;
 
@@ -4790,12 +4821,12 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer)
         {
-            if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+            // Uninitialized bindings may be well defined and legal, so dont raise any errors yet
+            if (verbose_)
             {
-                std::cout << "SPIRV simulator: WARNING: Access to uninitialized descriptor binding while the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, descriptor set: " << descriptor_set << ", binding: " << binding << std::endl;
-                assertx("SPIRV simulator: OpVariable tried to access a uniform or storage buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+                std::cout << "SPIRV simulator: WARNING: Descriptor set: " << descriptor_set << ", binding: " << binding << " is not set. This may be valid behaviour if it is not accessed." << std::endl;
             }
-            pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
+            pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY | SPS_FLAG_IS_UNINITIALIZED_BINDING;
             pointer_flags |= SPS_FLAG_UNINITIALIZED;
         }
         else
