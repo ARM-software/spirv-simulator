@@ -2938,7 +2938,6 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
             {
                 const auto agg = std::get<std::shared_ptr<AggregateV>>(*value);
 
-                std::cout << indirection_index << " : " << agg->elems.size() << std::endl;
                 if (is_execution_fork)
                 {
                     // If we are exploring a fork, correctness is not important for array aggregates
