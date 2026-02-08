@@ -1557,6 +1557,7 @@ class SPIRVSimulator
     void Op_RayQueryGetWorldRayDirectionKHR(const Instruction&);
     void Op_RayQueryInitializeKHR(const Instruction&);
     void Op_RayQueryProceedKHR(const Instruction&);
+    void Op_TraceRayKHR(const Instruction&);
     void Op_DecorateString(const Instruction&);
 };
 
