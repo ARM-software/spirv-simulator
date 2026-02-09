@@ -1130,6 +1130,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_RayQueryInitializeKHR)
         case spv::Op::OpRayQueryProceedKHR:
             R(Op_RayQueryProceedKHR)
+        case spv::Op::OpTraceRayKHR:
+            R(Op_TraceRayKHR)
         case spv::Op::OpDecorateString:
             R(Op_DecorateString)
         default:
@@ -2960,7 +2962,12 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
         type.pointer.storage_class == spv::StorageClass::StorageClassOutput ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassImage)
+        type.pointer.storage_class == spv::StorageClass::StorageClassImage ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassRayPayloadKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingRayPayloadKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassHitAttributeKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassCallableDataKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR)
     {
         Value* value = &Heap(type.pointer.storage_class)[ptr.pointer_handle];
         for (size_t depth = 0; depth < ptr.idx_path.size(); ++depth)
@@ -3091,7 +3098,12 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
         type.pointer.storage_class == spv::StorageClass::StorageClassOutput ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassImage)
+        type.pointer.storage_class == spv::StorageClass::StorageClassImage ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassRayPayloadKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingRayPayloadKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassHitAttributeKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassCallableDataKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR)
     {
         Value* value = &Heap(type.pointer.storage_class)[ptr.pointer_handle];
         for (size_t depth = 0; depth < ptr.idx_path.size(); ++depth)
@@ -5043,6 +5055,16 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
                 }
             }
         }
+    }
+    else if (type.pointer.storage_class == spv::StorageClass::StorageClassRayPayloadKHR ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassIncomingRayPayloadKHR ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassHitAttributeKHR ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassCallableDataKHR ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR)
+    {
+        pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY | SPS_FLAG_THREAD_SPECIFIC;
+        new_pointer.pointer_handle =
+                HeapAllocate(type.pointer.storage_class, MakeDefault(type.pointer.pointee_type_id));
     }
     else
     {
@@ -13945,6 +13967,28 @@ void SPIRVSimulator::Op_RayQueryProceedKHR(const Instruction& instruction)
 
     SetValue(result_id, result);
     SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_TraceRayKHR(const Instruction& instruction)
+{
+    /*
+    OpTraceRayKHR
+
+    For analysis we treat this as a no-op, but ensure the payload is marked
+    as arbitrary/uninitialized since it can be written by shaders invoked by the trace.
+    */
+    assert(instruction.opcode == spv::Op::OpTraceRayKHR);
+
+    if (instruction.word_count < 2)
+    {
+        return;
+    }
+
+    const uint32_t payload_id = instruction.words[instruction.word_count - 1];
+    if (payload_id < values_.size() && std::holds_alternative<PointerV>(values_[payload_id]))
+    {
+        SetFlagsPointee(payload_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY | SPS_FLAG_THREAD_SPECIFIC);
+    }
 }
 
 void SPIRVSimulator::Op_DecorateString(const Instruction& instruction)
