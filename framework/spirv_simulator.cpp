@@ -1761,7 +1761,7 @@ size_t SPIRVSimulator::CountSetBits(const Value& value, uint32_t type_id, bool* 
 
         // uint32_t elem_type_id = type.vector.elem_type_id;
         // uint64_t array_len = std::get<uint64_t>(GetValue(type.array.length_id));
-        // bitcount += GetBitizeOfType(elem_type_id);
+        // bitcount += GetBitsizeOfType(elem_type_id);
     }
     else if (type.kind == Type::Kind::Struct)
     {
@@ -1785,7 +1785,7 @@ size_t SPIRVSimulator::CountSetBits(const Value& value, uint32_t type_id, bool* 
     return bitcount;
 }
 
-size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
+size_t SPIRVSimulator::GetBitsizeOfType(uint32_t type_id) const
 {
     /*
     Returns the full bitsize of the type associated with the given type ID.
@@ -1810,19 +1810,19 @@ size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
     else if (type.kind == Type::Kind::Vector)
     {
         uint32_t elem_type_id = type.vector.elem_type_id;
-        bitcount += GetBitizeOfType(elem_type_id) * type.vector.elem_count;
+        bitcount += GetBitsizeOfType(elem_type_id) * type.vector.elem_count;
     }
     else if (type.kind == Type::Kind::Matrix)
     {
         uint32_t col_type_id = type.matrix.col_type_id;
-        bitcount += GetBitizeOfType(col_type_id) * type.matrix.col_count;
+        bitcount += GetBitsizeOfType(col_type_id) * type.matrix.col_count;
     }
     else if (type.kind == Type::Kind::Array)
     {
         uint32_t elem_type_id = type.vector.elem_type_id;
         uint64_t array_len    = GetArrayLength(type.array.length_id);
 
-        bitcount += GetBitizeOfType(elem_type_id) * array_len;
+        bitcount += GetBitsizeOfType(elem_type_id) * array_len;
     }
     else if (type.kind == Type::Kind::RuntimeArray)
     {
@@ -1830,7 +1830,7 @@ size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
 
         // uint32_t elem_type_id = type.vector.elem_type_id;
         // uint64_t array_len = std::get<uint64_t>(GetValue(type.array.length_id));
-        // bitcount += GetBitizeOfType(elem_type_id);
+        // bitcount += GetBitsizeOfType(elem_type_id);
     }
     else if (type.kind == Type::Kind::Struct)
     {
@@ -1838,12 +1838,23 @@ size_t SPIRVSimulator::GetBitizeOfType(uint32_t type_id)
 
         for (uint32_t member_type_id : struct_members_.at(type_id))
         {
-            bitcount += GetBitizeOfType(member_type_id);
+            bitcount += GetBitsizeOfType(member_type_id);
         }
     }
     else if (type.kind == Type::Kind::Pointer)
     {
         bitcount += 8 * 8;
+    }
+    else if (
+        type.kind == Type::Kind::Image ||
+        type.kind == Type::Kind::Sampler ||
+        type.kind == Type::Kind::SampledImage ||
+        type.kind == Type::Kind::Opaque ||
+        type.kind == Type::Kind::NamedBarrier ||
+        type.kind == Type::Kind::AccelerationStructureKHR ||
+        type.kind == Type::Kind::RayQueryKHR)
+    {
+        assertx("SPIRV simulator: Fetching bitsize of an opaque handle, this is currently not implemented");
     }
 
     return bitcount;
@@ -1889,14 +1900,14 @@ uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer)
         }
         else
         {
-            assertx("SPIRV simulator: Unhandled type in GetBitizeOfTargetType");
+            assertx("SPIRV simulator: Unhandled type in GetBitsizeOfTargetType");
         }
     }
 
     return type_id;
 }
 
-size_t SPIRVSimulator::GetBitizeOfTargetType(const PointerV& pointer)
+size_t SPIRVSimulator::GetBitsizeOfTargetType(const PointerV& pointer)
 {
     /*
     Returns the full bitsize of the type pointed to by the given pointer.
@@ -1907,7 +1918,7 @@ size_t SPIRVSimulator::GetBitizeOfTargetType(const PointerV& pointer)
 
     uint32_t type_id = GetTargetPointerType(pointer);
 
-    return GetBitizeOfType(type_id);
+    return GetBitsizeOfType(type_id);
 }
 
 void SPIRVSimulator::GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output)
@@ -2073,7 +2084,7 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
         uint32_t col_count = type.matrix.col_count;
         uint32_t row_count = col_type.vector.elem_count;
 
-        uint32_t bytes_per_subcomponent = std::ceil((double)(GetBitizeOfType(col_type.vector.elem_type_id) / 8));
+        uint32_t bytes_per_subcomponent = std::ceil((double)(GetBitsizeOfType(col_type.vector.elem_type_id) / 8));
 
         for (uint64_t col_index = 0; col_index < col_count; ++col_index)
         {
@@ -2201,7 +2212,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
         uint32_t col_count = type.matrix.col_count;
         uint32_t row_count = col_type.vector.elem_count;
 
-        uint32_t bytes_per_subcomponent = std::ceil((double)(GetBitizeOfType(col_type.vector.elem_type_id) / 8));
+        uint32_t bytes_per_subcomponent = std::ceil((double)(GetBitsizeOfType(col_type.vector.elem_type_id) / 8));
 
         const std::shared_ptr<MatrixV>& matrix_ptr = std::get<std::shared_ptr<MatrixV>>(value);
 
@@ -2304,20 +2315,42 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
             type_id = struct_members_.at(type_id)[indirection_index];
             type    = &GetTypeByTypeId(type_id);
         }
-        else if (type->kind == Type::Kind::RuntimeArray)
-        {
-            assertx("SPIRV simulator: Pointer offset calculation will be wrong for RuntimeArray composites");
-        }
         else if (type->kind == Type::Kind::Array || type->kind == Type::Kind::RuntimeArray)
         {
-            // They must have a stride decorator (TODO: unless they contain blocks, but we can deal with that later)
-            assertm(HasDecorator(type_id, spv::Decoration::DecorationArrayStride),
-                    "SPIRV simulator: No ArrayStride decorator for input array");
+            const Type* atype = &GetTypeByTypeId(type->array.elem_type_id);
 
-            uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
-            offset += indirection_index * array_stride;
-            type_id = type->array.elem_type_id;
-            type    = &GetTypeByTypeId(type_id);
+            if (atype->kind == Type::Kind::Image ||
+                atype->kind == Type::Kind::Sampler ||
+                atype->kind == Type::Kind::SampledImage ||
+                atype->kind == Type::Kind::Opaque ||
+                atype->kind == Type::Kind::NamedBarrier ||
+                atype->kind == Type::Kind::AccelerationStructureKHR ||
+                atype->kind == Type::Kind::RayQueryKHR)
+            {
+                if (HasDecorator(type_id, spv::Decoration::DecorationArrayStride))
+                {
+                    // This is a descriptor buffer backed by real memory, it must have an array stride decorator.
+                    uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+                    offset += indirection_index * array_stride;
+                    type_id = type->array.elem_type_id;
+                    type    = &GetTypeByTypeId(type_id);
+                }
+                else
+                {
+                    // If this contains handles and has no array stride, it is a logical array without memory backing
+                    // This is a special case where we assume the input array is backed by user supplied pointers, or fetched using a callback
+                    bool legal_access = pointer_value.idx_path.size() == 1 || (pointer_value.idx_path.size() == 2 && pointer_value.idx_path[0] == 0);
+                    assertm(legal_access, "SPIRV simulator: Multi-level indirection for logical arrays is illegal. The input shader is broken or there is a bug in the simulator that lead to this");
+                    return indirection_index * sizeof(void*);
+                }
+            }
+            else
+            {
+                uint32_t array_stride = HasDecorator(type_id, spv::Decoration::DecorationArrayStride) ? GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride) : std::ceil(GetBitsizeOfType(type->array.elem_type_id) / 8);
+                offset += indirection_index * array_stride;
+                type_id = type->array.elem_type_id;
+                type    = &GetTypeByTypeId(type_id);
+            }
         }
         else if (type->kind == Type::Kind::Matrix)
         {
@@ -2726,7 +2759,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             data_source.set_id      = 0;
             data_source.byte_offset = byte_offset;
             data_source.bit_offset  = 0;
-            data_source.bitcount    = GetBitizeOfType(type_id);
+            data_source.bitcount    = GetBitsizeOfType(type_id);
             ;
             data_source.val_bit_offset = 0;
             results.push_back(data_source);
@@ -2776,7 +2809,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                 data_source.byte_offset = GetPointerOffset(pointer);
                 data_source.bit_offset  = 0;
                 // This does not account for padding, but its probably fine here since it makes little sense to load complex constructs here
-                data_source.bitcount       = GetBitizeOfTargetType(pointer);
+                data_source.bitcount       = GetBitsizeOfTargetType(pointer);
                 data_source.val_bit_offset = 0;
                 results.push_back(data_source);
             }
@@ -2800,7 +2833,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             uint32_t header_word_count = 5;
             data_source.byte_offset    = (instruction_index + header_word_count) * sizeof(uint32_t);
             data_source.bit_offset     = 0;
-            data_source.bitcount       = GetBitizeOfType(type_id);
+            data_source.bitcount       = GetBitsizeOfType(type_id);
             data_source.val_bit_offset = 0;
             results.push_back(data_source);
             break;
@@ -2995,7 +3028,6 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         }
 
         auto offset = GetPointerOffset(ptr);
-
         std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
 
         uint32_t target_type_id = GetTargetPointerType(ptr);
@@ -3021,7 +3053,6 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
              HasDecorator(pointee_type_id, spv::Decoration::DecorationBufferBlock)))
         {
             auto offset = GetPointerOffset(ptr);
-
             std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
 
             uint32_t target_type_id = GetTargetPointerType(ptr);
@@ -3188,7 +3219,7 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
     return value;
 }
 
-const Value& SPIRVSimulator::GetValue(uint32_t result_id)
+const Value& SPIRVSimulator::GetValue(uint32_t result_id) const
 {
     assertm(!std::holds_alternative<std::monostate>(values_[result_id]),
             "SPIRV simulator: Access to undefined variable");
@@ -3196,7 +3227,7 @@ const Value& SPIRVSimulator::GetValue(uint32_t result_id)
     return values_[result_id];
 }
 
-uint64_t SPIRVSimulator::GetArrayLength(uint32_t length_id)
+uint64_t SPIRVSimulator::GetArrayLength(uint32_t length_id) const
 {
     const Value& length_value = GetValue(length_id);
 
@@ -5246,8 +5277,8 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
                         }
                         else
                         {
-                            size_t chunk_bitsize = GetBitizeOfTargetType(pointer);
-                            size_t bitsize_of_size_type = GetBitizeOfType(GetTypeID(descriptor_size_id));
+                            size_t chunk_bitsize = GetBitsizeOfTargetType(pointer);
+                            size_t bitsize_of_size_type = GetBitsizeOfType(GetTypeID(descriptor_size_id));
 
                             std::vector<DataSourceBits> dsize_variable_data_sources = FindDataSourcesFromResultID(descriptor_size_id);
 

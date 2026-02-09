@@ -284,8 +284,7 @@ struct Type
         Array,
         Struct,
         Pointer,
-        RuntimeArray, // TODO: We can/probably should make these maps and use sparse access (eg. add a new map value for
-                      // these and load during OpAccessChain)
+        RuntimeArray,
         Image,
         Sampler,
         SampledImage,
@@ -1109,19 +1108,20 @@ class SPIRVSimulator
     virtual uint64_t     RemapHostToClientPointer(uint64_t host_pointer) const;
     virtual void         WritePointer(const PointerV& ptr, const Value& value);
     virtual Value        ReadPointer(const PointerV& ptr);
-    virtual const Value& GetValue(uint32_t result_id);
-    virtual uint64_t     GetArrayLength(uint32_t length_id);
+    virtual const Value& GetValue(uint32_t result_id) const;
+    virtual uint64_t     GetArrayLength(uint32_t length_id) const;
     virtual void         SetValue(uint32_t result_id, const Value& value, bool clear_meta=true);
     virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t     GetTypeID(uint32_t result_id) const;
     virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value);
     virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
-    virtual uint64_t GetPointerOffset(const PointerV& pointer_value) const;
+    virtual uint64_t     GetPointerOffset(const PointerV& pointer_value) const;
+
     virtual size_t   CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
-    virtual size_t   GetBitizeOfType(uint32_t type_id);
+    virtual size_t   GetBitsizeOfType(uint32_t type_id) const;
     virtual uint32_t GetTargetPointerType(const PointerV& pointer);
-    virtual size_t   GetBitizeOfTargetType(const PointerV& pointer);
+    virtual size_t   GetBitsizeOfTargetType(const PointerV& pointer);
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
