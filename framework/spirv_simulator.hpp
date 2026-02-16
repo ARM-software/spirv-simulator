@@ -164,7 +164,7 @@ struct SimulationData
     // Optional value, a unique identifier for the input shader.
     // If provided, this can allow the simulator to massively speed up simulation time
     // for cases where the same shader is dispatched multiple times throughout a session.
-    uint64_t shader_id = 0;
+    uint64_t shader_id = UINT64_MAX;
 };
 
 

@@ -312,7 +312,7 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
         }
     }
 
-    if (simulation_data_->shader_id && persistent_data_ && (persistent_data_->uninteresting_shaders.contains(simulation_data_->shader_id)))
+    if ((simulation_data_->shader_id != UINT64_MAX) && persistent_data_ && (persistent_data_->uninteresting_shaders.contains(simulation_data_->shader_id)))
     {
         done_ = true;
         return;
@@ -654,9 +654,12 @@ bool SPIRVSimulator::Run()
     }
 
     auto stage_it = entry_point_models_.find(entry_point_function_id);
-    std::cout << "SPIRV simulator: Starting execution at entry point with function ID " << entry_point_function_id;
-    if (stage_it != entry_point_models_.end()) std::cout << " and shader stage " << spv::ExecutionModelToString(stage_it->second);
-    std::cout << std::endl;
+    if (verbose_)
+    {
+        std::cout << "SPIRV simulator: Starting execution at entry point with function ID " << entry_point_function_id;
+        if (stage_it != entry_point_models_.end()) std::cout << " and shader stage " << spv::ExecutionModelToString(stage_it->second);
+        std::cout << std::endl;
+    }
 
     FunctionInfo& function_info = funcs_[entry_point_function_id];
 
@@ -664,7 +667,7 @@ bool SPIRVSimulator::Run()
     call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_ });
     ExecuteInstructions();
 
-    if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && simulation_data_->shader_id && persistent_data_)
+    if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && (simulation_data_->shader_id != UINT64_MAX) && persistent_data_)
     {
         persistent_data_->uninteresting_shaders.insert(simulation_data_->shader_id);
     }
