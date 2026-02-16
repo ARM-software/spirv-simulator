@@ -907,6 +907,18 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_ConvertSToF)
         case spv::Op::OpFDiv:
             R(Op_FDiv)
+        case spv::Op::OpDPdx:
+            R(Op_DPdx)
+        case spv::Op::OpDPdy:
+            R(Op_DPdy)
+        case spv::Op::OpDPdxFine:
+            R(Op_DPdxFine)
+        case spv::Op::OpDPdyFine:
+            R(Op_DPdyFine)
+        case spv::Op::OpDPdxCoarse:
+            R(Op_DPdxCoarse)
+        case spv::Op::OpDPdyCoarse:
+            R(Op_DPdyCoarse)
         case spv::Op::OpFwidth:
             R(Op_Fwidth)
         case spv::Op::OpFSub:
@@ -7214,6 +7226,194 @@ void SPIRVSimulator::Op_Fwidth(const Instruction& instruction)
     else
     {
         assertm(type.kind == Type::Kind::Float, "SPIRV simulator: OpFwidth result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
+}
+
+void SPIRVSimulator::Op_DPdx(const Instruction& instruction)
+{
+    /*
+    OpDPdx
+
+    Derivative in x direction. We cannot compute derivatives with a single invocation,
+    so return an arbitrary value of the correct type.
+    */
+    assert(instruction.opcode == spv::Op::OpDPdx);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
+}
+
+void SPIRVSimulator::Op_DPdy(const Instruction& instruction)
+{
+    /*
+    OpDPdy
+
+    Derivative in y direction. We cannot compute derivatives with a single invocation,
+    so return an arbitrary value of the correct type.
+    */
+    assert(instruction.opcode == spv::Op::OpDPdy);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
+}
+
+void SPIRVSimulator::Op_DPdxFine(const Instruction& instruction)
+{
+    /*
+    OpDPdxFine
+
+    Fine derivative in x direction. Treated as arbitrary in this simulator.
+    */
+    assert(instruction.opcode == spv::Op::OpDPdxFine);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
+}
+
+void SPIRVSimulator::Op_DPdyFine(const Instruction& instruction)
+{
+    /*
+    OpDPdyFine
+
+    Fine derivative in y direction. Treated as arbitrary in this simulator.
+    */
+    assert(instruction.opcode == spv::Op::OpDPdyFine);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
+}
+
+void SPIRVSimulator::Op_DPdxCoarse(const Instruction& instruction)
+{
+    /*
+    OpDPdxCoarse
+
+    Coarse derivative in x direction. Treated as arbitrary in this simulator.
+    */
+    assert(instruction.opcode == spv::Op::OpDPdxCoarse);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy result type must be float");
+    }
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+    TransferFlags(result_id, p_id);
+}
+
+void SPIRVSimulator::Op_DPdyCoarse(const Instruction& instruction)
+{
+    /*
+    OpDPdyCoarse
+
+    Coarse derivative in y direction. Treated as arbitrary in this simulator.
+    */
+    assert(instruction.opcode == spv::Op::OpDPdyCoarse);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t p_id      = instruction.words[3];
+
+    const Type& type = GetTypeByTypeId(type_id);
+    if (type.kind == Type::Kind::Vector)
+    {
+        const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+        assertm(elem_type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy vector element type must be float");
+    }
+    else
+    {
+        assertm(type.kind == Type::Kind::Float,
+                "SPIRV simulator: OpDPdx/OpDPdy result type must be float");
     }
 
     SetValue(result_id, MakeDefault(type_id));

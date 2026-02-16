@@ -1445,6 +1445,12 @@ class SPIRVSimulator
     void Op_ConvertSToF(const Instruction&);
     void Op_FDiv(const Instruction&);
     void Op_FSub(const Instruction&);
+    void Op_DPdx(const Instruction&);
+    void Op_DPdy(const Instruction&);
+    void Op_DPdxFine(const Instruction&);
+    void Op_DPdyFine(const Instruction&);
+    void Op_DPdxCoarse(const Instruction&);
+    void Op_DPdyCoarse(const Instruction&);
     void Op_Fwidth(const Instruction&);
     void Op_VectorTimesScalar(const Instruction&);
     void Op_SLessThan(const Instruction&);
