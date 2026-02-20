@@ -821,6 +821,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_Load)
         case spv::Op::OpCopyObject:
             R(Op_CopyObject)
+        case spv::Op::OpCopyLogical:
+            R(Op_CopyLogical)
         case spv::Op::OpStore:
             R(Op_Store)
         case spv::Op::OpAccessChain:
@@ -5233,6 +5235,29 @@ void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
 
     assertm(type.kind == object_type.kind,
             "SPIRV simulator: OpCopyObject result type does not match object type");
+
+    SetValue(result_id, CopyValue(GetValue(object_id)));
+    TransferFlags(result_id, object_id);
+}
+
+void SPIRVSimulator::Op_CopyLogical(const Instruction& instruction)
+{
+    /*
+    OpCopyLogical
+
+    Make a logical copy of Operand. Result Type must logically match Operand type.
+    */
+    assert(instruction.opcode == spv::Op::OpCopyLogical);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t object_id = instruction.words[3];
+
+    const Type& type        = GetTypeByTypeId(type_id);
+    const Type& object_type = GetTypeByResultId(object_id);
+
+    assertm(type.kind == object_type.kind,
+            "SPIRV simulator: OpCopyLogical result type does not match object type");
 
     SetValue(result_id, CopyValue(GetValue(object_id)));
     TransferFlags(result_id, object_id);

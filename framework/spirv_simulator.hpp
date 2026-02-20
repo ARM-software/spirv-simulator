@@ -1372,7 +1372,7 @@ class SPIRVSimulator
         return return_index;
     }
 
-    // Opcode handlers, 96/498 implemented for SPIRV 1.6
+    // Opcode handlers, 97/498 implemented for SPIRV 1.6
     void T_Void(const Instruction&);
     void T_Bool(const Instruction&);
     void T_Int(const Instruction&);
@@ -1402,6 +1402,7 @@ class SPIRVSimulator
     void Op_ImageTexelPointer(const Instruction&);
     void Op_Load(const Instruction&);
     void Op_CopyObject(const Instruction&);
+    void Op_CopyLogical(const Instruction&);
     void Op_Store(const Instruction&);
     void Op_AccessChain(const Instruction&);
     void Op_Function(const Instruction&);
