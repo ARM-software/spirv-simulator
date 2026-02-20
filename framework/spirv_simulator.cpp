@@ -723,6 +723,11 @@ void SPIRVSimulator::ExecuteInstructions()
             source_data.binding_id = 0;
             source_data.set_id     = 0;
         }
+        else if (phys_ppointer.storage_class == spv::StorageClass::StorageClassShaderRecordBufferKHR)
+        {
+            source_data.binding_id = 0;
+            source_data.set_id     = 0;
+        }
         else if (phys_ppointer.storage_class != spv::StorageClass::StorageClassPhysicalStorageBuffer)
         {
             assertm(HasDecorator(phys_ppointer.base_result_id, spv::Decoration::DecorationDescriptorSet),
@@ -2805,6 +2810,11 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                     data_source.binding_id = 0;
                     data_source.set_id     = 0;
                 }
+                else if (pointer.storage_class == spv::StorageClass::StorageClassShaderRecordBufferKHR)
+                {
+                    data_source.binding_id = 0;
+                    data_source.set_id     = 0;
+                }
                 else if (pointer.storage_class != spv::StorageClass::StorageClassPhysicalStorageBuffer)
                 {
                     assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet),
@@ -2982,7 +2992,8 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         type.pointer.storage_class == spv::StorageClass::StorageClassIncomingRayPayloadKHR ||
         type.pointer.storage_class == spv::StorageClass::StorageClassHitAttributeKHR ||
         type.pointer.storage_class == spv::StorageClass::StorageClassCallableDataKHR ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR)
+        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassShaderRecordBufferKHR)
     {
         Value* value = &Heap(type.pointer.storage_class)[ptr.pointer_handle];
         for (size_t depth = 0; depth < ptr.idx_path.size(); ++depth)
@@ -3118,7 +3129,8 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
         type.pointer.storage_class == spv::StorageClass::StorageClassIncomingRayPayloadKHR ||
         type.pointer.storage_class == spv::StorageClass::StorageClassHitAttributeKHR ||
         type.pointer.storage_class == spv::StorageClass::StorageClassCallableDataKHR ||
-        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR)
+        type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassShaderRecordBufferKHR)
     {
         Value* value = &Heap(type.pointer.storage_class)[ptr.pointer_handle];
         for (size_t depth = 0; depth < ptr.idx_path.size(); ++depth)
@@ -5075,7 +5087,8 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
              type.pointer.storage_class == spv::StorageClass::StorageClassIncomingRayPayloadKHR ||
              type.pointer.storage_class == spv::StorageClass::StorageClassHitAttributeKHR ||
              type.pointer.storage_class == spv::StorageClass::StorageClassCallableDataKHR ||
-             type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR)
+             type.pointer.storage_class == spv::StorageClass::StorageClassIncomingCallableDataKHR ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassShaderRecordBufferKHR)
     {
         pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY | SPS_FLAG_THREAD_SPECIFIC;
         new_pointer.pointer_handle =
