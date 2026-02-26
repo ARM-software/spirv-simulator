@@ -113,7 +113,7 @@ public:
 
         const FragmentId frag = createFragment(size, addr);
         insertLiveSpan(LiveSpan(addr, end, frag, 0, flags, MappingOrigin::WriteRoot));
-        coalesceLive();
+        coalesceLiveRange(addr, end);
     }
 
     // Copy currently visible mappings from [src, src+size) to [dst, dst+size).
@@ -157,7 +157,7 @@ public:
                 MappingOrigin::Copy));
         }
 
-        coalesceLive();
+        coalesceLiveRange(dst, dstEnd);
     }
 
     // OR flags into the currently visible live spans only.
@@ -181,7 +181,7 @@ public:
             ++it;
         }
 
-        coalesceLive();
+        coalesceLiveRange(addr, end);
     }
 
     // OR flags into the underlying fragment lineage for the currently visible range.
@@ -636,7 +636,7 @@ private:
             pos = std::min(end, it->second.end);
         }
 
-        coalesceLive();
+        coalesceLiveRange(start, end);
     }
 
     static Address checkedEnd(Address addr, Size size) {
@@ -731,6 +731,45 @@ private:
                 (a.fragment_offset + (a.end - a.start) == b.fragment_offset);
             const bool sameLocalFlags = (a.local_flags == b.local_flags);
 
+            const bool sameOrigin = (a.origin == b.origin);
+
+            if (sameFragment && contiguousAddr && contiguousFragment && sameLocalFlags && sameOrigin) {
+                it->second.end = b.end;
+                live_.erase(next);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void coalesceLiveRange(Address start, Address end) {
+        if (live_.empty()) {
+            return;
+        }
+
+        auto it = live_.lower_bound(start);
+        if (it != live_.begin()) {
+            --it;
+        }
+
+        while (it != live_.end()) {
+            auto next = std::next(it);
+            if (next == live_.end()) {
+                break;
+            }
+
+            const LiveSpan& a = it->second;
+            const LiveSpan& b = next->second;
+
+            if (a.start > end && b.start > end) {
+                break;
+            }
+
+            const bool sameFragment = (a.fragment_id == b.fragment_id);
+            const bool contiguousAddr = (a.end == b.start);
+            const bool contiguousFragment =
+                (a.fragment_offset + (a.end - a.start) == b.fragment_offset);
+            const bool sameLocalFlags = (a.local_flags == b.local_flags);
             const bool sameOrigin = (a.origin == b.origin);
 
             if (sameFragment && contiguousAddr && contiguousFragment && sameLocalFlags && sameOrigin) {
