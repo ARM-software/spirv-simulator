@@ -1850,11 +1850,8 @@ size_t SPIRVSimulator::GetBitsizeOfType(uint32_t type_id) const
     }
     else if (type.kind == Type::Kind::RuntimeArray)
     {
-        assertx("SPIRV simulator: Fetching bitsize of RuntimeArray, this is currently not implemented");
-
-        // uint32_t elem_type_id = type.vector.elem_type_id;
-        // uint64_t array_len = std::get<uint64_t>(GetValue(type.array.length_id));
-        // bitcount += GetBitsizeOfType(elem_type_id);
+        // Assume runtime arrays are pointers in the simulator
+        bitcount += 8 * 8;
     }
     else if (type.kind == Type::Kind::Struct)
     {
@@ -2313,11 +2310,12 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
     }
 }
 
-uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
+std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& pointer_value) const
 {
     /*
-    Given a pointer, this will get the correct offset into the memory where its value resides (relative to its base).
+    Given a spirv-simulator pointer value, this will resolve it into a raw pointer.
     */
+    std::byte* external_pointer = bit_cast<std::byte*>(pointer_value.pointer_handle);
     uint64_t offset  = 0;
     uint32_t type_id = pointer_value.base_type_id;
 
@@ -2343,6 +2341,19 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
         {
             const Type* atype = &GetTypeByTypeId(type->array.elem_type_id);
 
+            if (type->kind == Type::Kind::RuntimeArray)
+            {
+                // Allow null to support empty inputs
+                if (external_pointer != nullptr)
+                {
+                    std::byte* tmp = nullptr;
+                    std::memcpy(&tmp, external_pointer + offset, 8);
+                    external_pointer = tmp;
+                }
+
+                offset = 0;
+            }
+
             if (atype->kind == Type::Kind::Image ||
                 atype->kind == Type::Kind::Sampler ||
                 atype->kind == Type::Kind::SampledImage ||
@@ -2365,7 +2376,7 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
                     // This is a special case where we assume the input array is backed by user supplied pointers, or fetched using a callback
                     bool legal_access = pointer_value.idx_path.size() == 1 || (pointer_value.idx_path.size() == 2 && pointer_value.idx_path[0] == 0);
                     assertm(legal_access, "SPIRV simulator: Multi-level indirection for logical arrays is illegal. The input shader is broken or there is a bug in the simulator that lead to this");
-                    return indirection_index * sizeof(void*);
+                    return {external_pointer, indirection_index * sizeof(void*)};
                 }
             }
             else
@@ -2410,6 +2421,118 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
             // Crash, this should never happen
             assertx("SPIRV simulator: Pointer attempts to index a type that cant be indexed");
         }
+    }
+
+    return {external_pointer, offset};
+}
+
+
+uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
+{
+    /*
+    Given a pointer, this will get the correct offset into the memory where its value resides (relative to its base).
+    */
+    uint64_t offset  = 0;
+    uint32_t type_id = pointer_value.base_type_id;
+
+    const Type& pointer_type = GetTypeByTypeId(type_id);
+    type_id                  = pointer_type.pointer.pointee_type_id;
+    const Type* type         = &GetTypeByTypeId(type_id);
+
+    assertm(type->kind != Type::Kind::Void, "SPIRV simulator: Attempt to extract a void type offset");
+
+    uint64_t idx_depth = 0;
+
+    for (uint32_t indirection_index : pointer_value.idx_path)
+    {
+        if (type->kind == Type::Kind::Struct)
+        {
+            // They must have offset decorators
+            assertm(HasDecorator(type_id, indirection_index, spv::Decoration::DecorationOffset),
+                    "SPIRV simulator: No offset decorator for input struct member");
+
+            offset += GetDecoratorLiteral(type_id, indirection_index, spv::Decoration::DecorationOffset);
+            type_id = struct_members_.at(type_id)[indirection_index];
+            type    = &GetTypeByTypeId(type_id);
+        }
+        else if (type->kind == Type::Kind::Array || type->kind == Type::Kind::RuntimeArray)
+        {
+            if (type->kind == Type::Kind::RuntimeArray && !(idx_depth == 0))
+            {
+                assertx("SPIRV simulator: Attempt to get pointer offset of multi dimensional pointer (it has indirection). This will create OOB scenarios and should not be done, do not call GetPointerOffset on pointers with multiple indirections.");
+            }
+
+            const Type* atype = &GetTypeByTypeId(type->array.elem_type_id);
+
+            if (atype->kind == Type::Kind::Image ||
+                atype->kind == Type::Kind::Sampler ||
+                atype->kind == Type::Kind::SampledImage ||
+                atype->kind == Type::Kind::Opaque ||
+                atype->kind == Type::Kind::NamedBarrier ||
+                atype->kind == Type::Kind::AccelerationStructureKHR ||
+                atype->kind == Type::Kind::RayQueryKHR)
+            {
+                if (HasDecorator(type_id, spv::Decoration::DecorationArrayStride))
+                {
+                    // This is a descriptor buffer backed by real memory, it must have an array stride decorator.
+                    uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+                    offset += indirection_index * array_stride;
+                    type_id = type->array.elem_type_id;
+                    type    = &GetTypeByTypeId(type_id);
+                }
+                else
+                {
+                    // If this contains handles and has no array stride, it is a logical array without memory backing
+                    // This is a special case where we assume the input array is backed by user supplied pointers, or fetched using a callback
+                    bool legal_access = pointer_value.idx_path.size() == 1 || (pointer_value.idx_path.size() == 2 && pointer_value.idx_path[0] == 0);
+                    assertm(legal_access, "SPIRV simulator: Multi-level indirection for logical arrays is illegal. The input shader is broken or there is a bug in the simulator that lead to this");
+                    return indirection_index * sizeof(void*);
+                }
+            }
+            else
+            {
+                uint32_t array_stride = HasDecorator(type_id, spv::Decoration::DecorationArrayStride) ? GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride) : std::ceil(GetBitsizeOfType(type->array.elem_type_id) / 8);
+                offset += indirection_index * array_stride;
+                type_id = type->array.elem_type_id;
+                type    = &GetTypeByTypeId(type_id);
+            }
+        }
+        else if (type->kind == Type::Kind::Matrix)
+        {
+            uint32_t struct_id      = 0;
+            uint32_t member_literal = 0;
+            uint32_t matrix_stride  = 0;
+
+            bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
+            if (isMember)
+            {
+                assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationColMajor),
+                        "SPIRV simulator: Attempt to get pointer offset to row-major matrix, this is illegal and violates "
+                        "contiguity requirements");
+                matrix_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
+            }
+            else
+            {
+                matrix_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            }
+
+            offset += indirection_index * matrix_stride;
+            type_id = type->matrix.col_type_id;
+            type    = &GetTypeByTypeId(type_id);
+        }
+        else if (type->kind == Type::Kind::Vector)
+        {
+            type_id = type->vector.elem_type_id;
+            type    = &GetTypeByTypeId(type->vector.elem_type_id);
+            offset += indirection_index * std::ceil(type->scalar.width / 8.0);
+        }
+        else
+        {
+            // Crash, this should never happen
+            assertx("SPIRV simulator: Pointer attempts to index a type that cant be indexed");
+        }
+
+        idx_depth += 1;
     }
 
     return offset;
@@ -2801,9 +2924,11 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                         "SPIRV simulator: A StorageClassFunction is being read from while backtracing operands without "
                         "having been stored to, this is a symptom of a serious error somewhere");
 
+                std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(pointer);
+
                 DataSourceBits data_source;
                 data_source.location      = BitLocation::StorageClass;
-                data_source.source_ptr    = bit_cast<const void*>(pointer.pointer_handle);
+                data_source.source_ptr    = bit_cast<const void*>(resolved_ptr.first);
                 data_source.storage_class = (spv::StorageClass)pointer.storage_class;
                 data_source.idx           = 0;
 
@@ -2835,7 +2960,9 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                     data_source.set_id     = 0;
                 }
 
-                data_source.byte_offset = GetPointerOffset(pointer);
+                // TODO: This must be set to potentially multiple offsets if there are indirections through other pointers for it to be trackable.
+                //       For now, just use the final indirection
+                data_source.byte_offset = resolved_ptr.second;
                 data_source.bit_offset  = 0;
                 // This does not account for padding, but its probably fine here since it makes little sense to load complex constructs here
                 data_source.bitcount       = GetBitsizeOfTargetType(pointer);
@@ -3062,8 +3189,8 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
             }
         }
 
-        auto offset = GetPointerOffset(ptr);
-        std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
+        std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
+        std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
 
         uint32_t target_type_id = GetTargetPointerType(ptr);
         WriteValue(external_pointer, target_type_id, out_value);
@@ -3087,8 +3214,8 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         if ((type.kind == Type::Kind::Struct) && (HasDecorator(pointee_type_id, spv::Decoration::DecorationBlock) ||
              HasDecorator(pointee_type_id, spv::Decoration::DecorationBufferBlock)))
         {
-            auto offset = GetPointerOffset(ptr);
-            std::byte* external_pointer = bit_cast<std::byte*>(ptr.pointer_handle) + offset;
+            std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
+            std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
 
             uint32_t target_type_id = GetTargetPointerType(ptr);
             WriteValue(external_pointer, target_type_id, out_value);
@@ -3240,8 +3367,8 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
             }
         }
 
-        auto             offset           = GetPointerOffset(ptr);
-        const std::byte* external_pointer = bit_cast<const std::byte*>(ptr.pointer_handle) + offset;
+        std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
+        const std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
 
         std::vector<uint32_t> buffer_data;
         uint32_t target_type_id = GetTargetPointerType(ptr);
