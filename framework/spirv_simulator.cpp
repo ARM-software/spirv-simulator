@@ -3190,6 +3190,12 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         }
 
         std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
+
+        if (resolved_ptr.first == 0)
+        {
+            return;
+        }
+
         std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
 
         uint32_t target_type_id = GetTargetPointerType(ptr);
@@ -3215,6 +3221,11 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
              HasDecorator(pointee_type_id, spv::Decoration::DecorationBufferBlock)))
         {
             std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
+            if (resolved_ptr.first == 0)
+            {
+                return;
+            }
+
             std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
 
             uint32_t target_type_id = GetTargetPointerType(ptr);
@@ -3368,6 +3379,11 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
         }
 
         std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
+        if (resolved_ptr.first == 0)
+        {
+            uint32_t target_type_id = GetTargetPointerType(ptr);
+            return MakeDefault(target_type_id);
+        }
         const std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
 
         std::vector<uint32_t> buffer_data;
