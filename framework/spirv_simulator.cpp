@@ -2325,6 +2325,8 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
 
     assertm(type->kind != Type::Kind::Void, "SPIRV simulator: Attempt to extract a void type offset");
 
+    uint32_t indirection_level = 0;
+
     for (uint32_t indirection_index : pointer_value.idx_path)
     {
         if (type->kind == Type::Kind::Struct)
@@ -2339,11 +2341,16 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
         }
         else if (type->kind == Type::Kind::Array || type->kind == Type::Kind::RuntimeArray)
         {
-            const Type* atype = &GetTypeByTypeId(type->array.elem_type_id);
-
-            if (type->kind == Type::Kind::RuntimeArray)
+            if (indirection_level == 0 &&
+                (pointer_type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+                pointer_type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+                pointer_type.pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer))
             {
-                // Allow null to support empty inputs
+                // These are descriptor arrays, access them as arrays of pointers
+
+                offset = indirection_index * 8;
+
+                // Allow null to support empty inputs, resolve the pointer so chaining works
                 if (external_pointer != nullptr)
                 {
                     std::byte* tmp = nullptr;
@@ -2352,39 +2359,48 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
                 }
 
                 offset = 0;
+                type_id = type->array.elem_type_id;
+                type    = &GetTypeByTypeId(type_id);
             }
-
-            if (atype->kind == Type::Kind::Image ||
-                atype->kind == Type::Kind::Sampler ||
-                atype->kind == Type::Kind::SampledImage ||
-                atype->kind == Type::Kind::Opaque ||
-                atype->kind == Type::Kind::NamedBarrier ||
-                atype->kind == Type::Kind::AccelerationStructureKHR ||
-                atype->kind == Type::Kind::RayQueryKHR)
+            else
             {
-                if (HasDecorator(type_id, spv::Decoration::DecorationArrayStride))
+                // Non descriptor array handling
+                const Type* atype = &GetTypeByTypeId(type->array.elem_type_id);
+
+                if (atype->kind == Type::Kind::Image ||
+                    atype->kind == Type::Kind::Sampler ||
+                    atype->kind == Type::Kind::SampledImage ||
+                    atype->kind == Type::Kind::Opaque ||
+                    atype->kind == Type::Kind::NamedBarrier ||
+                    atype->kind == Type::Kind::AccelerationStructureKHR ||
+                    atype->kind == Type::Kind::RayQueryKHR)
                 {
-                    // This is a descriptor buffer backed by real memory, it must have an array stride decorator.
-                    uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+                    // By default, treat these as pointers
+                    uint32_t array_stride = 8;
+
+                    if (HasDecorator(type_id, spv::Decoration::DecorationArrayStride))
+                    {
+                        // This is a descriptor buffer backed by real memory, it must have an array stride decorator.
+                        uint32_t array_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride);
+                    }
+
                     offset += indirection_index * array_stride;
                     type_id = type->array.elem_type_id;
                     type    = &GetTypeByTypeId(type_id);
                 }
+                else if (atype->kind == Type::Kind::RuntimeArray)
+                {
+                    // Should be illegal
+                    assertx("SPIRV simulator: Attempt to index into array of RuntimeArray's, this should be illegal.");
+                    return {nullptr, 0};
+                }
                 else
                 {
-                    // If this contains handles and has no array stride, it is a logical array without memory backing
-                    // This is a special case where we assume the input array is backed by user supplied pointers, or fetched using a callback
-                    bool legal_access = pointer_value.idx_path.size() == 1 || (pointer_value.idx_path.size() == 2 && pointer_value.idx_path[0] == 0);
-                    assertm(legal_access, "SPIRV simulator: Multi-level indirection for logical arrays is illegal. The input shader is broken or there is a bug in the simulator that lead to this");
-                    return {external_pointer, indirection_index * sizeof(void*)};
+                    uint32_t array_stride = HasDecorator(type_id, spv::Decoration::DecorationArrayStride) ? GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride) : std::ceil(GetBitsizeOfType(type->array.elem_type_id) / 8);
+                    offset += indirection_index * array_stride;
+                    type_id = type->array.elem_type_id;
+                    type    = &GetTypeByTypeId(type_id);
                 }
-            }
-            else
-            {
-                uint32_t array_stride = HasDecorator(type_id, spv::Decoration::DecorationArrayStride) ? GetDecoratorLiteral(type_id, spv::Decoration::DecorationArrayStride) : std::ceil(GetBitsizeOfType(type->array.elem_type_id) / 8);
-                offset += indirection_index * array_stride;
-                type_id = type->array.elem_type_id;
-                type    = &GetTypeByTypeId(type_id);
             }
         }
         else if (type->kind == Type::Kind::Matrix)
@@ -2421,6 +2437,8 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
             // Crash, this should never happen
             assertx("SPIRV simulator: Pointer attempts to index a type that cant be indexed");
         }
+
+        indirection_level += 1;
     }
 
     return {external_pointer, offset};
