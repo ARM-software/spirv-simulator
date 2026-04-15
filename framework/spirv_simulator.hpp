@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 #include <type_traits>
@@ -38,6 +39,7 @@
 #endif
 
 #include "spirv-tools/libspirv.h"
+#include "memory_flag_tracker.hpp"
 
 namespace SPIRVSimulator
 {
@@ -47,8 +49,9 @@ namespace SPIRVSimulator
 #define SPS_FLAG_IS_ARBITRARY              1
 // Used for values that are uninitialized due to simulator assumptions
 #define SPS_FLAG_UNINITIALIZED             2
-// Used to track pbuffer candidate values
-#define SPS_FLAG_IS_CANDIDATE              4
+// Signals that a value was written to memory, but it was not tracked by the memory flag tracker
+// This implies that one or more of the input values used to generate the output value came from a uninitialized buffer
+#define SPS_FLAG_VALUE_IS_UNTRACKED        4
 // Used for values that are confirmed to be pbuffer pointer values
 #define SPS_FLAG_IS_PBUFFER_PTR            8
 // Used for values that contain or are affected by per-thread builtins (workgroup or vertex ids etc.)
@@ -150,12 +153,6 @@ struct SimulationData
     // (which should be a copy of the GPU side data)
     std::unordered_map<uint64_t, std::pair<size_t, void*>> physical_address_buffers;
 
-    // Optional map of buffers to pbuffer candidates in said buffers.
-    // If provided, the simulator will mark candidates in this when it finds a physical address pointer
-    // and raise an error if it finds a physical address pointer with no candidate in this list.
-    // If the map is empty all candidate related code and functionality will be skipped.
-    std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> candidates;
-
     // Optional map of buffers to descriptor candidates in said buffers.
     // Any buffer that has the VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT set must have a corresponding entry here.
     // Unlike the PhysicalAddressCandidate map, the vector of DescriptorCandidate's can be empty, no errors will be raised if a descriptor is found without a candidate in this list.
@@ -178,9 +175,6 @@ struct SimulationResults
 
     // Set to true if the simulator encountered a case that requires all threads in a dispatch to run in order to guarantee no pointers are missed
     bool full_dispatch_needed = false;
-
-    // Set to true if the simulator encountered a physical address pointer that was not listed in the input candidates
-    bool unlisted_candidate_found = false;
 
     // Set to true if the simulator encounters a loop lasting longer than MAX_LOOP_COUNT iterations, this will cause it to abort the loop and continue (simulator will assume a hang due to invalid inputs)
     bool aborted_long_loop = false;
@@ -788,11 +782,11 @@ inline std::string read_instruction_literal(const Instruction& instruction,
 /// Operand chain related code
 static inline bool IsIdKind(spv_operand_type_t t) {
     switch (t) {
-        //case SPV_OPERAND_TYPE_TYPE_ID:
+        case SPV_OPERAND_TYPE_TYPE_ID:
         case SPV_OPERAND_TYPE_RESULT_ID:
-        //case SPV_OPERAND_TYPE_ID:
-        //case SPV_OPERAND_TYPE_SCOPE_ID:
-        //case SPV_OPERAND_TYPE_MEMORY_SEMANTICS_ID:
+        case SPV_OPERAND_TYPE_ID:
+        case SPV_OPERAND_TYPE_SCOPE_ID:
+        case SPV_OPERAND_TYPE_MEMORY_SEMANTICS_ID:
             return true;
         default:
             return false;
@@ -846,15 +840,19 @@ inline spv_result_t OnParsedInst(void* user, const spv_parsed_instruction_t* ins
 
     std::vector<uint32_t> ids;
 
+    uint32_t cursor = 1;
+
     for (uint16_t oi = 0; oi < inst->num_operands; ++oi) {
         const spv_parsed_operand_t& op = inst->operands[oi];
         const spv_operand_type_t& ot = op.type;
 
-        uint32_t operand_offset = inst->type_id ? 1 : 0 + inst->result_id ? 1 : 0;
-        uint32_t cursor = operand_offset;
+        if (ot == SPV_OPERAND_TYPE_ID)
+        {
+            ids.push_back(inst->words[cursor]);
+        }
 
         if (IsIdKind(ot)) {
-            ids.push_back(inst->words[cursor++]);
+            cursor++;
             continue;
         }
 
@@ -923,6 +921,7 @@ class SPIRVSimulator
 {
   public:
     explicit SPIRVSimulator(const std::vector<uint32_t>& program_words,
+                            MemoryFlagTracker*           memory_flag_tracker,
                             SimulationData*              simulation_data,
                             SimulationResults*           simulation_results,
                             InternalPersistentData*      persistent_data = nullptr,
@@ -954,6 +953,10 @@ class SPIRVSimulator
     SimulationData*         simulation_data_;
     SimulationResults*      simulation_results_;
     InternalPersistentData* persistent_data_;
+    MemoryFlagTracker*      memory_flag_tracker_;
+
+    const void* shader_address = nullptr;
+
 
     // Contains entry point ID -> entry point OpName labels (labels may be
     // non-existent/empty)
@@ -1128,6 +1131,7 @@ class SPIRVSimulator
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags = nullptr);
+    virtual std::vector<DataSourceBits> FindDataSourcesFromResultIDImpl(uint32_t result_id, uint32_t* property_flags, std::unordered_set<uint32_t>& visiting);
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
     virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator) const;
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0) const;
@@ -1142,9 +1146,7 @@ class SPIRVSimulator
     virtual bool PointeeValueIsArbitrary(const PointerV& pointer) const {
         return pointer.pointee_flags & SPS_FLAG_IS_ARBITRARY;
     };
-    virtual bool ValueIsCandidate(uint32_t result_id) const {
-        return value_meta_[result_id].flags & SPS_FLAG_IS_CANDIDATE;
-    };
+
     virtual bool ValueIsThreadSpecific(uint32_t result_id) const {
         return value_meta_[result_id].flags & SPS_FLAG_THREAD_SPECIFIC;
     };
@@ -1175,84 +1177,6 @@ class SPIRVSimulator
     };
     virtual void ClearIsThreadSpecific(uint32_t result_id) {
         value_meta_[result_id].flags &= ~SPS_FLAG_THREAD_SPECIFIC;
-    };
-
-    virtual void SetIsCandidate(uint32_t result_id) {
-        value_meta_[result_id].flags |= SPS_FLAG_IS_CANDIDATE;
-    };
-    virtual void ClearIsCandidate(uint32_t result_id) {
-        value_meta_[result_id].flags &= ~SPS_FLAG_IS_CANDIDATE;
-    };
-
-    virtual bool PointerIsCandidate(const void* potential_ptr, uint64_t offset) const {
-        if (simulation_data_->candidates.find(potential_ptr) != simulation_data_->candidates.end())
-        {
-            for (const auto& candidate : simulation_data_->candidates.at(potential_ptr))
-            {
-                if (candidate.offset == offset)
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
-    };
-
-    virtual bool PointerIsCandidate(const PointerV& pointer_value) const {
-        const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (simulation_data_->candidates.find(potential_raw_ptr) != simulation_data_->candidates.end())
-        {
-            uint64_t pointee_offset = GetPointerOffset(pointer_value);
-            for (const auto& candidate : simulation_data_->candidates.at(potential_raw_ptr))
-            {
-                if (candidate.offset == pointee_offset)
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
-    };
-
-    virtual void ConfirmCandidate(const void* potential_ptr, uint64_t offset) {
-        if (simulation_data_->candidates.find(potential_ptr) != simulation_data_->candidates.end())
-        {
-            for (auto& candidate : simulation_data_->candidates.at(potential_ptr))
-            {
-                if (candidate.offset == offset)
-                {
-                    candidate.verified = true;
-                }
-            }
-        }
-        // TODO: Report error
-    };
-
-    virtual void ConfirmCandidate(const PointerV& pointer_value) {
-        const void* potential_raw_ptr = bit_cast<const void*>(pointer_value.pointer_handle);
-        if (simulation_data_->candidates.find(potential_raw_ptr) != simulation_data_->candidates.end())
-        {
-            uint64_t pointee_offset = GetPointerOffset(pointer_value);
-            for (auto& candidate : simulation_data_->candidates.at(potential_raw_ptr))
-            {
-                if (candidate.offset == pointee_offset)
-                {
-                    candidate.verified = true;
-                }
-            }
-        }
-        // TODO: Report error
-    };
-
-    virtual bool PointeeValueIsCandidate(const PointerV& pointer) const {
-        return pointer.pointee_flags & SPS_FLAG_IS_CANDIDATE;
-    };
-
-    virtual void SetIsDescriptorCandidate(uint32_t result_id) {
-        value_meta_[result_id].flags |= SPS_FLAG_IS_DESCRIPTOR_CANDIDATE;
-    };
-    virtual void ClearIsDescriptorCandidate(uint32_t result_id) {
-        value_meta_[result_id].flags &= ~SPS_FLAG_IS_DESCRIPTOR_CANDIDATE;
     };
 
     virtual bool PointerIsDescriptorBuffer(const void* potential_ptr, uint64_t offset) const {

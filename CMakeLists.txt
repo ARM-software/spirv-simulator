@@ -42,3 +42,6 @@ target_compile_definitions(spirv_simulator PRIVATE PROJECT_VERSION_MAJOR=${PROJE
 add_executable(spirv_opcode_support_checker ${PROJECT_SOURCE_DIR}/main_opcode_checker.cpp)
 target_compile_options(spirv_opcode_support_checker PRIVATE ${SANITIZER} ${COMPILE_OPTIONS})
 target_link_libraries(spirv_opcode_support_checker PRIVATE ${SANITIZER} spirv_simulator_lib)
+
+add_executable(memory_flag_tracker ${PROJECT_SOURCE_DIR}/main_memory_flag_tracker.cpp)
+target_compile_options(memory_flag_tracker PRIVATE ${SANITIZER} ${COMPILE_OPTIONS})

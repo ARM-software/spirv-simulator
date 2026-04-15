@@ -57,9 +57,10 @@ int main(int argc, char** argv)
 
     if (filename.empty()) usage();
 
+    SPIRVSimulator::MemoryFlagTracker mem_tracker;
     SPIRVSimulator::SimulationData sim_data;
     SPIRVSimulator::SimulationResults results;
-    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(filename.c_str()), &sim_data, &results, nullptr, verbose);
+    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(filename.c_str()), &mem_tracker, &sim_data, &results, nullptr, verbose);
     sim.Run();
 
     auto physical_address_data = results.physical_address_data;

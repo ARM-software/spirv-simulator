@@ -138,6 +138,26 @@ static std::vector<PhiIncoming> GetPhiIncoming(const Instruction& phi)
     return incoming;
 }
 
+const char* StorageClassName(spv::StorageClass sc)
+{
+    switch (sc) {
+        case spv::StorageClassUniformConstant: return "UniformConstant";
+        case spv::StorageClassInput: return "Input";
+        case spv::StorageClassUniform: return "Uniform";
+        case spv::StorageClassOutput: return "Output";
+        case spv::StorageClassWorkgroup: return "Workgroup";
+        case spv::StorageClassCrossWorkgroup: return "CrossWorkgroup";
+        case spv::StorageClassPrivate: return "Private";
+        case spv::StorageClassFunction: return "Function";
+        case spv::StorageClassGeneric: return "Generic";
+        case spv::StorageClassPushConstant: return "PushConstant";
+        case spv::StorageClassAtomicCounter: return "AtomicCounter";
+        case spv::StorageClassImage: return "Image";
+        case spv::StorageClassStorageBuffer: return "StorageBuffer";
+        default: return "UnknownStorageClass";
+    }
+}
+
 bool SPIRVSimulator::IsLoopCounterPhi(uint32_t candidate_id) const
 {
     /*
@@ -290,6 +310,7 @@ LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header)
 
 
 SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
+                            MemoryFlagTracker*           memory_flag_tracker,
                             SimulationData*              simulation_data,
                             SimulationResults*           simulator_results,
                             InternalPersistentData*      persistent_data,
@@ -303,6 +324,9 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
     simulation_data_ = simulation_data;
     simulation_results_ = simulator_results;
     persistent_data_ = persistent_data;
+    memory_flag_tracker_ = memory_flag_tracker;
+
+    shader_address = bit_cast<void*>(program_words.data());
 
     if (!persistent_data_)
     {
@@ -2331,11 +2355,19 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
     {
         if (type->kind == Type::Kind::Struct)
         {
-            // They must have offset decorators
-            assertm(HasDecorator(type_id, indirection_index, spv::Decoration::DecorationOffset),
-                    "SPIRV simulator: No offset decorator for input struct member");
+            if (HasDecorator(type_id, indirection_index, spv::Decoration::DecorationOffset))
+            {
+                offset += GetDecoratorLiteral(type_id, indirection_index, spv::Decoration::DecorationOffset);
+            }
+            else
+            {
+                for (auto member_index = 0; member_index < indirection_index; ++member_index)
+                {
+                    auto pre_mem_type = struct_members_.at(type_id)[member_index];
+                    offset += GetBitsizeOfType(pre_mem_type) / 8;
+                }
+            }
 
-            offset += GetDecoratorLiteral(type_id, indirection_index, spv::Decoration::DecorationOffset);
             type_id = struct_members_.at(type_id)[indirection_index];
             type    = &GetTypeByTypeId(type_id);
         }
@@ -2839,8 +2871,40 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
     }
 }
 
-std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags)
+std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(
+    uint32_t result_id,
+    uint32_t* property_flags)
 {
+    std::unordered_set<uint32_t> visiting;
+    return FindDataSourcesFromResultIDImpl(result_id, property_flags, visiting);
+}
+
+std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
+    uint32_t result_id,
+    uint32_t* property_flags,
+    std::unordered_set<uint32_t>& visiting)
+{
+    if (!result_id_to_inst_index_.contains(result_id))
+    {
+        return {};
+    }
+
+    if (!visiting.insert(result_id).second)
+    {
+        if (verbose_)
+        {
+            std::cout << execIndent
+                      << "Cycle detected while tracing result id: "
+                      << result_id << std::endl;
+        }
+        return {};
+    }
+
+    if (verbose_)
+    {
+        std::cout << execIndent << "Tracing value source backwards through result id: " << result_id << std::endl;
+    }
+
     std::vector<DataSourceBits> results;
 
     uint32_t           instruction_index = result_id_to_inst_index_.at(result_id);
@@ -2858,8 +2922,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
 
     if (verbose_)
     {
-        std::cout << execIndent << "Tracing value source backwards through: " << spv::OpToString(instruction.opcode)
-                  << ": " << result_id << std::endl;
+        std::cout << execIndent << "Tracing value source backwards through: " << result_id << " " << spv::OpToString(instruction.opcode) << std::endl;
     }
 
     if (property_flags)
@@ -2877,6 +2940,14 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
 
     const std::vector<uint32_t> id_operands = ids_per_instruction_[result_id_to_inst_index_.at(result_id)];
 
+    if (verbose_)
+    {
+        for (auto& operand : id_operands)
+        {
+            std::cout << execIndent << "      Operand: " << operand << std::endl;
+        }
+    }
+
     switch (instruction.opcode)
     {
         case spv::Op::OpSpecConstantComposite:
@@ -2884,7 +2955,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             for (uint32_t component_id = 3; component_id < instruction.word_count; ++component_id)
             {
                 std::vector<DataSourceBits> component_result =
-                    FindDataSourcesFromResultID(instruction.words[component_id], property_flags);
+                    FindDataSourcesFromResultIDImpl(instruction.words[component_id], property_flags, visiting);
                 results.insert(results.end(), component_result.begin(), component_result.end());
             }
 
@@ -2898,6 +2969,36 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
 
                 prev_source = &component_data;
             }
+            break;
+        }
+        case spv::Op::OpImageRead:
+        {
+            // Dont bother tracing these further, we ignore data sources from image reads
+            break;
+        }
+        case spv::Op::OpImageSampleImplicitLod:
+        {
+            // Dont bother tracing these further, we ignore data sources from image reads
+            break;
+        }
+        case spv::Op::OpImageSampleExplicitLod:
+        {
+            // Dont bother tracing these further, we ignore data sources from image reads
+            break;
+        }
+        case spv::Op::OpImageQuerySizeLod:
+        {
+            // Dont bother tracing these further, we ignore data sources from image reads
+            break;
+        }
+        case spv::Op::OpFunction:
+        {
+            // These are dead ends
+            break;
+        }
+        case spv::Op::OpImageQuerySize:
+        {
+            // Dont bother tracing these further, we ignore data sources from image reads
             break;
         }
         case spv::Op::OpSpecConstant:
@@ -2938,9 +3039,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             {
                 const PointerV& pointer = std::get<PointerV>(GetValue(pointer_id));
 
-                assertm(pointer.storage_class != spv::StorageClass::StorageClassFunction,
-                        "SPIRV simulator: A StorageClassFunction is being read from while backtracing operands without "
-                        "having been stored to, this is a symptom of a serious error somewhere");
+                //assertm(pointer.storage_class != spv::StorageClass::StorageClassFunction,
+                //        "SPIRV simulator: A StorageClassFunction is being read from while backtracing operands without having been stored to, this is a symptom of a serious error somewhere");
 
                 std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(pointer);
 
@@ -2949,6 +3049,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                 data_source.source_ptr    = bit_cast<const void*>(resolved_ptr.first);
                 data_source.storage_class = (spv::StorageClass)pointer.storage_class;
                 data_source.idx           = 0;
+
+                //std::cout << StorageClassName((spv::StorageClass)pointer.storage_class) << std::endl;
 
                 if (pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
                 {
@@ -2959,6 +3061,33 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                 {
                     data_source.binding_id = 0;
                     data_source.set_id     = 0;
+                }
+                else if (pointer.storage_class == spv::StorageClass::StorageClassInput)
+                {
+                    // TODO: We should probably mark this, but for now we assume pointers and descriptors dont come from here
+                    data_source.binding_id = 0;
+                    data_source.set_id     = 0;
+                }
+                else if (pointer.storage_class == spv::StorageClass::StorageClassOutput)
+                {
+                    // This is a pointer to a uninitialized output parameter, likely the result of unreachable branching.
+                    // Just return, this is the end of the value chain.
+                    data_source.binding_id = 0;
+                    data_source.set_id     = 0;
+                }
+                else if (pointer.storage_class == spv::StorageClass::StorageClassWorkgroup)
+                {
+                    // This could be from another thread
+                    // TODO: We should probably mark this, but its higly likely this is just uninitialized as the result of unreachable branching.
+                    data_source.binding_id = 0;
+                    data_source.set_id     = 0;
+                    return results;
+                }
+                else if (pointer.storage_class == spv::StorageClass::StorageClassFunction)
+                {
+                    // This is a pointer to a uninitialized function parameter, likely the result of unreachable branching.
+                    // Just return, this is the end of the value chain.
+                    return results;
                 }
                 else if (pointer.storage_class != spv::StorageClass::StorageClassPhysicalStorageBuffer)
                 {
@@ -2978,8 +3107,6 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
                     data_source.set_id     = 0;
                 }
 
-                // TODO: This must be set to potentially multiple offsets if there are indirections through other pointers for it to be trackable.
-                //       For now, just use the final indirection
                 data_source.byte_offset = resolved_ptr.second;
                 data_source.bit_offset  = 0;
                 // This does not account for padding, but its probably fine here since it makes little sense to load complex constructs here
@@ -2991,8 +3118,15 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
             {
                 uint32_t true_source = values_stored_.at(pointer_id);
 
-                std::vector<DataSourceBits> component_result = FindDataSourcesFromResultID(true_source, property_flags);
-                results.insert(results.end(), component_result.begin(), component_result.end());
+                if (true_source != result_id)
+                {
+                    if (verbose_)
+                    {
+                        std::cout << execIndent << execIndent << "Following load/store indirection to: " << true_source << std::endl;
+                    }
+                    std::vector<DataSourceBits>  component_result = FindDataSourcesFromResultIDImpl(true_source, property_flags, visiting);
+                    results.insert(results.end(), component_result.begin(), component_result.end());
+                }
             }
             break;
         }
@@ -3000,7 +3134,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         {
             DataSourceBits data_source;
             data_source.location       = BitLocation::Constant;
-            data_source.source_ptr     = nullptr;
+            data_source.source_ptr     = shader_address;
             data_source.idx            = 0;
             data_source.binding_id     = 0;
             data_source.set_id         = 0;
@@ -3026,7 +3160,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         case spv::Op::OpCompositeConstruct:
         {
             for (const auto& id : id_operands) {
-                auto sub = FindDataSourcesFromResultID(id, property_flags);
+                auto sub = FindDataSourcesFromResultIDImpl(id, property_flags, visiting);
                 results.insert(results.end(), sub.begin(), sub.end());
             }
             DataSourceBits* prev = nullptr;
@@ -3040,13 +3174,14 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(uint32_t
         default:
         {
             for (const auto& id : id_operands) {
-                auto sub = FindDataSourcesFromResultID(id, property_flags);
+                auto sub = FindDataSourcesFromResultIDImpl(id, property_flags, visiting);
                 results.insert(results.end(), sub.begin(), sub.end());
             }
             break;
         }
     }
 
+    visiting.erase(result_id);
     return results;
 }
 
@@ -5145,11 +5280,6 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
             pointer_flags |= SPS_FLAG_UNINITIALIZED;
         }
-        else if (PointerIsCandidate(static_cast<const void*>(external_pointer), 0))
-        {
-            // This pointer points to a known candidate
-            pointee_flags |= SPS_FLAG_IS_CANDIDATE;
-        }
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassUniform ||
              type.pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
@@ -5190,11 +5320,6 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         }
         else
         {
-            if (PointerIsCandidate(static_cast<const void*>(external_pointer), 0))
-            {
-                // This pointer points to a known candidate
-                pointee_flags |= SPS_FLAG_IS_CANDIDATE;
-            }
             if (PointerIsDescriptorBuffer(static_cast<const void*>(external_pointer), 0))
             {
                 // This pointer points to a descriptor buffer
@@ -5271,15 +5396,6 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         // pointer from this pointer's offsets and storage class
         PointerV ppointer = std::get<PointerV>(ReadPointer(new_pointer));
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
-        if (pointee_flags & SPS_FLAG_IS_CANDIDATE)
-        {
-            ConfirmCandidate(bit_cast<void*>(new_pointer.pointer_handle), 0);
-        }
-        else
-        {
-            std::cout << "SPIRV simulator: Warning: Pointer to physical storage buffer pointer is not marked as candidate by the user, this is probably a symptom of a serious problem" << std::endl;
-            simulation_results_->unlisted_candidate_found = true;
-        }
         pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
     }
 
@@ -5551,7 +5667,52 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     WritePointer(pointer, GetValue(result_id));
     OverrideFlagsPointee(pointer_id, result_id);
 
-    if (ValueIsCandidate(result_id))
+    // Handle memory flag tracking
+    uint32_t property_flags = 0;
+    std::vector<DataSourceBits> data_sources = FindDataSourcesFromResultID(result_id, &property_flags);
+
+    // Currently we only assume the change of a pointer or descriptor if
+    // - It only has one input source and is not read from multiple different places
+    // - None of its sources were floating point values
+    // - None of its sources were involved in any kind of arithmetic operation
+    // The first and last assumptions may need to be relaxed in the future if we encounter cases where descriptors
+    // or pbuffer pointer are derived from such sources (which is possible, 3 is a potential case for descriptors, and 1
+    // could happen to pointers through bitshifts)
+    bool should_track_memory_metadata = !(property_flags & SPS_FLAG_IS_FLOAT_SOURCE);
+    should_track_memory_metadata &= !(property_flags & SPS_FLAG_IS_ARITHMETIC_SOURCE);
+    should_track_memory_metadata &= data_sources.size() == 1;
+    should_track_memory_metadata &= pointer.storage_class != spv::StorageClass::StorageClassFunction;
+    if (should_track_memory_metadata)
+    {
+        std::pair<std::byte*, uint64_t> resolved_pointer = ResolvePointerV(pointer);
+        auto data_source = data_sources[0];
+
+        uint64_t src_pointer = bit_cast<uint64_t>(data_source.source_ptr) + data_source.byte_offset + data_source.bit_offset / 8;
+        uint64_t dst_pointer = bit_cast<uint64_t>(resolved_pointer.first) + resolved_pointer.second;
+
+        if (src_pointer && dst_pointer)
+        {
+            size_t dsize = data_source.bitcount / 8;
+            memory_flag_tracker_->copy(src_pointer, dst_pointer, dsize);
+            memory_flag_tracker_->markLineage(dst_pointer, dsize, value_meta_[result_id].flags);
+        }
+        else
+        {
+            value_meta_[result_id].flags |= SPS_FLAG_VALUE_IS_UNTRACKED;
+            OverrideFlagsPointee(pointer_id, result_id);
+
+            if (verbose_)
+            {
+                std::cout << "SPIRV simulator: Memory tracking attempted for null pointer destination value. This means uninitialized input buffer data was part of the computation chain used to generate a OpStore output value." << std::endl;
+            }
+        }
+    }
+    else if (verbose_ && (pointer.storage_class != spv::StorageClass::StorageClassFunction))
+    {
+        std::cout << "SPIRV simulator: Memory tracking skipped for result with id: " << result_id << " writeout to pointer with handle: " << pointer.pointer_handle << " due to incompatible data chain." << std::endl;
+    }
+
+    if (ValueHoldsPbufferPtr(result_id))
     {
         // A candidate value has been written out, inform the user by adding to output candidate list
         const void* ptr_handle = bit_cast<const void*>(pointer.pointer_handle);
@@ -5633,6 +5794,11 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
 
     PointerV new_pointer = std::get<PointerV>(base_value);
 
+    if (values_stored_.find(base_id) != values_stored_.end())
+    {
+        values_stored_[result_id] = values_stored_[base_id];
+    }
+
     for (auto i = 4; i < instruction.word_count; ++i)
     {
         const Value& index_value = GetValue(instruction.words[i]);
@@ -5669,15 +5835,6 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
         new_pointer.pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
         PointerV ppointer = std::get<PointerV>(ReadPointer(new_pointer));
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
-        if (PointerIsCandidate(new_pointer))
-        {
-            ConfirmCandidate(new_pointer);
-        }
-        else
-        {
-            std::cout << "SPIRV simulator: WARNING: OpAccessChain Pointer to physical storage buffer pointer is not marked as candidate by the user, this is probably a symptom of a serious problem" << std::endl;
-            simulation_results_->unlisted_candidate_found = true;
-        }
     }
 
     // TODO: Compare pointer with candidates here and track
@@ -5744,8 +5901,16 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
     for (auto i = 4; i < instruction.word_count; ++i)
     {
         // Push parameters to the local scope
-        values_[function_info.parameter_ids_[parameter_index]] = GetValue(instruction.words[i]);
-        value_meta_[function_info.parameter_ids_[parameter_index]] = value_meta_[instruction.words[i]];
+        uint32_t param_id = function_info.parameter_ids_[parameter_index];
+        uint32_t arg_id   = instruction.words[i];
+
+        values_[param_id] = GetValue(arg_id);
+        value_meta_[param_id] = value_meta_[arg_id];
+        if (values_stored_.find(arg_id) != values_stored_.end())
+        {
+            values_stored_[param_id] = values_stored_[arg_id];
+        }
+
         parameter_index += 1;
     }
 }
@@ -5928,6 +6093,12 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     uint32_t value_id     = instruction.words[1];
     uint32_t result_id    = call_stack_.back().result_id;
     Value    return_value = GetValue(value_id);
+
+    auto it = values_stored_.find(value_id);
+    if (it != values_stored_.end())
+    {
+        values_stored_[result_id] = it->second;
+    }
 
 #ifdef DEBUG_BUILD
     // Clear the heap for better error checking
@@ -8477,16 +8648,6 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         pointer_data.bit_components    = FindDataSourcesFromResultID(operand_id);
         pointer_data.raw_pointer_value = pointer_value;
         simulation_results_->physical_address_data.push_back(std::move(pointer_data));
-
-        // If any of the components that made up the pointer is marked as a candidate, propogate this to the input candidate list and confirm them
-        for (const DataSourceBits& component_bits : pointer_data.bit_components)
-        {
-            if (PointerIsCandidate(component_bits.source_ptr, component_bits.byte_offset))
-            {
-                ConfirmCandidate(component_bits.source_ptr, component_bits.byte_offset);
-            }
-        }
-
         holds_pbuffer_ptr = true;
     }
     else
@@ -8500,13 +8661,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     if (holds_pbuffer_ptr)
     {
         SetHoldsPbufferPtr(result_id);
-        if (!ValueIsCandidate(operand_id))
-        {
-            std::cout << "SPIRV simulator: WARNING: A bitcast to a pbuffer pointer had a operand that was not marked as a candidate, we may miss output candidates here if the value or any of its source components were written out. This is also a symptom of a incomplete input candidate list"
-                    << std::endl;
-            SetHoldsPbufferPtr(operand_id);
-            simulation_results_->unlisted_candidate_found = true;
-        }
+        SetHoldsPbufferPtr(operand_id);
     }
 }
 
@@ -8667,15 +8822,6 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
 
     TransferFlags(result_id, instruction.words[3]);
     SetHoldsPbufferPtr(result_id);
-
-    // TODO: We must also check if the integer value or any of its source components were written out here
-    if (!ValueIsCandidate(integer_id))
-    {
-        std::cout << "SPIRV simulator: WARNING: A integer cast to a pbuffer pointer was not marked as a candidate, we may miss output candidates here if the value or any of its source components were written out. This is also a symptom of a incomplete input candidate list"
-                  << std::endl;
-        SetHoldsPbufferPtr(integer_id);
-        simulation_results_->unlisted_candidate_found = true;
-    }
 }
 
 void SPIRVSimulator::Op_UDiv(const Instruction& instruction)

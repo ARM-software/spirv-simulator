@@ -4,6 +4,8 @@
 #include <spirv_simulator.hpp>
 #include <util.hpp>
 
+#include "framework/memory_flag_tracker.hpp"
+
 int main(int argc, char** argv)
 {
     if (argc != 2)
@@ -24,9 +26,10 @@ int main(int argc, char** argv)
     std::set<std::string> unsupported_instructions;
     while (std::getline(file, line))
     {
+        SPIRVSimulator::MemoryFlagTracker   mem_tracker;
         SPIRVSimulator::SimulationData      inputs;
         SPIRVSimulator::SimulationResults   outputs;
-        SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(line), &inputs, &outputs);
+        SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(line), &mem_tracker, &inputs, &outputs);
         unsupported_instructions.insert(sim.unsupported_opcodes.begin(), sim.unsupported_opcodes.end());
     }
 
