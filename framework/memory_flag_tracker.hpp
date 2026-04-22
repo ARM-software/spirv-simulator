@@ -356,18 +356,6 @@ public:
             [mask](Flags f) { return (f & mask) == mask; });
     }
 
-    // Return all currently visible ranges where ANY bit in mask is set.
-    std::vector<Range> queryAllSourcesWithAnyFlags(Flags mask) const {
-        std::vector<Range> ranges = queryAllRangesByPredicate(
-            [mask](Flags f) { return (f & mask) != 0; });
-    }
-
-    // Return all currently visible ranges where ALL bits in mask are set.
-    std::vector<Range> queryAllSourcesWithAllFlags(Flags mask) const {
-        std::vector<Range> ranges = queryAllRangesByPredicate(
-            [mask](Flags f) { return (f & mask) == mask; });
-    }
-
     // Returns an empty vector if ENABLE_HISTORY is 0
     const std::vector<HistoryEntry>& history() const {
         return history_;
@@ -390,7 +378,7 @@ private:
 
         FragmentId id() const { return id_; }
         Offset length() const { return length_; }
-        Address source_write_address() const { return source_write_address_; } 
+        Address source_write_address() const { return source_write_address_; }
 
         Flags sharedFlagsAt(Offset off) const {
             if (off >= length_) {
