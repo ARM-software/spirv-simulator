@@ -3052,15 +3052,19 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
 
                 //std::cout << StorageClassName((spv::StorageClass)pointer.storage_class) << std::endl;
 
-                if (pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
+                if (pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+                         pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+                         pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer)
                 {
-                    data_source.binding_id = 0;
-                    data_source.set_id     = 0;
-                }
-                else if (pointer.storage_class == spv::StorageClass::StorageClassShaderRecordBufferKHR)
-                {
-                    data_source.binding_id = 0;
-                    data_source.set_id     = 0;
+                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet),
+                            "SPIRV simulator: Missing DecorationDescriptorSet for pointee object");
+                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBinding),
+                            "SPIRV simulator: Missing DecorationBinding for pointee object");
+
+                    data_source.binding_id =
+                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationBinding);
+                    data_source.set_id =
+                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
                 }
                 else if (pointer.storage_class == spv::StorageClass::StorageClassInput)
                 {
@@ -3074,8 +3078,10 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                     // Just return, this is the end of the value chain.
                     data_source.binding_id = 0;
                     data_source.set_id     = 0;
+                    return results;
                 }
-                else if (pointer.storage_class == spv::StorageClass::StorageClassWorkgroup)
+                else if (pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
+                         pointer.storage_class == spv::StorageClass::StorageClassCrossWorkgroup)
                 {
                     // This could be from another thread
                     // TODO: We should probably mark this, but its higly likely this is just uninitialized as the result of unreachable branching.
@@ -3089,18 +3095,6 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                     // Just return, this is the end of the value chain.
                     return results;
                 }
-                else if (pointer.storage_class != spv::StorageClass::StorageClassPhysicalStorageBuffer)
-                {
-                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet),
-                            "SPIRV simulator: Missing DecorationDescriptorSet for pointee object");
-                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBinding),
-                            "SPIRV simulator: Missing DecorationBinding for pointee object");
-
-                    data_source.binding_id =
-                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationBinding);
-                    data_source.set_id =
-                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
-                }
                 else
                 {
                     data_source.binding_id = 0;
@@ -3109,7 +3103,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
 
                 data_source.byte_offset = resolved_ptr.second;
                 data_source.bit_offset  = 0;
-                // This does not account for padding, but its probably fine here since it makes little sense to load complex constructs here
+                // This does not account for padding, but its probably fine since it makes little sense to load complex constructs here
                 data_source.bitcount       = GetBitsizeOfTargetType(pointer);
                 data_source.val_bit_offset = 0;
                 results.push_back(data_source);
