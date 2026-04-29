@@ -4,7 +4,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
+#include <memory>
+#include <ostream>
+#include <type_traits>
 #include <variant>
 #include <sstream>
 
@@ -843,6 +847,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(T_AccelerationStructureKHR)
         case spv::Op::OpTypeRayQueryKHR:
             R(T_RayQueryKHR)
+        case spv::Op::OpTypeCooperativeMatrixKHR:
+            R(T_CooperativeMatrixKHR);
         case spv::Op::OpEntryPoint:
             R(Op_EntryPoint)
         case spv::Op::OpExtInstImport:
@@ -1199,6 +1205,14 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_IgnoreIntersectionKHR)
         case spv::Op::OpTerminateRayKHR:
             R(Op_TerminateRayKHR)
+        case spv::Op::OpCooperativeMatrixLoadKHR:
+            R(Op_CooperativeMatrixLoadKHR)
+        case spv::Op::OpCooperativeMatrixStoreKHR:
+            R(Op_CooperativeMatrixStoreKHR)
+        case spv::Op::OpCooperativeMatrixLengthKHR:
+            R(Op_CooperativeMatrixLengthKHR)
+        case spv::Op::OpCooperativeMatrixMulAddKHR:
+            R(Op_CooperativeMatrixMulAddKHR)
         default:
         {
             return false;
@@ -2753,6 +2767,25 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
             }
 
             return matrix;
+        }
+        case Type::Kind::CooperativeMatrixKHR:
+        {
+            auto coop_matrix = std::make_shared<MatrixV>();
+            auto col_count = std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id));
+            auto row_count = std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id));
+            coop_matrix->cols.reserve(col_count);
+            for (uint32_t i = 0; i < col_count; ++i)
+            {
+                auto vector = std::make_shared<VectorV>();
+                vector->elems.reserve(row_count);
+                for (uint32_t j = 0; j < row_count; ++j){
+                    vector->elems.push_back(MakeDefault(type.coopMatrix.component_type_id, initial_data));
+                }
+
+                coop_matrix->cols.push_back(vector);
+            }
+
+            return coop_matrix;
         }
         case Type::Kind::Array:
         {
@@ -5292,6 +5325,37 @@ void SPIRVSimulator::T_RayQueryKHR(const Instruction& instruction)
     types_[result_id] = type;
 }
 
+void SPIRVSimulator::T_CooperativeMatrixKHR(const Instruction& instruction)
+{
+    /*
+    Result:
+    Component Type: Scalar numerical type
+    Scope:          Const instruction with scalar 32-bit integer type
+    Rows:           Const instruction with scalar 32-bit integer type
+    Columns:        Const instruction with scalar 32-bit integer type
+    Use:            Const instruction with scalar 32-bit integer type corresponding 
+                    to cooperative matrix use
+    */
+
+    assert(instruction.opcode == spv::Op::OpTypeCooperativeMatrixKHR);
+
+    uint32_t result_id         = instruction.words[1];
+    uint32_t component_type_id = instruction.words[2];
+    uint32_t scope_id          = instruction.words[3];
+    uint32_t row_count_id           = instruction.words[4];
+    uint32_t col_count_id           = instruction.words[5];
+    uint32_t use_id            = instruction.words[6];
+
+    Type type;
+    type.kind         = Type::Kind::CooperativeMatrixKHR;
+    type.coopMatrix   = {.component_type_id = component_type_id,
+                         .scope_id          = scope_id,
+                         .row_count_id           = row_count_id,
+                         .col_count_id           = col_count_id,
+                         .use_id            = use_id};
+    types_[result_id] = type;
+}
+
 // ---------------------------------------------------------------------------
 //  Oparation implementations
 // ---------------------------------------------------------------------------
@@ -5487,6 +5551,48 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         {
           ExtractFlags(instruction.words[i], value_meta);
           matrix->cols.push_back(GetValue(instruction.words[i]));
+        }
+
+        SetValue(result_id, matrix);
+    }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        auto matrix = std::make_shared<MatrixV>();
+
+        if (instruction.word_count == 4)
+        {
+            const Value& constituent = GetValue(instruction.words[3]);
+            ExtractFlags(instruction.words[3], value_meta);
+
+            if (!std::holds_alternative<std::shared_ptr<VectorV>>(constituent) &&
+                !std::holds_alternative<std::shared_ptr<MatrixV>>(constituent) &&
+                !std::holds_alternative<std::shared_ptr<AggregateV>>(constituent))
+            {
+                const uint32_t col_count = static_cast<uint32_t>(std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id)));
+                const uint32_t row_count = static_cast<uint32_t>(std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id)));
+
+                matrix->cols.reserve(col_count);
+                for (uint32_t col = 0; col < col_count; ++col)
+                {
+                    auto column = std::make_shared<VectorV>();
+                    column->elems.reserve(row_count);
+                    for (uint32_t row = 0; row < row_count; ++row)
+                    {
+                        column->elems.push_back(constituent);
+                    }
+                    matrix->cols.push_back(column);
+                }
+
+                SetValue(result_id, matrix);
+                SetFlags(result_id, value_meta);
+                return;
+            }
+        }
+
+        for (auto i = 3; i < instruction.word_count; ++i)
+        {
+            ExtractFlags(instruction.words[i], value_meta);
+            matrix->cols.push_back(GetValue(instruction.words[i]));
         }
 
         SetValue(result_id, matrix);
@@ -6897,9 +7003,66 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR) {
+        const Type& op1_type = GetTypeByResultId(instruction.words[3]);
+        const Type& op2_type = GetTypeByResultId(instruction.words[4]);
+
+        const Value& op1_val = GetValue(instruction.words[3]);
+        const Value& op2_val = GetValue(instruction.words[4]);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR, "SPIRV simulator: Op1 must be Cooperative Matrix");
+        assertm(op2_type.kind == Type::Kind::Int,
+                "SPIRV simulator: Can only add scalar integer to matrices in Op_IAdd");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind == Type::Kind::Int,
+                "SPIRV simulator: matrix component type must be scalar integer");
+
+        int64_t col_count = std::get<int64_t>(GetValue(type.coopMatrix.col_count_id));
+        int64_t row_count = std::get<int64_t>(GetValue(type.coopMatrix.row_count_id));
+        std::shared_ptr<MatrixV> matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> result_matrix = std::make_shared<MatrixV>();
+        result_matrix->cols.reserve(col_count);
+        for (size_t i = 0; i < col_count; ++i)
+        {
+            std::shared_ptr<VectorV> src_vec = std::get<std::shared_ptr<VectorV>>(matrix->cols[i]);
+            std::shared_ptr<VectorV> result_vec = std::make_shared<VectorV>();
+            result_vec->elems.reserve(row_count);
+
+            for (size_t j = 0; j < row_count; ++j){
+                Value elem_result;
+                if (std::holds_alternative<uint64_t>(src_vec->elems[i]) && std::holds_alternative<uint64_t>(op2_val))
+                {
+                    elem_result = (std::get<uint64_t>(src_vec->elems[i]) + std::get<uint64_t>(op2_val));
+                }
+                else if (std::holds_alternative<uint64_t>(src_vec->elems[i]) &&
+                         std::holds_alternative<int64_t>(op2_val))
+                {
+                    elem_result = (std::get<uint64_t>(src_vec->elems[i]) + std::get<int64_t>(op2_val));
+                }
+                else if (std::holds_alternative<int64_t>(src_vec->elems[i]) && std::holds_alternative<int64_t>(op2_val))
+                {
+                    elem_result = (std::get<int64_t>(src_vec->elems[i]) + std::get<int64_t>(op2_val));
+                }
+                else if (std::holds_alternative<int64_t>(src_vec->elems[i]) &&
+                         std::holds_alternative<uint64_t>(op2_val))
+                {
+                    elem_result = (std::get<int64_t>(src_vec->elems[i]) + std::get<uint64_t>(op2_val));
+                }
+                else
+                {
+                    assertx("SPIRV simulator: Could not find valid parameter type combination for Op_IAdd vector operand");
+                }
+
+                result_vec->elems.push_back(elem_result);
+            }
+
+            result_matrix->cols.push_back(result_vec);
+        }
+
+        SetValue(result_id, result_matrix);
+    }
     else
     {
-        assertx("SPIRV simulator: Invalid result type for Op_IAdd, must be vector or int");
+        assertx("SPIRV simulator: Invalid result type for Op_IAdd, must be vector, int or cooperative matrix");
     }
 
     TransferFlags(result_id, instruction.words[3]);
@@ -10329,59 +10492,41 @@ void SPIRVSimulator::Op_MatrixTimesScalar(const Instruction& instruction)
     const Type& matrix_type = GetTypeByResultId(matrix_id);
     const Type& scalar_type = GetTypeByResultId(scalar_id);
 
-    assertm(type.kind == Type::Kind::Matrix, "SPIRV simulator: Result operand is not a matrix");
-    assertm(matrix_type.kind == Type::Kind::Matrix, "SPIRV simulator: First operand is not a matrix");
-    assertm(scalar_type.kind == Type::Kind::Float, "SPIRV simulator: Second operand is not a floating point scalar");
+    assertm(type.kind == Type::Kind::Matrix || type.kind == Type::Kind::CooperativeMatrixKHR,
+            "SPIRV simulator: Result is not a matrix");
+    assertm(matrix_type.kind == Type::Kind::Matrix || matrix_type.kind == Type::Kind::CooperativeMatrixKHR,
+            "SPIRV simulator: First operand is not a matrix");
+    assertm(scalar_type.kind == Type::Kind::Float || scalar_type.kind == Type::Kind::Int,
+            "SPIRV simulator: Second operand is not a floating point scalar");
 
-    const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
-    assertm(col_type.kind == Type::Kind::Vector, "SPIRV simulator: Column type of result is not a vector");
-
-    const Value& matrix_val = GetValue(matrix_id);
-    assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(matrix_val),
-            "SPIRV simulator: Non-matrix value found in Op_MatrixTimesScalar");
-    const auto& matrix = std::get<std::shared_ptr<MatrixV>>(matrix_val);
-
-    assertm(matrix_type.matrix.col_count == type.matrix.col_count,
-            "SPIRV simulator: Matrix operand does not match result column count");
-
-    const Type& elem_type = GetTypeByTypeId(col_type.vector.elem_type_id);
-    assertm(elem_type.kind == Type::Kind::Float,
-            "SPIRV simulator: Matrix element type is not floating point");
-
-    assertm(matrix->cols.size() == type.matrix.col_count,
-            "SPIRV simulator: Matrix column count does not match result type");
-
-    const Value& scalar_val = GetValue(scalar_id);
-    assertm(std::holds_alternative<double>(scalar_val),
-            "SPIRV simulator: Non-floating point scalar in Op_MatrixTimesScalar");
-    const double scalar = std::get<double>(scalar_val);
-
-    auto result_matrix = std::make_shared<MatrixV>();
-    result_matrix->cols.reserve(matrix->cols.size());
-
-    for (const auto& column_val : matrix->cols)
-    {
-        assertm(std::holds_alternative<std::shared_ptr<VectorV>>(column_val),
-                "SPIRV simulator: Non-vector column found in matrix operand");
-        const auto& column_vec = std::get<std::shared_ptr<VectorV>>(column_val);
-
-        assertm(column_vec->elems.size() == col_type.vector.elem_count,
-                "SPIRV simulator: Column size mismatch in Op_MatrixTimesScalar");
-
-        auto new_column = std::make_shared<VectorV>();
-        new_column->elems.reserve(column_vec->elems.size());
-
-        for (const auto& elem_val : column_vec->elems)
+    switch (type.kind) {
+        case Type::Kind::Matrix:
         {
-            assertm(std::holds_alternative<double>(elem_val),
-                    "SPIRV simulator: Non-floating point element found in matrix operand");
-            new_column->elems.push_back(std::get<double>(elem_val) * scalar);
-        }
+            const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
+            const Type& elem_type = GetTypeByTypeId(col_type.vector.elem_type_id);
+            assertm(elem_type.kind == Type::Kind::Float || elem_type.kind == Type::Kind::Int,
+                    "SPIRV simulator: result element type is neither INT nor FLOAT");
 
-        result_matrix->cols.push_back(new_column);
+            assertm(matrix_type.matrix.col_count == type.matrix.col_count,
+                    "SPIRV simulator: Matrix operand does not match result column count");
+            break;
+        }
+        case Type::Kind::CooperativeMatrixKHR:
+        {
+            const Type& col_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+            assertm(col_type.kind == Type::Kind::Float || col_type.kind == Type::Kind::Int,
+                    "SPIRV simulator: result element type is neither INT nor FLOAT");
+
+            assertm(GetValue(matrix_type.coopMatrix.col_count_id) == GetValue(type.coopMatrix.col_count_id),
+                    "SPIRV simulator: coopMatrix operand does not match result column count");
+            break;
+        }
     }
 
+    Value result_matrix = MakeDefault(type_id);
+
     SetValue(result_id, result_matrix);
+    SetIsArbitrary(result_id);
 
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
@@ -12046,9 +12191,41 @@ void SPIRVSimulator::Op_SNegate(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        Type component_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        assertm(component_type.scalar.is_signed, "SPIRV simulator: Matrix elements must be signed");
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(val_op),
+                "SPIRV simulator: Operand not a CooperativeMatrix type");
+        std::shared_ptr<MatrixV> mat = std::get<std::shared_ptr<MatrixV>>(val_op);
+
+        uint64_t col_count = std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id));
+        uint64_t row_count = std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id));
+
+        Value result = std::make_shared<MatrixV>();
+        std::shared_ptr<MatrixV> result_mat = std::get<std::shared_ptr<MatrixV>>(result);
+        result_mat->cols.reserve(col_count);
+
+        for (uint32_t col = 0; col < col_count; ++col)
+        {
+            // get the column
+            std::shared_ptr<VectorV> column = std::get<std::shared_ptr<VectorV>>(mat->cols[col]);
+            std::shared_ptr<VectorV> result_col = std::make_shared<VectorV>();
+            //  iterate through column
+            for (uint32_t row = 0; row < row_count; ++row)
+            {
+                int64_t result_elem = 0 - std::get<int64_t>(column->elems[row]);
+                result_col->elems.push_back(Value(result_elem));
+            }
+            result_mat->cols.push_back(result_col);
+        }
+
+        SetValue(result_id, result);
+    }
     else
     {
-        assertx("SPIRV simulator: Invalid result type, must be vector or integer");
+        assertx("SPIRV simulator: Invalid result type, must be cooperative matrix, vector or integer");
     }
 
     TransferFlags(result_id, instruction.words[3]);
@@ -14943,5 +15120,290 @@ void SPIRVSimulator::Op_TerminateRayKHR(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpTerminateRayKHR);
 }
+
+void SPIRVSimulator::Op_CooperativeMatrixLoadKHR(const Instruction& instruction)
+{
+    /*
+    OpCooperativeMatrixLoadKHR
+
+    Load a cooperative matrix through a pointer
+
+    ResultType:                 Cooperative matrix type (type of loaded object)
+    Result:                     Loaded cooperative matrix
+    Pointer:                    OpTypePointer with type operand scalar or vector
+    MemoryLayout:               Layout of of matrix elements in memory;
+                                must come from 32bit integer constant instruction
+    (optional) Stride:          How elements are spaced in memory; must be scalar integer type
+    (optional) Memory Operand:  if present must start with `Memory Operand` literal
+
+    OpCooperativeMatrixLoadKHR %ResultType %Result %Pointer %MemoryLayout %Stride %Memory Operand
+    */
+    assert(instruction.opcode == spv::Op::OpCooperativeMatrixLoadKHR);
+    assertm(instruction.word_count >= 5, "CooperativeMatrixLoadKHR takes 4 required operands");
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t pointer_id     = instruction.words[3];
+    uint32_t mem_layout_id  = instruction.words[4];
+    uint32_t stride_id      = 0;
+
+    if (instruction.word_count >= 6)
+    {
+        stride_id = instruction.words[5];
+    }
+    if (instruction.word_count >= 7)
+    {
+        const uint32_t memory_access = instruction.words[6];
+    }
+    else
+    {
+        assertm(instruction.word_count == 5 || instruction.word_count == 6,
+                "CooperativeMatrixLoadKHR has invalid operand count");
+    }
+
+    const Type& result_type = GetTypeByTypeId(type_id);
+    assertm(result_type.kind == Type::Kind::CooperativeMatrixKHR, "Result type must be Cooperative Matrix");
+
+    const Value& pointer_value = GetValue(pointer_id);
+    assertm(std::holds_alternative<PointerV>(pointer_value), "Pointer operand must be a pointer");
+    const PointerV& pointer = std::get<PointerV>(pointer_value);
+
+    const uint32_t target_type_id = GetTargetPointerType(pointer);
+    const Type&    target_type    = GetTypeByTypeId(target_type_id);
+    const bool target_is_scalar =
+        target_type.kind == Type::Kind::Int || target_type.kind == Type::Kind::Float;
+    const bool target_is_vector =
+        target_type.kind == Type::Kind::Vector &&
+        (GetTypeByTypeId(target_type.vector.elem_type_id).kind == Type::Kind::Int ||
+         GetTypeByTypeId(target_type.vector.elem_type_id).kind == Type::Kind::Float);
+    assertm(target_is_scalar || target_is_vector,
+            "Pointer must point to scalar or vector type");
+
+    const Type& component_type = GetTypeByTypeId(result_type.coopMatrix.component_type_id);
+    assertm(component_type.kind == Type::Kind::Int || component_type.kind == Type::Kind::Float,
+            "Cooperative matrix component type must be scalar numeric");
+
+    const Type& layout_type = GetTypeByResultId(mem_layout_id);
+    assertm(layout_type.kind == Type::Kind::Int, "MemoryLayout must be an integer scalar");
+    assertm(layout_type.scalar.width == 32, "Memory Layout must be 32-bit wide");
+
+    const int64_t layout = std::get<int64_t>(GetValue(mem_layout_id));
+    assertm(layout == spv::CooperativeMatrixLayoutRowMajorKHR ||
+            layout == spv::CooperativeMatrixLayoutColumnMajorKHR,
+            "MemoryLayout must be RowMajorKHR or ColumnMajorKHR");
+
+    assertm(stride_id != 0, "Stride operand is required for RowMajorKHR and ColumnMajorKHR");
+    const Type& stride_type = GetTypeByResultId(stride_id);
+    assertm(stride_type.kind == Type::Kind::Int, "Stride must be an integer scalar");
+    assertm(stride_type.scalar.width <= 64, "Stride must fit in 64 bits");
+
+    // As this is a matrix for neural networks or ML it should always
+    // be arbitrary data
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+
+    TransferFlagsFromPointee(result_id, pointer);
+}
+
+void SPIRVSimulator::Op_CooperativeMatrixStoreKHR(const Instruction& instruction)
+{
+    /*
+    OpCooperativeMatrixStoreKHR
+    Store a cooperative matrix through a pointer
+
+    ! Since cooperativeMatrices always contain arbitrary data for some ML or neural network
+    ! workload, we do not need to consider them containing device addresses
+    */
+
+    assert(instruction.opcode == spv::Op::OpCooperativeMatrixStoreKHR);
+    assertm(instruction.word_count >= 4, "CooperativeMatrixStoreKHR minimum 3 operands required");
+
+    uint32_t pointer_id    = instruction.words[1];
+    uint32_t object_id     = instruction.words[2];
+    uint32_t mem_layout_id = instruction.words[3];
+    uint32_t stride_id     = 0x0;
+    uint32_t mem_operand  = 0x0;
+
+    if (instruction.word_count >= 5)
+    {
+        stride_id = instruction.words[4];
+    }
+    if (instruction.word_count >= 6)
+    {
+        mem_operand = instruction.words[5];
+    }
+
+    Type object_type = GetTypeByResultId(object_id);
+    assertm(object_type.kind == Type::Kind::CooperativeMatrixKHR,
+            "SPIRV Simulator: Object to store must be of CooperativeMatrixType");
+
+    Type pointer_type = GetTypeByResultId(pointer_id);
+    assertm(pointer_type.kind == Type::Kind::Pointer,
+            "SPIRV Simulator: Must store into pointer");
+    //TODO If shader capability enabled, then pointer must point into an array
+
+    Type mem_layout_type = GetTypeByResultId(mem_layout_id);
+    assertm(mem_layout_type.kind == Type::Kind::Int, "SPIRV Simulator: Memory layout must be integer");
+    assertm(mem_layout_type.scalar.width == 32, "SPIRV Simulator: Memory layout must be 32-bit wide");
+    int64_t layout = std::get<int64_t>(GetValue(mem_layout_id));
+    assertm(layout == spv::CooperativeMatrixLayoutRowMajorKHR || layout == spv::CooperativeMatrixLayoutColumnMajorKHR,
+            "SPIRV Simulator: CooperativeMatrixLayout must be valid");
+
+    if(stride_id != 0x0)
+    {
+        Type stride_type = GetTypeByResultId(stride_id);
+        assertm(stride_type.kind == Type::Kind::Int, "SPIRV Simulmator: Stride must be integer type");
+    }
+
+    Value pointer = GetValue(pointer_id);
+    WritePointer(std::get<PointerV>(pointer), GetValue(object_id));
+    TransferFlagsToPointee(pointer_id, object_id);
+
+    if (ValueIsArbitrary(object_id))
+    {
+        simulation_results_->had_arbitrary_write = true;
+    }
+    has_buffer_writes_ = true;
+    values_stored_[pointer_id] = object_id;
+}
+
+void SPIRVSimulator::Op_CooperativeMatrixLengthKHR(const Instruction& instruction)
+{
+    /*
+    OpCooperativeMatrixLengthKHR
+
+    Get the number of components of a cooperative matrix accessible
+    to the current invocation.
+
+    ResultType: OpTypeInt 32bit wide 0 Signedness
+    Type:       CooperativeMatrix
+    Result:     length of cooperativeMatrix
+
+    OpCooperativeMatrixLengthKHR %ResultType %Result %Type
+
+    */
+    assert(instruction.opcode == spv::Op::OpCooperativeMatrixLengthKHR);
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t type_id        = instruction.words[3];
+
+    Type result_type = GetTypeByTypeId(result_type_id);
+    assertm(result_type.kind == Type::Kind::Int, "Result type must be int scalar");
+    assertm(result_type.scalar.width == 32, "Result type must be 32 bit wide");
+    assertm(result_type.scalar.is_signed == false, "Result type must have 0 signedness");
+
+    Type type = GetTypeByTypeId(type_id);
+    assertm(type.kind == Type::Kind::CooperativeMatrixKHR, "Type must be Cooperative Matrix");
+
+    const Value& rows = GetValue(type.coopMatrix.row_count_id);
+    const Value& cols = GetValue(type.coopMatrix.col_count_id);
+
+    const uint32_t result = static_cast<uint32_t>(std::get<uint64_t>(rows) * std::get<uint64_t>(cols));
+    const uint32_t* words = &result;
+    const Value result_value = MakeScalar(result_id, words);
+    SetValue(result_id, result_value, true);
+}
+
+void SPIRVSimulator::Op_CooperativeMatrixMulAddKHR(const Instruction& instruction)
+{
+    /*
+    OpCooperativeMatrixMulAddKHR
+
+    Linear-algebraic matrix multiplication of A and B, then adding C component-wise
+    How this operation is done (order) is implementation dependent.
+    */
+    assert(instruction.opcode == spv::Op::OpCooperativeMatrixMulAddKHR);
+    assertm(instruction.word_count == 6 || instruction.word_count == 7,
+            "CooperativeMatrixMulAddKHR takes 5 required and 1 optional operand");
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t matrix_A_id    = instruction.words[3];
+    uint32_t matrix_B_id    = instruction.words[4];
+    uint32_t matrix_C_id    = instruction.words[5];
+    uint32_t coop_mat_operands = 0x00;
+
+    if (instruction.word_count == 7)
+    {
+        coop_mat_operands = static_cast<uint32_t>(instruction.words[6]);
+    }
+
+    const Type& result_type = GetTypeByTypeId(result_type_id);
+    assertm(result_type.kind == Type::Kind::CooperativeMatrixKHR, "Result must be of type cooperative Matrix");
+    assertm(std::get<uint64_t>(GetValue(result_type.coopMatrix.use_id)) == spv::CooperativeMatrixUseMatrixAccumulatorKHR,
+            "Use of result must be MatrixAccumulatorKHR");
+
+    const Type& matrix_A_type = GetTypeByResultId(matrix_A_id);
+    assertm(matrix_A_type.kind == Type::Kind::CooperativeMatrixKHR, "Matrix A must be of type cooperative Matrix");
+    assertm(std::get<uint64_t>(GetValue(matrix_A_type.coopMatrix.use_id)) == spv::CooperativeMatrixUseMatrixAKHR,
+            "Use of matrix A must be MatrixAKHR");
+    const Type& matrix_B_type = GetTypeByResultId(matrix_B_id);
+    assertm(matrix_B_type.kind == Type::Kind::CooperativeMatrixKHR, "Matrix B must be of type cooperative Matrix");
+    assertm(std::get<uint64_t>(GetValue(matrix_B_type.coopMatrix.use_id)) == spv::CooperativeMatrixUseMatrixBKHR,
+            "Use of matrix B must be MatrixBKHR");
+    const Type& matrix_C_type = GetTypeByResultId(matrix_C_id);
+    assertm(matrix_C_type.kind == Type::Kind::CooperativeMatrixKHR, "Matrix C must be of type cooperative Matrix");
+    assertm(std::get<uint64_t>(GetValue(matrix_C_type.coopMatrix.use_id)) == spv::CooperativeMatrixUseMatrixAccumulatorKHR,
+            "Use of matrix C must be MatrixAccumulatorKHR");
+
+    const uint32_t result_rows = std::get<uint64_t>(GetValue(result_type.coopMatrix.row_count_id));
+    const uint32_t result_cols = std::get<uint64_t>(GetValue(result_type.coopMatrix.col_count_id));
+    const uint32_t matrix_A_rows = std::get<uint64_t>(GetValue(matrix_A_type.coopMatrix.row_count_id));
+    const uint32_t matrix_A_cols = std::get<uint64_t>(GetValue(matrix_A_type.coopMatrix.col_count_id));
+    const uint32_t matrix_B_rows = std::get<uint64_t>(GetValue(matrix_B_type.coopMatrix.row_count_id));
+    const uint32_t matrix_B_cols = std::get<uint64_t>(GetValue(matrix_B_type.coopMatrix.col_count_id));
+    const uint32_t matrix_C_rows = std::get<uint64_t>(GetValue(matrix_C_type.coopMatrix.row_count_id));
+    const uint32_t matrix_C_cols = std::get<uint64_t>(GetValue(matrix_C_type.coopMatrix.col_count_id));
+
+    assertm(matrix_A_cols == matrix_B_rows, "Matrix size mismatch for multiplication");
+    assertm(matrix_B_cols == matrix_C_cols && matrix_A_rows == matrix_C_rows, "Matrix size mismatch for addition");
+    assertm(matrix_A_rows == result_rows, "Matrix size mismatch, result wrong row count");
+    assertm(matrix_B_cols == result_cols, "Matrix size mismatch, result wrong column count");
+
+    // Check the operands if passed
+    const bool matrix_A_signed = (coop_mat_operands & spv::CooperativeMatrixOperandsMatrixASignedComponentsKHRMask);
+    const bool matrix_B_signed = (coop_mat_operands & spv::CooperativeMatrixOperandsMatrixBSignedComponentsKHRMask);
+    const bool matrix_C_signed = (coop_mat_operands & spv::CooperativeMatrixOperandsMatrixCSignedComponentsKHRMask);
+    const bool matrix_result_signed = (coop_mat_operands & spv::CooperativeMatrixOperandsMatrixResultSignedComponentsKHRMask);
+    const bool saturating_accumulation = (coop_mat_operands & spv::CooperativeMatrixOperandsSaturatingAccumulationKHRMask);
+
+    const Type mat_a_component_t = GetTypeByTypeId(matrix_A_type.coopMatrix.component_type_id);
+    const Type mat_b_component_t = GetTypeByTypeId(matrix_B_type.coopMatrix.component_type_id);
+    const Type mat_c_component_t = GetTypeByTypeId(matrix_C_type.coopMatrix.component_type_id);
+    const Type result_component_type = GetTypeByTypeId(result_type.coopMatrix.component_type_id);
+
+    const bool all_float_components = result_component_type.kind == Type::Kind::Float &&
+                                      mat_a_component_t.kind == Type::Kind::Float &&
+                                      mat_b_component_t.kind == Type::Kind::Float &&
+                                      mat_c_component_t.kind == Type::Kind::Float;
+    const bool all_integer_components = result_component_type.kind == Type::Kind::Int &&
+                                      mat_a_component_t.kind == Type::Kind::Int &&
+                                      mat_b_component_t.kind == Type::Kind::Int &&
+                                      mat_c_component_t.kind == Type::Kind::Int;
+
+    assertm(all_float_components || all_integer_components,
+            "CooperativeMatrixMulAddKHR currently supports all-float or all-integer component type combinations");
+
+    if (all_float_components)
+    {
+        assertm(!saturating_accumulation,
+            "Saturating accumulation is only supported for integer cooperative matrices");
+    }
+
+    // Assume this is always arbitrary data
+    Value result_matrix = MakeDefault(result_type_id);
+
+    SetValue(result_id, result_matrix);
+    SetIsArbitrary(result_id);
+
+    uint64_t flags = 0x0;
+    ExtractFlags(matrix_A_id, flags);
+    ExtractFlags(matrix_B_id, flags);
+    ExtractFlags(matrix_C_id, flags);
+    TransferFlags(result_id, flags);
+}
+
 
 } // namespace SPIRVSimulator

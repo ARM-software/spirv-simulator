@@ -143,3 +143,4 @@ TEST_F(StringTests, OpLineExecutesAsNoOp)
 
     EXPECT_TRUE(this->ExecuteInstruction(line_inst));
 }
+

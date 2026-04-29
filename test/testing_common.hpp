@@ -64,7 +64,27 @@ enum CommonTypes : uint32_t
     mat4x2,
     mat4x3,
 
-    num_types
+    num_types,
+
+    coopMatA2,
+    coopMatB2,
+    coopMatAcc2,
+    coopMatIA2,
+    coopMatIB2,
+    coopMatIAcc2,
+    coopMatUA2,
+    coopMatUB2,
+    coopMatUAcc2,
+};
+
+enum CommonValues : uint32_t
+{
+    coop_scope_subgroup = 1000,
+    coop_rows_2,
+    coop_cols_2,
+    coop_use_a,
+    coop_use_b,
+    coop_use_accumulator,
 };
 
 struct TestParameters
@@ -229,9 +249,64 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
             { CommonTypes::mat4, ::SPIRVSimulator::Type::Matrix(CommonTypes::vec4, 4) },
             { CommonTypes::mat4x2, ::SPIRVSimulator::Type::Matrix(CommonTypes::vec4, 2) },
             { CommonTypes::mat4x3, ::SPIRVSimulator::Type::Matrix(CommonTypes::vec4, 3) },
+            { CommonTypes::coopMatA2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::f64,
+                                                        spv::ScopeSubgroup, 
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_a) },
+            { CommonTypes::coopMatB2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::f64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_b) },
+            { CommonTypes::coopMatAcc2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::f64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_accumulator) },
+            { CommonTypes::coopMatIA2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::i64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_a) },
+            { CommonTypes::coopMatIB2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::i64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_b) },
+            { CommonTypes::coopMatIAcc2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::i64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_accumulator) },
+            { CommonTypes::coopMatUA2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::u64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_a) },
+            { CommonTypes::coopMatUB2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::u64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_b) },
+            { CommonTypes::coopMatUAcc2,
+              ::SPIRVSimulator::Type::CooperativeMatrix(CommonTypes::u64,
+                                                        CommonValues::coop_scope_subgroup,
+                                                        CommonValues::coop_rows_2,
+                                                        CommonValues::coop_cols_2,
+                                                        CommonValues::coop_use_accumulator) },
         };
 
         id_counter = types_.size();
+        AddCommonGetValueExpectations();
 
         for (const auto& [id, type] : types_)
         {
@@ -243,7 +318,8 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     using SPIRVSimulator::SPIRVSimulator::ExecuteInstruction;
 
   protected:
-    size_t                           NextId() { return id_counter++; }
+    void                             AddCommonGetValueExpectations();
+    size_t                           NextId();
     std::vector<uint32_t>            prepare_submission(const TestParameters& parameters);
     ::SPIRVSimulator::SimulationData prepare_input_data(const TestParameters& parameters);
 

@@ -273,6 +273,80 @@ std::vector<TestParameters> test_cases = {
 
 INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsTests, ValuesIn(test_cases));
 
+class CoopMatrixMath : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
+{};
+
+TEST_P(CoopMatrixMath, ParametrizedArithmeticOperation)
+{
+    const auto& parameters = GetParam();
+
+    std::vector<uint32_t>         words = prepare_submission(parameters);
+    ::SPIRVSimulator::Instruction inst{ .opcode     = parameters.opcode,
+                                        .word_count = static_cast<uint16_t>(words.size()),
+                                        .words      = words };
+
+    ::SPIRVSimulator::Value captured_value;
+    EXPECT_CALL(*this, SetValue(_, _, true)).WillOnce(SaveArg<1>(&captured_value));
+
+    this->ExecuteInstruction(inst);
+
+    std::cout << "Captured value was: " << captured_value << std::endl;
+    std::cout << "Expected value was: " << parameters.operands.at(0) << std::endl;
+
+    EXPECT_EQ(captured_value, parameters.operands.at(0));
+};
+
+
+std::vector<TestParameters> cooperative_matrix_test{
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, 1.0, 1.0, 1.0 }, 2),
+                        CommonTypes::coopMatA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, -1.0, 1.0, 1.0 }, 2),
+                        CommonTypes::coopMatB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, 1.0, 1.0, -1.0 }, 2),
+                        CommonTypes::coopMatAcc2)
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<int64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatIAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<int64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatIA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<int64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatIB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<int64_t>{ -1, -1, -1, -1 }, 2),
+                        CommonTypes::coopMatIAcc2)
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .build(),
+};
+
+INSTANTIATE_TEST_SUITE_P(Arithmetics, CoopMatrixMath, ValuesIn(cooperative_matrix_test));
+
 class ArithmeticsCrashTests : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
 {};
 
@@ -394,7 +468,7 @@ std::vector<TestParameters> throw_tests{
         .set_opcode(spv::Op::OpIAdd)
         .set_operand_at(0, 3.0, CommonTypes::f64)
         .set_operands_range(1, CommonTypes::i64, std::initializer_list<int64_t>{ 1, 2 })
-        .set_death_message("Invalid result type for Op_IAdd, must be vector or int")
+        .set_death_message("Invalid result type for Op_IAdd, must be vector, int or cooperative matrix")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
@@ -635,6 +709,182 @@ std::vector<TestParameters> throw_tests{
         .set_operands_range(1, CommonTypes::f64, std::initializer_list<double>{ 2.0, 1.0 })
         .set_death_message("Invalid result type for Op_FMul, must be vector or float")
         .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_death_message("CooperativeMatrixMulAddKHR takes 5 required and 1 optional operand")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0, 2,
+                        CommonTypes::i32)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_death_message("Result must be of type cooperative Matrix")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_death_message("Use of result must be MatrixAccumulatorKHR")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        2,
+                        CommonTypes::i32)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_death_message("Matrix A must be of type cooperative Matrix")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_death_message("Use of matrix A must be MatrixAKHR")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        2,
+                        CommonTypes::i32)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_death_message("Matrix B must be of type cooperative Matrix")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_death_message("Use of matrix B must be MatrixBKHR")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUB2)
+        .set_operand_at(3,
+                        2,
+                        CommonTypes::i32)
+        .set_death_message("Matrix C must be of type cooperative Matrix")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatB2)
+        .set_death_message("Use of matrix C must be MatrixAccumulatorKHR")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatUA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatIAcc2)
+        .set_death_message("CooperativeMatrixMulAddKHR currently supports all-float or all-integer component type combinations")
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpCooperativeMatrixMulAddKHR)
+        .set_operand_at(0,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatAcc2)
+        .set_operand_at(1,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatA2)
+        .set_operand_at(2,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 1, 1, 1, 1 }, 2),
+                        CommonTypes::coopMatB2)
+        .set_operand_at(3,
+                        std::make_shared<SPIRVSimulator::MatrixV>(std::initializer_list<uint64_t>{ 0, 0, 0, 0 }, 2),
+                        CommonTypes::coopMatAcc2)
+        .set_operand_at(4,
+                        0x10,
+                        CommonTypes::literal)
+        .set_death_message("Saturating accumulation is only supported for integer cooperative matrices")
+        .build(),
 };
 
 INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsCrashTests, ValuesIn(throw_tests));
+

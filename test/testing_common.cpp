@@ -254,6 +254,42 @@ std::vector<uint32_t> SPIRVSimulatorMockBase::prepare_submission(const TestParam
     return words;
 }
 
+void SPIRVSimulatorMockBase::AddCommonGetValueExpectations()
+{
+    EXPECT_CALL(*this, GetValue(CommonValues::coop_scope_subgroup))
+        .WillRepeatedly(ReturnRefOfCopy(::SPIRVSimulator::Value(static_cast<uint64_t>(spv::ScopeSubgroup))));
+    EXPECT_CALL(*this, GetValue(CommonValues::coop_rows_2))
+        .WillRepeatedly(ReturnRefOfCopy(::SPIRVSimulator::Value(static_cast<uint64_t>(2))));
+    EXPECT_CALL(*this, GetValue(CommonValues::coop_cols_2))
+        .WillRepeatedly(ReturnRefOfCopy(::SPIRVSimulator::Value(static_cast<uint64_t>(2))));
+    EXPECT_CALL(*this, GetValue(CommonValues::coop_use_a))
+        .WillRepeatedly(
+            ReturnRefOfCopy(::SPIRVSimulator::Value(static_cast<uint64_t>(spv::CooperativeMatrixUseMatrixAKHR))));
+    EXPECT_CALL(*this, GetValue(CommonValues::coop_use_b))
+        .WillRepeatedly(
+            ReturnRefOfCopy(::SPIRVSimulator::Value(static_cast<uint64_t>(spv::CooperativeMatrixUseMatrixBKHR))));
+    EXPECT_CALL(*this, GetValue(CommonValues::coop_use_accumulator))
+        .WillRepeatedly(ReturnRefOfCopy(
+            ::SPIRVSimulator::Value(static_cast<uint64_t>(spv::CooperativeMatrixUseMatrixAccumulatorKHR))));
+}
+
+size_t SPIRVSimulatorMockBase::NextId() {
+    size_t next_id = id_counter++;
+
+    // grow if there is not enough space
+    if (next_id >= values_.size())
+    {
+        values_.resize(next_id + 10, std::monostate{});
+    }
+
+    if (next_id >= value_meta_.size())
+    {
+        value_meta_.resize(next_id + 10, { 0 });
+    }
+
+    return next_id;
+}
+
 ::SPIRVSimulator::SimulationData SPIRVSimulatorMockBase::prepare_input_data(const TestParameters& parameters)
 {
     ::SPIRVSimulator::SimulationData inputs;
