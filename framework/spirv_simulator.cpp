@@ -2857,9 +2857,11 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         case Type::Kind::AccelerationStructureKHR:
         case Type::Kind::RayQueryKHR:
         {
-            assertm(!initial_data,
-                    "SPIRV simulator: Cannot create RayQuery or AccelerationStructure with initial_data unless we know the size of the "
-                    "opaque types");
+            if (initial_data && verbose_)
+            {
+                std::cout << "SPIRV simulator: Cannot create RayQuery or AccelerationStructure with initial_data unless we know the size of the opaque types" << std::endl;
+            }
+
             return (uint64_t)0;
         }
         default:
