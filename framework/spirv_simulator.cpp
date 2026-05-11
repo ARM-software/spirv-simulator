@@ -14557,4 +14557,31 @@ void SPIRVSimulator::Op_DecorateString(const Instruction& instruction)
     // This is currently a nop, but can be used for debugging later
 }
 
+void SPIRVSimulator::Op_ReportIntersectionKHR(const Instruction& instruction)
+{
+    /*
+    OpReportIntersectionKHR
+
+    Reserved
+    */
+    assert(instruction.opcode == spv::Op::OpReportIntersectionKHR);
+
+    uint32_t type_id      = instruction.words[1];
+    uint32_t result_id    = instruction.words[2];
+    uint32_t hit          = instruction.words[3];
+    uint32_t hit_kind     = instruction.words[4];
+
+    Value result = MakeDefault(type_id);
+
+    if (verbose_)
+    {
+        std::cout << "SPIRV simulator: Ray OpReportIntersectionKHR is pass-through, creating "
+                     "arbitrary dummy value"
+                  << std::endl;
+    }
+
+    SetValue(result_id, result);
+    SetIsArbitrary(result_id);
+}
+
 } // namespace SPIRVSimulator
