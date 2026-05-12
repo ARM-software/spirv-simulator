@@ -1180,6 +1180,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_TraceRayKHR)
         case spv::Op::OpDecorateString:
             R(Op_DecorateString)
+        case spv::Op::OpReportIntersectionKHR:
+            R(Op_ReportIntersectionKHR)
         default:
         {
             return false;
