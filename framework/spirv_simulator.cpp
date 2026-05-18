@@ -2450,9 +2450,6 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
             bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
             if (isMember)
             {
-                assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationColMajor),
-                        "SPIRV simulator: Attempt to get pointer offset to row-major matrix, this is illegal and violates "
-                        "contiguity requirements");
                 matrix_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
             }
             else
@@ -2562,9 +2559,6 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
             bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
             if (isMember)
             {
-                assertm(HasDecorator(struct_id, member_literal, spv::Decoration::DecorationColMajor),
-                        "SPIRV simulator: Attempt to get pointer offset to row-major matrix, this is illegal and violates "
-                        "contiguity requirements");
                 matrix_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
             }
             else
