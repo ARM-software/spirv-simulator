@@ -1493,6 +1493,8 @@ class SPIRVSimulator
     void Op_TraceRayKHR(const Instruction&);
     void Op_DecorateString(const Instruction&);
     void Op_ReportIntersectionKHR(const Instruction&);
+    void Op_IgnoreIntersectionKHR(const Instruction&);
+    void Op_TerminateRayKHR(const Instruction&);
 };
 
 } // namespace SPIRVSimulator

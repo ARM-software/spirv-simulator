@@ -1182,6 +1182,10 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_DecorateString)
         case spv::Op::OpReportIntersectionKHR:
             R(Op_ReportIntersectionKHR)
+        case spv::Op::OpIgnoreIntersectionKHR:
+            R(Op_IgnoreIntersectionKHR)
+        case spv::Op::OpTerminateRayKHR:
+            R(Op_TerminateRayKHR)
         default:
         {
             return false;
@@ -14584,6 +14588,27 @@ void SPIRVSimulator::Op_ReportIntersectionKHR(const Instruction& instruction)
 
     SetValue(result_id, result);
     SetIsArbitrary(result_id);
+}
+
+
+void SPIRVSimulator::Op_IgnoreIntersectionKHR(const Instruction& instruction)
+{
+    /*
+    OpIgnoreIntersectionKHR
+
+    Reserved
+    */
+    assert(instruction.opcode == spv::Op::OpIgnoreIntersectionKHR);
+}
+
+void SPIRVSimulator::Op_TerminateRayKHR(const Instruction& instruction)
+{
+    /*
+    OpTerminateRayKHR
+
+    Reserved
+    */
+    assert(instruction.opcode == spv::Op::OpTerminateRayKHR);
 }
 
 } // namespace SPIRVSimulator
