@@ -3174,15 +3174,58 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             break;
         }
 
-        case spv::Op::OpImageRead:
-        case spv::Op::OpImageSampleImplicitLod:
-        case spv::Op::OpImageSampleExplicitLod:
         case spv::Op::OpImageQuerySizeLod:
         case spv::Op::OpImageQuerySize:
         case spv::Op::OpFunction:
+        case spv::Op::OpImageSampleImplicitLod:
+        case spv::Op::OpImageSampleExplicitLod:
         case spv::Op::OpImageSampleDrefImplicitLod:
+        case spv::Op::OpImageSampleDrefExplicitLod:
+        case spv::Op::OpImageSampleProjImplicitLod:
+        case spv::Op::OpImageSampleProjExplicitLod:
+        case spv::Op::OpImageSampleProjDrefImplicitLod:
+        case spv::Op::OpImageSampleProjDrefExplicitLod:
+        case spv::Op::OpImageFetch:
+        case spv::Op::OpImageGather:
+        case spv::Op::OpImageDrefGather:
+        case spv::Op::OpImageRead:
+        case spv::Op::OpImageWrite:
+        case spv::Op::OpImageSparseSampleImplicitLod:
+        case spv::Op::OpImageSparseSampleExplicitLod:
+        case spv::Op::OpImageSparseSampleDrefImplicitLod:
+        case spv::Op::OpImageSparseSampleDrefExplicitLod:
+        case spv::Op::OpImageSparseFetch:
+        case spv::Op::OpImageSparseGather:
+        case spv::Op::OpImageSparseDrefGather:
+        case spv::Op::OpImageSparseRead:
+        case spv::Op::OpImageSampleFootprintNV:
+        case spv::Op::OpConvertUToAccelerationStructureKHR:
+        case spv::Op::OpConstantSampler:
+        case spv::Op::OpSampledImage:
+        case spv::Op::OpImage:
+        case spv::Op::OpGroupAsyncCopy:
+        case spv::Op::OpReserveReadPipePackets:
+        case spv::Op::OpReserveWritePipePackets:
+        case spv::Op::OpGroupReserveReadPipePackets:
+        case spv::Op::OpGroupReserveWritePipePackets:
+        case spv::Op::OpCreateUserEvent:
+        case spv::Op::OpGetDefaultQueue:
+        case spv::Op::OpConstantPipeStorage:
+        case spv::Op::OpCreatePipeFromPipeStorage:
+        case spv::Op::OpNamedBarrierInitialize:
+        case spv::Op::OpCreateTensorLayoutNV:
+        case spv::Op::OpTensorLayoutSetDimensionNV:
+        case spv::Op::OpTensorLayoutSetStrideNV:
+        case spv::Op::OpTensorLayoutSliceNV:
+        case spv::Op::OpTensorLayoutSetClampValueNV:
+        case spv::Op::OpTensorLayoutSetBlockSizeNV:
+        case spv::Op::OpCreateTensorViewNV:
+        case spv::Op::OpTensorViewSetDimensionNV:
+        case spv::Op::OpTensorViewSetStrideNV:
+        case spv::Op::OpTensorViewSetClipNV:
         {
             // Images and function declarations are treated as source dead ends.
+            // So are most opcodes returning opaque handles
             break;
         }
 
@@ -3262,6 +3305,20 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             if (std::holds_alternative<PointerV>(GetValue(pointer_id)))
             {
                 const PointerV& pointer = std::get<PointerV>(GetValue(pointer_id));
+                const Type& target_ptype = GetTypeByTypeId(GetTargetPointerType(pointer));
+
+                if (target_ptype.kind == Type::Kind::Image ||
+                    target_ptype.kind == Type::Kind::Sampler ||
+                    target_ptype.kind == Type::Kind::SampledImage ||
+                    target_ptype.kind == Type::Kind::Opaque ||
+                    target_ptype.kind == Type::Kind::NamedBarrier ||
+                    target_ptype.kind == Type::Kind::AccelerationStructureKHR ||
+                    target_ptype.kind == Type::Kind::RayQueryKHR)
+                {
+                    // If the pointer points to a opaque type, then we dont care about it
+                    break;
+                }
+
                 std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(pointer);
                 std::string key = MakePointerLocationKey(pointer, resolved_ptr.second);
 
