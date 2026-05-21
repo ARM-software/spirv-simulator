@@ -1014,14 +1014,31 @@ class SPIRVSimulator
     // intentionally dead-end.
     uint64_t memory_trace_epoch_ = 0;
 
+    enum class DataTraceRole
+    {
+        // The traced value contributes to the bits of the output value.
+        // Value-property flags such as SPS_FLAG_IS_FLOAT_SOURCE propagate.
+        RawValue,
+
+        // The traced value contributes only to memory addressing/indexing.
+        // Data sources are still collected, but value-property flags do not propagate.
+        Address,
+
+        // The traced value contributes only to control flow/selection.
+        // Data sources are still collected, but value-property flags do not propagate.
+        Control
+    };
+
     struct SourceTraceCacheEntry
     {
         uint64_t memory_epoch = 0;
         uint32_t property_flags = 0;
+        bool depends_on_memory = false;
         std::vector<DataSourceBits> data_sources;
     };
 
     std::unordered_map<uint32_t, SourceTraceCacheEntry> source_trace_cache_;
+    size_t source_trace_cache_trim_cursor_ = 0;
 
     // Stores the last computed trace for each executed OpStore instruction.
     // This is not used for correctness; it is useful for diagnostics and keeps
@@ -1174,8 +1191,9 @@ class SPIRVSimulator
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags = nullptr);
-    virtual std::vector<DataSourceBits> FindDataSourcesFromResultIDImpl(uint32_t result_id, uint32_t* property_flags, std::unordered_set<uint32_t>& visiting);
+    virtual std::vector<DataSourceBits> FindDataSourcesFromResultIDImpl(uint32_t result_id, uint32_t* property_flags, std::unordered_set<uint32_t>& visiting, bool* trace_depends_on_memory = nullptr, DataTraceRole trace_role = DataTraceRole::RawValue);
     virtual void                        InvalidateDataSourceTraceCache();
+    virtual void                        TrimDataSourceTraceCache();
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
     virtual bool                        HasDecorator(uint32_t result_id, uint32_t member_id, spv::Decoration decorator) const;
     virtual uint32_t GetDecoratorLiteral(uint32_t result_id, spv::Decoration decorator, size_t literal_offset = 0) const;

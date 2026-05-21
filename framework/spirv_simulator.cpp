@@ -2876,29 +2876,75 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
 
 static void AppendDataSources(std::vector<DataSourceBits>& dst, const std::vector<DataSourceBits>& src)
 {
+    if (src.empty())
+    {
+        return;
+    }
+
+    dst.reserve(dst.size() + src.size());
     dst.insert(dst.end(), src.begin(), src.end());
 }
 
 static std::string MakePointerLocationKey(const PointerV& pointer, uint64_t byte_offset)
 {
-    std::ostringstream oss;
-    oss << pointer.storage_class << ':'
-        << pointer.base_result_id << ':'
-        << pointer.pointer_handle << ':'
-        << byte_offset;
+    // This runs in the hottest load/store path. Avoid iostream formatting here.
+    std::string key;
+    key.reserve(64 + pointer.idx_path.size() * 12);
+    key += std::to_string(static_cast<uint32_t>(pointer.storage_class));
+    key += ':';
+    key += std::to_string(pointer.base_result_id);
+    key += ':';
+    key += std::to_string(pointer.pointer_handle);
+    key += ':';
+    key += std::to_string(byte_offset);
 
     for (uint32_t idx : pointer.idx_path)
     {
-        oss << ':' << idx;
+        key += ':';
+        key += std::to_string(idx);
     }
 
-    return oss.str();
+    return key;
 }
 
 void SPIRVSimulator::InvalidateDataSourceTraceCache()
 {
     ++memory_trace_epoch_;
-    source_trace_cache_.clear();
+
+    // Do not clear source_trace_cache_ here. A large fraction of traces are
+    // pure SSA/arithmetic chains and are independent of the current reaching
+    // store state. Those entries remain valid across OpStore. Entries that
+    // depended on OpLoad are tagged with the epoch where they were computed
+    // and are ignored after the epoch changes.
+    TrimDataSourceTraceCache();
+}
+
+void SPIRVSimulator::TrimDataSourceTraceCache()
+{
+    // Avoid unbounded growth from stale load-dependent entries in very long
+    // shaders/loops. Keep this deliberately cheap and incremental. Pure
+    // entries are retained because they are valid across all memory epochs.
+    constexpr size_t kMaxSourceTraceCacheEntries = 65536;
+    constexpr size_t kTrimBatch = 1024;
+
+    if (source_trace_cache_.size() <= kMaxSourceTraceCacheEntries)
+    {
+        return;
+    }
+
+    size_t removed = 0;
+    for (auto it = source_trace_cache_.begin(); it != source_trace_cache_.end() && removed < kTrimBatch;)
+    {
+        if (it->second.depends_on_memory && it->second.memory_epoch != memory_trace_epoch_)
+        {
+            it = source_trace_cache_.erase(it);
+            ++removed;
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(
@@ -2906,13 +2952,15 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(
     uint32_t* property_flags)
 {
     std::unordered_set<uint32_t> visiting;
-    return FindDataSourcesFromResultIDImpl(result_id, property_flags, visiting);
+    return FindDataSourcesFromResultIDImpl(result_id, property_flags, visiting, nullptr, DataTraceRole::RawValue);
 }
 
 std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     uint32_t result_id,
     uint32_t* property_flags,
-    std::unordered_set<uint32_t>& visiting)
+    std::unordered_set<uint32_t>& visiting,
+    bool* trace_depends_on_memory,
+    DataTraceRole trace_role)
 {
     if (!result_id_to_inst_index_.contains(result_id))
     {
@@ -2928,11 +2976,15 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     {
         auto cache_it = source_trace_cache_.find(result_id);
         if (cache_it != source_trace_cache_.end() &&
-            cache_it->second.memory_epoch == memory_trace_epoch_)
+            (!cache_it->second.depends_on_memory || cache_it->second.memory_epoch == memory_trace_epoch_))
         {
-            if (property_flags)
+            if (property_flags && trace_role == DataTraceRole::RawValue)
             {
                 *property_flags |= cache_it->second.property_flags;
+            }
+            if (trace_depends_on_memory)
+            {
+                *trace_depends_on_memory |= cache_it->second.depends_on_memory;
             }
             return cache_it->second.data_sources;
         }
@@ -2971,6 +3023,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     }
 
     uint32_t local_property_flags = 0;
+    bool local_depends_on_memory = false;
     if (SPIRVIsFloatOp(instruction.opcode))
     {
         local_property_flags |= SPS_FLAG_IS_FLOAT_SOURCE;
@@ -2981,15 +3034,57 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         local_property_flags |= SPS_FLAG_IS_ARITHMETIC_SOURCE;
     }
 
-    auto trace_id = [&](uint32_t id) {
+    if ((property_flags != nullptr) && (*property_flags & SPS_FLAG_IS_FLOAT_SOURCE) || (local_property_flags & SPS_FLAG_IS_FLOAT_SOURCE))
+    {
+        *property_flags |= local_property_flags;
+        return {};
+    }
+
+    const bool propagate_value_property_flags = (trace_role == DataTraceRole::RawValue);
+
+    auto trace_id_with_role = [&](uint32_t id, DataTraceRole child_role) {
         if (id == 0 || !result_id_to_inst_index_.contains(id))
         {
             return;
         }
+
         uint32_t child_property_flags = 0;
-        auto sub = FindDataSourcesFromResultIDImpl(id, &child_property_flags, visiting);
-        local_property_flags |= child_property_flags;
+        bool child_depends_on_memory = false;
+
+        // Only Value-role operands can directly contribute value-property flags
+        // such as SPS_FLAG_IS_FLOAT_SOURCE. Address/control operands still
+        // contribute their data sources, but a float used only as an index,
+        // branch condition, or loop bound should not mark the output value as
+        // float-derived.
+        uint32_t* child_property_flags_ptr =
+            (child_role == DataTraceRole::RawValue) ? &child_property_flags : nullptr;
+
+        auto sub = FindDataSourcesFromResultIDImpl(
+            id,
+            child_property_flags_ptr,
+            visiting,
+            &child_depends_on_memory,
+            child_role);
+
+        if (child_role == DataTraceRole::RawValue)
+        {
+            local_property_flags |= child_property_flags;
+        }
+
+        local_depends_on_memory |= child_depends_on_memory;
         AppendDataSources(results, sub);
+    };
+
+    auto trace_id = [&](uint32_t id) {
+        trace_id_with_role(id, DataTraceRole::RawValue);
+    };
+
+    auto trace_address_id = [&](uint32_t id) {
+        trace_id_with_role(id, DataTraceRole::Address);
+    };
+
+    auto trace_control_id = [&](uint32_t id) {
+        trace_id_with_role(id, DataTraceRole::Control);
     };
 
     auto trace_ids = [&](const std::vector<uint32_t>& ids) {
@@ -3026,19 +3121,56 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         }
 
         case spv::Op::OpCompositeExtract:
+        {
+            // Literal indices select bits from the composite but are not data
+            // operands. The composite itself contributes to the value bits.
+            if (!id_operands.empty())
+            {
+                trace_id(id_operands[0]);
+            }
+            break;
+        }
+
         case spv::Op::OpVectorExtractDynamic:
         {
-            // Conservative: trace the composite/vector and any dynamic index.
-            trace_ids(id_operands);
+            // The vector contributes value bits. The dynamic index only chooses
+            // which lane is read, so suppress value-property flags from it.
+            if (id_operands.size() > 0)
+            {
+                trace_id(id_operands[0]);
+            }
+            if (id_operands.size() > 1)
+            {
+                trace_address_id(id_operands[1]);
+            }
             break;
         }
 
         case spv::Op::OpCompositeInsert:
+        {
+            // Object and composite contribute value bits. CompositeInsert uses
+            // literal indices, so there are no address/control ID operands here.
+            trace_ids(id_operands);
+            break;
+        }
+
         case spv::Op::OpVectorInsertDynamic:
         {
-            // Result contains both the old composite and inserted object; dynamic
-            // indices also influence which bits end up in the result.
-            trace_ids(id_operands);
+            // Object and vector contribute value bits. The dynamic index only
+            // chooses which lane receives the object.
+            if (id_operands.size() > 0)
+            {
+                trace_id(id_operands[0]);
+            }
+            if (id_operands.size() > 1)
+            {
+                trace_id(id_operands[1]);
+            }
+            if (id_operands.size() > 2)
+            {
+                trace_address_id(id_operands[2]);
+            }
+
             break;
         }
 
@@ -3105,8 +3237,23 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             break;
         }
 
+        case spv::Op::OpAccessChain:
+        case spv::Op::OpInBoundsAccessChain:
+        {
+            // Access chains produce pointers. Their operands affect which
+            // memory location is addressed, not the value bits stored/returned
+            // through that pointer. Keep the source mapping but suppress
+            // value-property flags from base pointers and dynamic indices.
+            for (uint32_t id : id_operands)
+            {
+                trace_address_id(id);
+            }
+            break;
+        }
+
         case spv::Op::OpLoad:
         {
+            local_depends_on_memory = true;
             uint32_t pointer_id = instruction.words[3];
 
             // Prefer the resolved memory-location store map. It is the
@@ -3151,7 +3298,6 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                 data_source.source_ptr    = bit_cast<const void*>(resolved_ptr.first);
                 data_source.storage_class = (spv::StorageClass)pointer.storage_class;
                 data_source.idx           = 0;
-
                 if (pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
                     pointer.storage_class == spv::StorageClass::StorageClassUniform ||
                     pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer)
@@ -3190,11 +3336,14 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
 
         case spv::Op::OpSelect:
         {
-            // OpSelect result is control/data dependent on condition, true object
-            // and false object. SPIR-V words: type, result, condition, obj1, obj2.
+            // The condition chooses the value but does not contribute to the
+            // value bits. True/false objects do contribute. This prevents a
+            // float-derived condition from marking an integer output as
+            // float-derived unless that float-derived value is also used in
+            // the selected data. SPIR-V words: type, result, condition, obj1, obj2.
             if (instruction.word_count >= 6)
             {
-                trace_id(instruction.words[3]);
+                trace_control_id(instruction.words[3]);
                 trace_id(instruction.words[4]);
                 trace_id(instruction.words[5]);
             }
@@ -3249,10 +3398,16 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     SourceTraceCacheEntry cache_entry;
     cache_entry.memory_epoch = memory_trace_epoch_;
     cache_entry.property_flags = local_property_flags;
+    cache_entry.depends_on_memory = local_depends_on_memory;
     cache_entry.data_sources = results;
-    source_trace_cache_[result_id] = cache_entry;
+    source_trace_cache_[result_id] = std::move(cache_entry);
 
-    if (property_flags)
+    if (trace_depends_on_memory)
+    {
+        *trace_depends_on_memory |= local_depends_on_memory;
+    }
+
+    if (property_flags && propagate_value_property_flags)
     {
         *property_flags |= local_property_flags;
     }
@@ -5745,12 +5900,14 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     // Handle memory flag tracking
     uint32_t property_flags = 0;
     std::vector<DataSourceBits> data_sources = FindDataSourcesFromResultID(result_id, &property_flags);
-    size_t opstore_pc = call_stack_.back().pc;
-    if (opstore_source_trace_cache_.find(opstore_pc) == opstore_source_trace_cache_.end())
+    // Retaining every executed OpStore trace can dominate runtime/memory for
+    // long-running shaders. The result is not used for correctness, so only
+    // keep it when verbose diagnostics are enabled.
+    if (verbose_)
     {
-        opstore_source_trace_cache_[opstore_pc] = {};
+        size_t opstore_pc = call_stack_.back().pc;
+        opstore_source_trace_cache_[opstore_pc].push_back({memory_trace_epoch_, property_flags, false, data_sources});
     }
-    opstore_source_trace_cache_[opstore_pc].push_back({memory_trace_epoch_, property_flags, data_sources});
 
     // Currently we only assume the change of a pointer or descriptor if
     // - It only has one input source and is not read from multiple different places
