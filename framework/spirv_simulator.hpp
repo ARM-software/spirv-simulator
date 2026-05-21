@@ -982,8 +982,42 @@ class SPIRVSimulator
     Type               void_type_;
 
     // This maps the result ID of pointers to the result ID of values stored
-    // through them
+    // through them. This is kept for the simple case where the exact same
+    // pointer ID is used by a later OpLoad.
     std::unordered_map<uint32_t, uint32_t> values_stored_;
+
+    // Same logical information as values_stored_, but keyed by the resolved
+    // memory location rather than by the SSA pointer ID. This handles the
+    // common case where a store and a later load use different OpAccessChain
+    // result IDs that resolve to the same memory.
+    //
+    // The key is deliberately a string instead of a custom struct hash to keep
+    // this helper self-contained in the simulator. The key encodes storage
+    // class, base object, byte offset and access path.
+    std::unordered_map<std::string, uint32_t> values_stored_by_memory_location_;
+
+    // For OpFunctionCall results, the source IDs inside the callee are not
+    // always safe to chase after returning, especially when locals/parameters
+    // are reused by later calls. Cache the data-source trace at OpReturnValue
+    // time for the concrete executed call.
+    struct CachedCallReturnTrace
+    {
+        uint32_t property_flags = 0;
+        std::vector<DataSourceBits> data_sources;
+    };
+    std::unordered_map<uint32_t, CachedCallReturnTrace> call_return_source_cache_;
+
+    // Cache for expensive backwards data-source tracing. The epoch is bumped
+    // whenever values_stored_ changes, because OpLoad backtracing depends on
+    // the current store map. Empty results are cached too, since many traces
+    // intentionally dead-end.
+    struct SourceTraceCacheEntry
+    {
+        uint32_t property_flags = 0;
+        std::vector<DataSourceBits> data_sources;
+    };
+    // Maps OpStore instruction index to data dources
+    std::unordered_map<size_t, std::vector<SourceTraceCacheEntry>> source_trace_cache_;
 
     // Debug only
     bool verbose_;

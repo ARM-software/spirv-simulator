@@ -2873,6 +2873,28 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
     }
 }
 
+
+static void AppendDataSources(std::vector<DataSourceBits>& dst, const std::vector<DataSourceBits>& src)
+{
+    dst.insert(dst.end(), src.begin(), src.end());
+}
+
+static std::string MakePointerLocationKey(const PointerV& pointer, uint64_t byte_offset)
+{
+    std::ostringstream oss;
+    oss << pointer.storage_class << ':'
+        << pointer.base_result_id << ':'
+        << pointer.pointer_handle << ':'
+        << byte_offset;
+
+    for (uint32_t idx : pointer.idx_path)
+    {
+        oss << ':' << idx;
+    }
+
+    return oss.str();
+}
+
 std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(
     uint32_t result_id,
     uint32_t* property_flags)
@@ -2902,11 +2924,6 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         return {};
     }
 
-    if (verbose_)
-    {
-        std::cout << execIndent << "Tracing value source backwards through result id: " << result_id << std::endl;
-    }
-
     std::vector<DataSourceBits> results;
 
     uint32_t           instruction_index = result_id_to_inst_index_.at(result_id);
@@ -2924,7 +2941,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
 
     if (verbose_)
     {
-        std::cout << execIndent << "Tracing value source backwards through: " << result_id << " " << spv::OpToString(instruction.opcode) << std::endl;
+        std::cout << execIndent << "Tracing value source backwards through: "
+                  << result_id << " " << spv::OpToString(instruction.opcode) << std::endl;
     }
 
     if (property_flags)
@@ -2940,25 +2958,34 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         }
     }
 
-    const std::vector<uint32_t> id_operands = ids_per_instruction_[result_id_to_inst_index_.at(result_id)];
-
-    if (verbose_)
-    {
-        for (auto& operand : id_operands)
+    auto trace_id = [&](uint32_t id) {
+        if (id == 0 || !result_id_to_inst_index_.contains(id))
         {
-            std::cout << execIndent << "      Operand: " << operand << std::endl;
+            return;
         }
-    }
+        auto sub = FindDataSourcesFromResultIDImpl(id, property_flags, visiting);
+        AppendDataSources(results, sub);
+    };
+
+    auto trace_ids = [&](const std::vector<uint32_t>& ids) {
+        for (uint32_t id : ids)
+        {
+            trace_id(id);
+        }
+    };
+
+    const std::vector<uint32_t> id_operands = ids_per_instruction_[instruction_index];
 
     switch (instruction.opcode)
     {
         case spv::Op::OpSpecConstantComposite:
+        case spv::Op::OpConstantComposite:
+        case spv::Op::OpCompositeConstruct:
         {
-            for (uint32_t component_id = 3; component_id < instruction.word_count; ++component_id)
+            const uint32_t first_component = 3;
+            for (uint32_t component_id = first_component; component_id < instruction.word_count; ++component_id)
             {
-                std::vector<DataSourceBits> component_result =
-                    FindDataSourcesFromResultIDImpl(instruction.words[component_id], property_flags, visiting);
-                results.insert(results.end(), component_result.begin(), component_result.end());
+                trace_id(instruction.words[component_id]);
             }
 
             DataSourceBits* prev_source = nullptr;
@@ -2968,41 +2995,39 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                 {
                     component_data.val_bit_offset += prev_source->val_bit_offset + prev_source->bitcount;
                 }
-
                 prev_source = &component_data;
             }
             break;
         }
+
+        case spv::Op::OpCompositeExtract:
+        case spv::Op::OpVectorExtractDynamic:
+        {
+            // Conservative: trace the composite/vector and any dynamic index.
+            trace_ids(id_operands);
+            break;
+        }
+
+        case spv::Op::OpCompositeInsert:
+        case spv::Op::OpVectorInsertDynamic:
+        {
+            // Result contains both the old composite and inserted object; dynamic
+            // indices also influence which bits end up in the result.
+            trace_ids(id_operands);
+            break;
+        }
+
         case spv::Op::OpImageRead:
-        {
-            // Dont bother tracing these further, we ignore data sources from image reads
-            break;
-        }
         case spv::Op::OpImageSampleImplicitLod:
-        {
-            // Dont bother tracing these further, we ignore data sources from image reads
-            break;
-        }
         case spv::Op::OpImageSampleExplicitLod:
-        {
-            // Dont bother tracing these further, we ignore data sources from image reads
-            break;
-        }
         case spv::Op::OpImageQuerySizeLod:
-        {
-            // Dont bother tracing these further, we ignore data sources from image reads
-            break;
-        }
+        case spv::Op::OpImageQuerySize:
         case spv::Op::OpFunction:
         {
-            // These are dead ends
+            // Images and function declarations are treated as source dead ends.
             break;
         }
-        case spv::Op::OpImageQuerySize:
-        {
-            // Dont bother tracing these further, we ignore data sources from image reads
-            break;
-        }
+
         case spv::Op::OpSpecConstant:
         {
             assertm(HasDecorator(result_id, spv::Decoration::DecorationSpecId),
@@ -3010,7 +3035,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
 
             uint64_t byte_offset = 0;
-            if (simulation_data_->specialization_constants && (simulation_data_->specialization_constant_offsets.find(spec_id) == simulation_data_->specialization_constant_offsets.end()))
+            if (simulation_data_->specialization_constants &&
+                (simulation_data_->specialization_constant_offsets.find(spec_id) == simulation_data_->specialization_constant_offsets.end()))
             {
                 assertx("SPIRV simulator: No specialization constant data found for the given SpecId");
             }
@@ -3020,113 +3046,23 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             }
 
             DataSourceBits data_source;
-            data_source.location    = BitLocation::SpecConstant;
-            data_source.source_ptr  = simulation_data_->specialization_constants;
-            data_source.idx         = 0;
-            data_source.binding_id  = spec_id;
-            data_source.set_id      = 0;
-            data_source.byte_offset = byte_offset;
-            data_source.bit_offset  = 0;
-            data_source.bitcount    = GetBitsizeOfType(type_id);
-            ;
+            data_source.location       = BitLocation::SpecConstant;
+            data_source.source_ptr     = simulation_data_->specialization_constants;
+            data_source.idx            = 0;
+            data_source.binding_id     = spec_id;
+            data_source.set_id         = 0;
+            data_source.byte_offset    = byte_offset;
+            data_source.bit_offset     = 0;
+            data_source.bitcount       = GetBitsizeOfType(type_id);
             data_source.val_bit_offset = 0;
             results.push_back(data_source);
             break;
         }
-        case spv::Op::OpLoad:
-        {
-            uint32_t pointer_id = instruction.words[3];
 
-            if (values_stored_.find(pointer_id) == values_stored_.end())
-            {
-                const PointerV& pointer = std::get<PointerV>(GetValue(pointer_id));
-
-                //assertm(pointer.storage_class != spv::StorageClass::StorageClassFunction,
-                //        "SPIRV simulator: A StorageClassFunction is being read from while backtracing operands without having been stored to, this is a symptom of a serious error somewhere");
-
-                std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(pointer);
-
-                DataSourceBits data_source;
-                data_source.location      = BitLocation::StorageClass;
-                data_source.source_ptr    = bit_cast<const void*>(resolved_ptr.first);
-                data_source.storage_class = (spv::StorageClass)pointer.storage_class;
-                data_source.idx           = 0;
-
-                //std::cout << StorageClassName((spv::StorageClass)pointer.storage_class) << std::endl;
-
-                if (pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
-                         pointer.storage_class == spv::StorageClass::StorageClassUniform ||
-                         pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer)
-                {
-                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet),
-                            "SPIRV simulator: Missing DecorationDescriptorSet for pointee object");
-                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBinding),
-                            "SPIRV simulator: Missing DecorationBinding for pointee object");
-
-                    data_source.binding_id =
-                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationBinding);
-                    data_source.set_id =
-                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
-                }
-                else if (pointer.storage_class == spv::StorageClass::StorageClassInput)
-                {
-                    // TODO: We should probably mark this, but for now we assume pointers and descriptors dont come from here
-                    data_source.binding_id = 0;
-                    data_source.set_id     = 0;
-                }
-                else if (pointer.storage_class == spv::StorageClass::StorageClassOutput)
-                {
-                    // This is a pointer to a uninitialized output parameter, likely the result of unreachable branching.
-                    // Just return, this is the end of the value chain.
-                    data_source.binding_id = 0;
-                    data_source.set_id     = 0;
-                    return results;
-                }
-                else if (pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
-                         pointer.storage_class == spv::StorageClass::StorageClassCrossWorkgroup)
-                {
-                    // This could be from another thread
-                    // TODO: We should probably mark this, but its higly likely this is just uninitialized as the result of unreachable branching.
-                    data_source.binding_id = 0;
-                    data_source.set_id     = 0;
-                    return results;
-                }
-                else if (pointer.storage_class == spv::StorageClass::StorageClassFunction)
-                {
-                    // This is a pointer to a uninitialized function parameter, likely the result of unreachable branching.
-                    // Just return, this is the end of the value chain.
-                    return results;
-                }
-                else
-                {
-                    data_source.binding_id = 0;
-                    data_source.set_id     = 0;
-                }
-
-                data_source.byte_offset = resolved_ptr.second;
-                data_source.bit_offset  = 0;
-                // This does not account for padding, but its probably fine since it makes little sense to load complex constructs here
-                data_source.bitcount       = GetBitsizeOfTargetType(pointer);
-                data_source.val_bit_offset = 0;
-                results.push_back(data_source);
-            }
-            else
-            {
-                uint32_t true_source = values_stored_.at(pointer_id);
-
-                if (true_source != result_id)
-                {
-                    if (verbose_)
-                    {
-                        std::cout << execIndent << execIndent << "Following load/store indirection to: " << true_source << std::endl;
-                    }
-                    std::vector<DataSourceBits>  component_result = FindDataSourcesFromResultIDImpl(true_source, property_flags, visiting);
-                    results.insert(results.end(), component_result.begin(), component_result.end());
-                }
-            }
-            break;
-        }
         case spv::Op::OpConstant:
+        case spv::Op::OpConstantTrue:
+        case spv::Op::OpConstantFalse:
+        case spv::Op::OpConstantNull:
         {
             DataSourceBits data_source;
             data_source.location       = BitLocation::Constant;
@@ -3143,36 +3079,144 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             break;
         }
 
+        case spv::Op::OpLoad:
+        {
+            uint32_t pointer_id = instruction.words[3];
+
+            // Prefer the resolved memory-location store map. It is the
+            // most up-to-date representation when the same memory was written
+            // via a different but equivalent pointer ID.
+            if (std::holds_alternative<PointerV>(GetValue(pointer_id)))
+            {
+                const PointerV& pointer = std::get<PointerV>(GetValue(pointer_id));
+                std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(pointer);
+                std::string key = MakePointerLocationKey(pointer, resolved_ptr.second);
+
+                auto by_location = values_stored_by_memory_location_.find(key);
+                if (by_location != values_stored_by_memory_location_.end() && by_location->second != result_id)
+                {
+                    if (verbose_)
+                    {
+                        std::cout << execIndent << execIndent
+                                  << "Following load/store indirection by memory location to: "
+                                  << by_location->second << std::endl;
+                    }
+                    trace_id(by_location->second);
+                    break;
+                }
+
+                // Fallback to exact SSA pointer ID if the location was not
+                // seen. This still covers unresolvable/opaque pointer cases.
+                auto by_id = values_stored_.find(pointer_id);
+                if (by_id != values_stored_.end() && by_id->second != result_id)
+                {
+                    if (verbose_)
+                    {
+                        std::cout << execIndent << execIndent
+                                  << "Following load/store indirection by pointer id to: "
+                                  << by_id->second << std::endl;
+                    }
+                    trace_id(by_id->second);
+                    break;
+                }
+
+                DataSourceBits data_source;
+                data_source.location      = BitLocation::StorageClass;
+                data_source.source_ptr    = bit_cast<const void*>(resolved_ptr.first);
+                data_source.storage_class = (spv::StorageClass)pointer.storage_class;
+                data_source.idx           = 0;
+
+                if (pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+                    pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+                    pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer)
+                {
+                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet),
+                            "SPIRV simulator: Missing DecorationDescriptorSet for pointee object");
+                    assertm(HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBinding),
+                            "SPIRV simulator: Missing DecorationBinding for pointee object");
+
+                    data_source.binding_id =
+                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationBinding);
+                    data_source.set_id =
+                        GetDecoratorLiteral(pointer.base_result_id, spv::Decoration::DecorationDescriptorSet);
+                }
+                else
+                {
+                    data_source.binding_id = 0;
+                    data_source.set_id     = 0;
+                }
+
+                // Function memory with no reaching store is local/uninitialized
+                // from the tracer's perspective; do not report it as shader input.
+                if (pointer.storage_class == spv::StorageClass::StorageClassFunction)
+                {
+                    break;
+                }
+
+                data_source.byte_offset    = resolved_ptr.second;
+                data_source.bit_offset     = 0;
+                data_source.bitcount       = GetBitsizeOfTargetType(pointer);
+                data_source.val_bit_offset = 0;
+                results.push_back(data_source);
+            }
+            break;
+        }
+
         case spv::Op::OpSelect:
         {
-            // TODO: Properly implement this, propogate based on conditional
+            // OpSelect result is control/data dependent on condition, true object
+            // and false object. SPIR-V words: type, result, condition, obj1, obj2.
+            if (instruction.word_count >= 6)
+            {
+                trace_id(instruction.words[3]);
+                trace_id(instruction.words[4]);
+                trace_id(instruction.words[5]);
+            }
             break;
         }
+
         case spv::Op::OpPhi:
         {
-            // TODO: Properly implement this, propogate based on conditional
+            // Conservative: include every possible incoming value. This is
+            // essential for loops, where the backedge value represents the
+            // previous iteration's contribution. Cycle detection above prevents
+            // infinite recursion on self-referential loop phis.
+            auto incoming = GetPhiIncoming(instruction);
+            for (const PhiIncoming& inc : incoming)
+            {
+                trace_id(inc.value_id);
+            }
             break;
         }
-        case spv::Op::OpCompositeConstruct:
+
+        case spv::Op::OpFunctionCall:
         {
-            for (const auto& id : id_operands) {
-                auto sub = FindDataSourcesFromResultIDImpl(id, property_flags, visiting);
-                results.insert(results.end(), sub.begin(), sub.end());
+            // Prefer the concrete trace captured at OpReturnValue execution time.
+            auto cached = call_return_source_cache_.find(result_id);
+            if (cached != call_return_source_cache_.end())
+            {
+                if (property_flags)
+                {
+                    *property_flags |= cached->second.property_flags;
+                }
+                AppendDataSources(results, cached->second.data_sources);
             }
-            DataSourceBits* prev = nullptr;
-            for (auto& comp : results) {
-                if (prev)
-                    comp.val_bit_offset += prev->val_bit_offset + prev->bitcount;
-                prev = &comp;
+            else
+            {
+                // Fallback: the result is at least dependent on the arguments.
+                // This is conservative for unknown/external functions and still
+                // useful for pointer-derived return values.
+                for (uint32_t i = 4; i < instruction.word_count; ++i)
+                {
+                    trace_id(instruction.words[i]);
+                }
             }
             break;
         }
+
         default:
         {
-            for (const auto& id : id_operands) {
-                auto sub = FindDataSourcesFromResultIDImpl(id, property_flags, visiting);
-                results.insert(results.end(), sub.begin(), sub.end());
-            }
+            trace_ids(id_operands);
             break;
         }
     }
@@ -5666,6 +5710,12 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     // Handle memory flag tracking
     uint32_t property_flags = 0;
     std::vector<DataSourceBits> data_sources = FindDataSourcesFromResultID(result_id, &property_flags);
+    size_t opstore_pc = call_stack_.back().pc;
+    if (source_trace_cache_.find(opstore_pc) == source_trace_cache_.end())
+    {
+        source_trace_cache_[opstore_pc] = {};
+    }
+    source_trace_cache_[opstore_pc].push_back({property_flags, data_sources});
 
     // Currently we only assume the change of a pointer or descriptor if
     // - It only has one input source and is not read from multiple different places
@@ -5678,6 +5728,7 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     should_track_memory_metadata &= !(property_flags & SPS_FLAG_IS_ARITHMETIC_SOURCE);
     should_track_memory_metadata &= data_sources.size() == 1;
     should_track_memory_metadata &= pointer.storage_class != spv::StorageClass::StorageClassFunction;
+    should_track_memory_metadata &= pointer.storage_class != spv::StorageClass::StorageClassImage;
     if (should_track_memory_metadata)
     {
         std::pair<std::byte*, uint64_t> resolved_pointer = ResolvePointerV(pointer);
@@ -5703,7 +5754,7 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
             }
         }
     }
-    else if (verbose_ && (pointer.storage_class != spv::StorageClass::StorageClassFunction))
+    else if (verbose_ && !((pointer.storage_class == spv::StorageClass::StorageClassFunction) || (pointer.storage_class == spv::StorageClass::StorageClassImage)))
     {
         std::cout << "SPIRV simulator: Memory tracking skipped for result with id: " << result_id << " writeout to pointer with handle: " << pointer.pointer_handle << " due to incompatible data chain." << std::endl;
     }
@@ -5745,6 +5796,18 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     }
 
     values_stored_[pointer_id] = result_id;
+
+    // Also remember the store by resolved memory location. Relying only on
+    // pointer_id misses store/load chains where equivalent pointers are built
+    // with separate OpAccessChain instructions or across function boundaries.
+    // This is intentionally done after the metadata work above so the map
+    // reflects the final executed store.
+    if (std::holds_alternative<PointerV>(GetValue(pointer_id)))
+    {
+        const PointerV& stored_pointer = std::get<PointerV>(GetValue(pointer_id));
+        std::pair<std::byte*, uint64_t> resolved_pointer = ResolvePointerV(stored_pointer);
+        values_stored_by_memory_location_[MakePointerLocationKey(stored_pointer, resolved_pointer.second)] = result_id;
+    }
 }
 
 void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
@@ -6094,6 +6157,16 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     if (it != values_stored_.end())
     {
         values_stored_[result_id] = it->second;
+    }
+
+    // Capture the concrete data-source trace for this executed call before
+    // unwinding the callee frame. The result ID belongs to the OpFunctionCall
+    // instruction in the caller, while value_id belongs to the callee. Tracing
+    // it later can be ambiguous if this function is called multiple times.
+    {
+        uint32_t return_property_flags = 0;
+        std::vector<DataSourceBits> return_sources = FindDataSourcesFromResultID(value_id, &return_property_flags);
+        call_return_source_cache_[result_id] = { return_property_flags, return_sources };
     }
 
 #ifdef DEBUG_BUILD
