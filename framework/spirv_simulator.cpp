@@ -2895,6 +2895,12 @@ static std::string MakePointerLocationKey(const PointerV& pointer, uint64_t byte
     return oss.str();
 }
 
+void SPIRVSimulator::InvalidateDataSourceTraceCache()
+{
+    ++memory_trace_epoch_;
+    source_trace_cache_.clear();
+}
+
 std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(
     uint32_t result_id,
     uint32_t* property_flags)
@@ -2911,6 +2917,25 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     if (!result_id_to_inst_index_.contains(result_id))
     {
         return {};
+    }
+
+    // Memoize complete traces for the current memory epoch. This is safe for
+    // pure SSA chains and for OpLoad chains as long as the cache is invalidated
+    // whenever the reaching-store state changes. Do not serve cached entries
+    // while this id is already being expanded recursively; the cycle guard below
+    // must handle that case.
+    if (visiting.find(result_id) == visiting.end())
+    {
+        auto cache_it = source_trace_cache_.find(result_id);
+        if (cache_it != source_trace_cache_.end() &&
+            cache_it->second.memory_epoch == memory_trace_epoch_)
+        {
+            if (property_flags)
+            {
+                *property_flags |= cache_it->second.property_flags;
+            }
+            return cache_it->second.data_sources;
+        }
     }
 
     if (!visiting.insert(result_id).second)
@@ -2945,17 +2970,15 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                   << result_id << " " << spv::OpToString(instruction.opcode) << std::endl;
     }
 
-    if (property_flags)
+    uint32_t local_property_flags = 0;
+    if (SPIRVIsFloatOp(instruction.opcode))
     {
-        if (SPIRVIsFloatOp(instruction.opcode))
-        {
-            *property_flags |= SPS_FLAG_IS_FLOAT_SOURCE;
-        }
+        local_property_flags |= SPS_FLAG_IS_FLOAT_SOURCE;
+    }
 
-        if (SPIRVIsArithmeticOp(instruction.opcode))
-        {
-            *property_flags |= SPS_FLAG_IS_ARITHMETIC_SOURCE;
-        }
+    if (SPIRVIsArithmeticOp(instruction.opcode))
+    {
+        local_property_flags |= SPS_FLAG_IS_ARITHMETIC_SOURCE;
     }
 
     auto trace_id = [&](uint32_t id) {
@@ -2963,7 +2986,9 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         {
             return;
         }
-        auto sub = FindDataSourcesFromResultIDImpl(id, property_flags, visiting);
+        uint32_t child_property_flags = 0;
+        auto sub = FindDataSourcesFromResultIDImpl(id, &child_property_flags, visiting);
+        local_property_flags |= child_property_flags;
         AppendDataSources(results, sub);
     };
 
@@ -3023,6 +3048,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         case spv::Op::OpImageQuerySizeLod:
         case spv::Op::OpImageQuerySize:
         case spv::Op::OpFunction:
+        case spv::Op::OpImageSampleDrefImplicitLod:
         {
             // Images and function declarations are treated as source dead ends.
             break;
@@ -3195,10 +3221,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             auto cached = call_return_source_cache_.find(result_id);
             if (cached != call_return_source_cache_.end())
             {
-                if (property_flags)
-                {
-                    *property_flags |= cached->second.property_flags;
-                }
+                local_property_flags |= cached->second.property_flags;
                 AppendDataSources(results, cached->second.data_sources);
             }
             else
@@ -3222,6 +3245,18 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     }
 
     visiting.erase(result_id);
+
+    SourceTraceCacheEntry cache_entry;
+    cache_entry.memory_epoch = memory_trace_epoch_;
+    cache_entry.property_flags = local_property_flags;
+    cache_entry.data_sources = results;
+    source_trace_cache_[result_id] = cache_entry;
+
+    if (property_flags)
+    {
+        *property_flags |= local_property_flags;
+    }
+
     return results;
 }
 
@@ -5711,11 +5746,11 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
     uint32_t property_flags = 0;
     std::vector<DataSourceBits> data_sources = FindDataSourcesFromResultID(result_id, &property_flags);
     size_t opstore_pc = call_stack_.back().pc;
-    if (source_trace_cache_.find(opstore_pc) == source_trace_cache_.end())
+    if (opstore_source_trace_cache_.find(opstore_pc) == opstore_source_trace_cache_.end())
     {
-        source_trace_cache_[opstore_pc] = {};
+        opstore_source_trace_cache_[opstore_pc] = {};
     }
-    source_trace_cache_[opstore_pc].push_back({property_flags, data_sources});
+    opstore_source_trace_cache_[opstore_pc].push_back({memory_trace_epoch_, property_flags, data_sources});
 
     // Currently we only assume the change of a pointer or descriptor if
     // - It only has one input source and is not read from multiple different places
@@ -5808,6 +5843,8 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         std::pair<std::byte*, uint64_t> resolved_pointer = ResolvePointerV(stored_pointer);
         values_stored_by_memory_location_[MakePointerLocationKey(stored_pointer, resolved_pointer.second)] = result_id;
     }
+
+    InvalidateDataSourceTraceCache();
 }
 
 void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
@@ -5856,6 +5893,7 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
     if (values_stored_.find(base_id) != values_stored_.end())
     {
         values_stored_[result_id] = values_stored_[base_id];
+        InvalidateDataSourceTraceCache();
     }
 
     for (auto i = 4; i < instruction.word_count; ++i)
@@ -5956,6 +5994,7 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
     FunctionInfo& function_info = funcs_[function_id];
     call_stack_.push_back({ function_info.first_inst_index, result_id, current_heap_index_ });
 
+    bool changed_trace_state = false;
     uint32_t parameter_index = 0;
     for (auto i = 4; i < instruction.word_count; ++i)
     {
@@ -5968,9 +6007,22 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
         if (values_stored_.find(arg_id) != values_stored_.end())
         {
             values_stored_[param_id] = values_stored_[arg_id];
+            changed_trace_state = true;
+        }
+        else if (values_stored_.erase(param_id) != 0)
+        {
+            // Parameter IDs are reused each time the callee executes. If the
+            // previous call had a reaching store for this parameter but the
+            // current argument does not, the old mapping must not leak.
+            changed_trace_state = true;
         }
 
         parameter_index += 1;
+    }
+
+    if (changed_trace_state)
+    {
+        InvalidateDataSourceTraceCache();
     }
 }
 
@@ -6157,6 +6209,11 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     if (it != values_stored_.end())
     {
         values_stored_[result_id] = it->second;
+        InvalidateDataSourceTraceCache();
+    }
+    else if (values_stored_.erase(result_id) != 0)
+    {
+        InvalidateDataSourceTraceCache();
     }
 
     // Capture the concrete data-source trace for this executed call before
@@ -6167,6 +6224,7 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
         uint32_t return_property_flags = 0;
         std::vector<DataSourceBits> return_sources = FindDataSourcesFromResultID(value_id, &return_property_flags);
         call_return_source_cache_[result_id] = { return_property_flags, return_sources };
+        InvalidateDataSourceTraceCache();
     }
 
 #ifdef DEBUG_BUILD
