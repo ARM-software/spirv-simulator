@@ -126,6 +126,10 @@ static std::vector<PhiIncoming> GetPhiIncoming(const Instruction& phi)
 {
     std::vector<PhiIncoming> incoming;
     const uint32_t wc = phi.word_count;
+    if (wc > 3)
+    {
+        incoming.reserve((wc - 3) / 2);
+    }
 
     // Start at operand index 3 (value,label pairs)
     for (uint32_t i = 3; i + 1 < wc; i += 2) {
@@ -290,9 +294,11 @@ LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header)
 {
     const auto& H = cfg.blocks.at(header);
     LoopInfo L{header, H.loop_merge, H.loop_continue, {}, {}};
+    L.blocks.reserve(cfg.blocks.size());
 
     std::queue<uint32_t> q;
-    std::set<uint32_t> seen;
+    std::unordered_set<uint32_t> seen;
+    seen.reserve(cfg.blocks.size());
     q.push(header);
     seen.insert(header);
 
@@ -361,6 +367,10 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
 
 void SPIRVSimulator::BuildCFGFromWords()
 {
+    cfg_.blocks.reserve(ids_per_instruction_.size());
+    cfg_.preds.reserve(ids_per_instruction_.size());
+    cfg_.block_order.reserve(ids_per_instruction_.size());
+
     uint32_t instruction_index = 0;
     for (size_t i = 5; i < program_words_.size(); ) {
         uint32_t first    = program_words_[i];
@@ -502,6 +512,11 @@ void SPIRVSimulator::Validate()
 
 void SPIRVSimulator::ParseAll()
 {
+    const size_t instruction_count = ids_per_instruction_.size();
+    instructions_.reserve(instruction_count);
+    block_label_per_instruction_.reserve(instruction_count);
+    result_id_to_inst_index_.reserve(instruction_count);
+
     size_t instruction_index = 0;
 
     if (verbose_)
@@ -2792,7 +2807,9 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         case Type::Kind::Struct:
         {
             auto structure = std::make_shared<AggregateV>();
-            for (auto member : struct_members_.at(type_id))
+            const auto& members = struct_members_.at(type_id);
+            structure->elems.reserve(members.size());
+            for (auto member : members)
             {
                 structure->elems.push_back(MakeDefault(member, initial_data));
             }
@@ -2962,7 +2979,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     bool* trace_depends_on_memory,
     DataTraceRole trace_role)
 {
-    if (!result_id_to_inst_index_.contains(result_id))
+    auto result_inst_it = result_id_to_inst_index_.find(result_id);
+    if (result_inst_it == result_id_to_inst_index_.end())
     {
         return {};
     }
@@ -3003,7 +3021,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
 
     std::vector<DataSourceBits> results;
 
-    uint32_t           instruction_index = result_id_to_inst_index_.at(result_id);
+    uint32_t           instruction_index = result_inst_it->second;
     const Instruction& instruction       = instructions_[instruction_index];
 
     bool has_result = false;
@@ -3043,7 +3061,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     const bool propagate_value_property_flags = (trace_role == DataTraceRole::RawValue);
 
     auto trace_id_with_role = [&](uint32_t id, DataTraceRole child_role) {
-        if (id == 0 || !result_id_to_inst_index_.contains(id))
+        if (id == 0 || result_id_to_inst_index_.find(id) == result_id_to_inst_index_.end())
         {
             return;
         }
@@ -3094,7 +3112,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         }
     };
 
-    const std::vector<uint32_t> id_operands = ids_per_instruction_[instruction_index];
+    const std::vector<uint32_t>& id_operands = ids_per_instruction_[instruction_index];
 
     switch (instruction.opcode)
     {
@@ -3413,10 +3431,9 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             // essential for loops, where the backedge value represents the
             // previous iteration's contribution. Cycle detection above prevents
             // infinite recursion on self-referential loop phis.
-            auto incoming = GetPhiIncoming(instruction);
-            for (const PhiIncoming& inc : incoming)
+            for (uint32_t operand_index = 3; operand_index + 1 < instruction.word_count; operand_index += 2)
             {
-                trace_id(inc.value_id);
+                trace_id(instruction.words[operand_index]);
             }
             break;
         }
@@ -3482,8 +3499,10 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
     if (std::holds_alternative<std::shared_ptr<VectorV>>(value))
     {
         std::shared_ptr<VectorV> new_vector = std::make_shared<VectorV>();
+        const auto& old_elems = std::get<std::shared_ptr<VectorV>>(value)->elems;
+        new_vector->elems.reserve(old_elems.size());
 
-        for (const auto& elem : std::get<std::shared_ptr<VectorV>>(value)->elems)
+        for (const auto& elem : old_elems)
         {
             new_vector->elems.push_back(CopyValue(elem));
         }
@@ -3493,8 +3512,10 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
     else if (std::holds_alternative<std::shared_ptr<MatrixV>>(value))
     {
         std::shared_ptr<MatrixV> new_matrix = std::make_shared<MatrixV>();
+        const auto& old_cols = std::get<std::shared_ptr<MatrixV>>(value)->cols;
+        new_matrix->cols.reserve(old_cols.size());
 
-        for (const auto& col : std::get<std::shared_ptr<MatrixV>>(value)->cols)
+        for (const auto& col : old_cols)
         {
             new_matrix->cols.push_back(CopyValue(col));
         }
@@ -3504,8 +3525,10 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
     else if (std::holds_alternative<std::shared_ptr<AggregateV>>(value))
     {
         std::shared_ptr<AggregateV> new_aggregate = std::make_shared<AggregateV>();
+        const auto& old_elems = std::get<std::shared_ptr<AggregateV>>(value)->elems;
+        new_aggregate->elems.reserve(old_elems.size());
 
-        for (const auto& elem : std::get<std::shared_ptr<AggregateV>>(value)->elems)
+        for (const auto& elem : old_elems)
         {
             new_aggregate->elems.push_back(CopyValue(elem));
         }
@@ -5466,6 +5489,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
     if (type.kind == Type::Kind::Vector)
     {
         auto vec = std::make_shared<VectorV>();
+        vec->elems.reserve(type.vector.elem_count);
         for (auto i = 3; i < instruction.word_count; ++i)
         {
             const Value& component_value = GetValue(instruction.words[i]);
@@ -5491,6 +5515,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
     else if (type.kind == Type::Kind::Matrix)
     {
         auto matrix = std::make_shared<MatrixV>();
+        matrix->cols.reserve(instruction.word_count - 3);
         for (auto i = 3; i < instruction.word_count; ++i)
         {
           ExtractFlags(instruction.words[i], value_meta);
@@ -5502,6 +5527,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
     else if (type.kind == Type::Kind::Struct || type.kind == Type::Kind::Array || type.kind == Type::Kind::RuntimeArray)
     {
         auto aggregate = std::make_shared<AggregateV>();
+        aggregate->elems.reserve(instruction.word_count - 3);
         for (auto i = 3; i < instruction.word_count; ++i)
         {
           ExtractFlags(instruction.words[i], value_meta);
@@ -6103,6 +6129,7 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
             "SPIRV simulator: Attempt to use OpAccessChain on a non-pointer value");
 
     PointerV new_pointer = std::get<PointerV>(base_value);
+    new_pointer.idx_path.reserve(new_pointer.idx_path.size() + instruction.word_count - 4);
 
     if (values_stored_.find(base_id) != values_stored_.end())
     {
