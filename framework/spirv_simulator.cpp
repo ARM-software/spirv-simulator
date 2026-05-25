@@ -297,7 +297,7 @@ LoopInfo BuildLoopRegion(const CFG& cfg, uint32_t header)
     L.blocks.reserve(cfg.blocks.size());
 
     std::queue<uint32_t> q;
-    std::unordered_set<uint32_t> seen;
+    UnorderedSet<uint32_t> seen;
     seen.reserve(cfg.blocks.size());
     q.push(header);
     seen.insert(header);
@@ -2902,26 +2902,15 @@ static void AppendDataSources(std::vector<DataSourceBits>& dst, const std::vecto
     dst.insert(dst.end(), src.begin(), src.end());
 }
 
-static std::string MakePointerLocationKey(const PointerV& pointer, uint64_t byte_offset)
+static PointerLocationKey MakePointerLocationKey(const PointerV& pointer, uint64_t byte_offset)
 {
-    // This runs in the hottest load/store path. Avoid iostream formatting here.
-    std::string key;
-    key.reserve(64 + pointer.idx_path.size() * 12);
-    key += std::to_string(static_cast<uint32_t>(pointer.storage_class));
-    key += ':';
-    key += std::to_string(pointer.base_result_id);
-    key += ':';
-    key += std::to_string(pointer.pointer_handle);
-    key += ':';
-    key += std::to_string(byte_offset);
-
-    for (uint32_t idx : pointer.idx_path)
-    {
-        key += ':';
-        key += std::to_string(idx);
-    }
-
-    return key;
+    return PointerLocationKey{
+        static_cast<uint32_t>(pointer.storage_class),
+        pointer.base_result_id,
+        pointer.pointer_handle,
+        byte_offset,
+        pointer.idx_path
+    };
 }
 
 void SPIRVSimulator::InvalidateDataSourceTraceCache()
@@ -2968,14 +2957,14 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultID(
     uint32_t result_id,
     uint32_t* property_flags)
 {
-    std::unordered_set<uint32_t> visiting;
+    UnorderedSet<uint32_t> visiting;
     return FindDataSourcesFromResultIDImpl(result_id, property_flags, visiting, nullptr, DataTraceRole::RawValue);
 }
 
 std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     uint32_t result_id,
     uint32_t* property_flags,
-    std::unordered_set<uint32_t>& visiting,
+    UnorderedSet<uint32_t>& visiting,
     bool* trace_depends_on_memory,
     DataTraceRole trace_role)
 {
@@ -3338,7 +3327,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                 }
 
                 std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(pointer);
-                std::string key = MakePointerLocationKey(pointer, resolved_ptr.second);
+                PointerLocationKey key = MakePointerLocationKey(pointer, resolved_ptr.second);
 
                 auto by_location = values_stored_by_memory_location_.find(key);
                 if (by_location != values_stored_by_memory_location_.end() && by_location->second != result_id)

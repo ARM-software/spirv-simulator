@@ -9,7 +9,6 @@
 #include <cstdint>
 
 #include <ostream>
-#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -71,9 +70,9 @@ enum CommonTypes : uint32_t
 struct TestParameters
 {
     spv::Op                                                                         opcode;
-    std::unordered_map<uint32_t, SPIRVSimulator::Value>                             operands;
-    std::unordered_map<uint32_t, std::variant<CommonTypes, ::SPIRVSimulator::Type>> operand_types;
-    std::unordered_map<uint32_t, std::vector<SPIRVSimulator::DecorationInfo>>       decorations;
+    SPIRVSimulator::UnorderedMap<uint32_t, SPIRVSimulator::Value>                             operands;
+    SPIRVSimulator::UnorderedMap<uint32_t, std::variant<CommonTypes, ::SPIRVSimulator::Type>> operand_types;
+    SPIRVSimulator::UnorderedMap<uint32_t, std::vector<SPIRVSimulator::DecorationInfo>>       decorations;
     std::string                                                                     death_message;
 
     std::vector<uint8_t>             push_constants_;

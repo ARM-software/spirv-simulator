@@ -5,15 +5,16 @@
 
 #include <iostream>
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <set>
 #include <span>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 #include <variant>
 #include <vector>
+#include <functional>
 #include <type_traits>
 #include <cassert>
 #include <limits>
@@ -43,6 +44,17 @@
 
 namespace SPIRVSimulator
 {
+
+template <typename Key,
+          typename Value,
+          typename Hash = ankerl::unordered_dense::hash<Key>,
+          typename KeyEqual = std::equal_to<Key>>
+using UnorderedMap = ankerl::unordered_dense::map<Key, Value, Hash, KeyEqual>;
+
+template <typename Key,
+          typename Hash = ankerl::unordered_dense::hash<Key>,
+          typename KeyEqual = std::equal_to<Key>>
+using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
 
 // Any result ID or pointer object ID in this set, can be treated as if it has
 // any valid value for the given type
@@ -133,30 +145,30 @@ struct SimulationData
     // Data block pointer -> byte_offset_to_array -> array length (in number of elements)
     // The Data block pointer should be the void* -> uint64_t bitcast of a pointer matching one of
     // the bound buffers/data blocks in bindings, push_constants, specialization_constants or physical_address_buffers
-    std::unordered_map<uint64_t, std::unordered_map<size_t, size_t>> rt_array_lengths;
+    UnorderedMap<uint64_t, UnorderedMap<size_t, size_t>> rt_array_lengths;
 
     // SpecId -> byte offset
     // For each SpecID this should give the offset (in bytes) to the given specialization constant in
     // specialization_constants
-    std::unordered_map<uint32_t, size_t> specialization_constant_offsets;
+    UnorderedMap<uint32_t, size_t> specialization_constant_offsets;
     const void*                          specialization_constants = nullptr;
 
     // The full binary push_constant Data block
     const void* push_constants = nullptr;
 
     // DescriptorSet -> Binding -> Data block
-    std::unordered_map<uint64_t, std::unordered_map<uint64_t, void*>> bindings;
+    UnorderedMap<uint64_t, UnorderedMap<uint64_t, void*>> bindings;
 
     // These can be provided by the user in order to properly initialize PhysicalStorageBuffer storage class values.
     // The keys here are uint64_t values who contain the bits in the physical address pointers seen on the GPU.
     // The value pair is the size of the buffer (in bytes) followed by the pointer to the Data block on the host side
     // (which should be a copy of the GPU side data)
-    std::unordered_map<uint64_t, std::pair<size_t, void*>> physical_address_buffers;
+    UnorderedMap<uint64_t, std::pair<size_t, void*>> physical_address_buffers;
 
     // Optional map of buffers to descriptor candidates in said buffers.
     // Any buffer that has the VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT set must have a corresponding entry here.
     // Unlike the PhysicalAddressCandidate map, the vector of DescriptorCandidate's can be empty, no errors will be raised if a descriptor is found without a candidate in this list.
-    std::unordered_map<const void*, std::vector<DescriptorCandidate>> descriptor_candidates;
+    UnorderedMap<const void*, std::vector<DescriptorCandidate>> descriptor_candidates;
 
     // Optional value, a unique identifier for the input shader.
     // If provided, this can allow the simulator to massively speed up simulation time
@@ -170,7 +182,7 @@ struct SimulationData
 struct SimulationResults
 {
     // Written to by the simulator
-    std::unordered_map<const void*, std::vector<PhysicalAddressCandidate>> output_candidates;
+    UnorderedMap<const void*, std::vector<PhysicalAddressCandidate>> output_candidates;
     std::vector<PhysicalAddressData> physical_address_data;
 
     // Set to true if the simulator encountered a case that requires all threads in a dispatch to run in order to guarantee no pointers are missed
@@ -484,6 +496,54 @@ inline bool operator==(const PointerV& a, const PointerV& b)
          a.base_result_id == b.base_result_id &&
          a.storage_class == b.storage_class && a.idx_path == b.idx_path;
 }
+
+struct PointerLocationKey
+{
+    uint32_t storage_class;
+    uint32_t base_result_id;
+    uint64_t pointer_handle;
+    uint64_t byte_offset;
+    std::vector<uint32_t> idx_path;
+
+    bool operator==(const PointerLocationKey& other) const
+    {
+        return storage_class == other.storage_class &&
+               base_result_id == other.base_result_id &&
+               pointer_handle == other.pointer_handle &&
+               byte_offset == other.byte_offset &&
+               idx_path == other.idx_path;
+    }
+};
+
+struct PointerLocationKeyHash
+{
+    static uint64_t Mix(uint64_t value) noexcept
+    {
+        value += 0x9e3779b97f4a7c15ull;
+        value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
+        value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
+        return value ^ (value >> 31u);
+    }
+
+    size_t operator()(const PointerLocationKey& key) const noexcept
+    {
+        uint64_t hash = Mix(key.storage_class);
+        auto combine = [&hash](uint64_t value) {
+            hash ^= Mix(value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u));
+        };
+
+        combine(key.base_result_id);
+        combine(key.pointer_handle);
+        combine(key.byte_offset);
+        combine(key.idx_path.size());
+        for (uint32_t idx : key.idx_path)
+        {
+            combine(idx);
+        }
+
+        return static_cast<size_t>(hash);
+    }
+};
 
 struct SampledImageV
 {
@@ -898,9 +958,9 @@ struct BlockInfo {
 
 struct CFG {
     // Block id -> BlockInfo
-    std::unordered_map<uint32_t, BlockInfo> blocks;
+    UnorderedMap<uint32_t, BlockInfo> blocks;
     // For reverse edges (optional but useful)
-    std::unordered_map<uint32_t, std::vector<uint32_t>> preds;
+    UnorderedMap<uint32_t, std::vector<uint32_t>> preds;
     // Maintain function boundaries if you have multiple functions
     std::vector<uint32_t> block_order;    // in module order (optional)
 };
@@ -960,41 +1020,39 @@ class SPIRVSimulator
 
     // Contains entry point ID -> entry point OpName labels (labels may be
     // non-existent/empty)
-    std::unordered_map<uint32_t, std::string>           entry_points_;
-    std::unordered_map<uint32_t, spv::ExecutionModel>   entry_point_models_;
+    UnorderedMap<uint32_t, std::string>           entry_points_;
+    UnorderedMap<uint32_t, spv::ExecutionModel>   entry_point_models_;
     std::vector<uint32_t>                               program_words_;
     std::span<const uint32_t>                           stream_;
     std::vector<Instruction>                            instructions_;
     std::vector<std::vector<uint32_t>>                  ids_per_instruction_;
     std::vector<uint32_t>                               block_label_per_instruction_;
-    std::unordered_map<uint32_t, std::vector<uint32_t>> spec_instr_words_;
-    std::unordered_map<uint32_t, Instruction>           spec_instructions_;
-    std::unordered_map<uint32_t, size_t>                result_id_to_inst_index_;
-    std::unordered_map<uint32_t, Type>                  types_;
-    std::unordered_map<uint32_t, std::vector<uint32_t>> struct_members_;
-    std::unordered_map<uint32_t, uint32_t>              forward_type_declarations_; // Unused, consider removing this
-    std::unordered_map<uint32_t, std::vector<DecorationInfo>>                               decorators_;
+    UnorderedMap<uint32_t, std::vector<uint32_t>> spec_instr_words_;
+    UnorderedMap<uint32_t, Instruction>           spec_instructions_;
+    UnorderedMap<uint32_t, size_t>                result_id_to_inst_index_;
+    UnorderedMap<uint32_t, Type>                  types_;
+    UnorderedMap<uint32_t, std::vector<uint32_t>> struct_members_;
+    UnorderedMap<uint32_t, uint32_t>              forward_type_declarations_; // Unused, consider removing this
+    UnorderedMap<uint32_t, std::vector<DecorationInfo>>                               decorators_;
     // struct result_id -> struct member_literal -> array of Decoration
-    std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<DecorationInfo>>> struct_decorators_;
-    std::unordered_map<uint32_t, std::string>                                               extended_imports_;
-    std::unordered_map<uint32_t, std::string>                                               string_literals_;
+    UnorderedMap<uint32_t, UnorderedMap<uint32_t, std::vector<DecorationInfo>>> struct_decorators_;
+    UnorderedMap<uint32_t, std::string>                                               extended_imports_;
+    UnorderedMap<uint32_t, std::string>                                               string_literals_;
 
     Type               void_type_;
 
     // This maps the result ID of pointers to the result ID of values stored
     // through them. This is kept for the simple case where the exact same
     // pointer ID is used by a later OpLoad.
-    std::unordered_map<uint32_t, uint32_t> values_stored_;
+    UnorderedMap<uint32_t, uint32_t> values_stored_;
 
     // Same logical information as values_stored_, but keyed by the resolved
     // memory location rather than by the SSA pointer ID. This handles the
     // common case where a store and a later load use different OpAccessChain
     // result IDs that resolve to the same memory.
     //
-    // The key is deliberately a string instead of a custom struct hash to keep
-    // this helper self-contained in the simulator. The key encodes storage
-    // class, base object, byte offset and access path.
-    std::unordered_map<std::string, uint32_t> values_stored_by_memory_location_;
+    // The key encodes storage class, base object, byte offset and access path.
+    UnorderedMap<PointerLocationKey, uint32_t, PointerLocationKeyHash> values_stored_by_memory_location_;
 
     // For OpFunctionCall results, the source IDs inside the callee are not
     // always safe to chase after returning, especially when locals/parameters
@@ -1005,7 +1063,7 @@ class SPIRVSimulator
         uint32_t property_flags = 0;
         std::vector<DataSourceBits> data_sources;
     };
-    std::unordered_map<uint32_t, CachedCallReturnTrace> call_return_source_cache_;
+    UnorderedMap<uint32_t, CachedCallReturnTrace> call_return_source_cache_;
 
     // Cache for expensive backwards data-source tracing. OpLoad backtracing
     // depends on the currently known reaching stores, so entries are tagged
@@ -1037,30 +1095,30 @@ class SPIRVSimulator
         std::vector<DataSourceBits> data_sources;
     };
 
-    std::unordered_map<uint32_t, SourceTraceCacheEntry> source_trace_cache_;
+    UnorderedMap<uint32_t, SourceTraceCacheEntry> source_trace_cache_;
     size_t source_trace_cache_trim_cursor_ = 0;
 
     // Stores the last computed trace for each executed OpStore instruction.
     // This is not used for correctness; it is useful for diagnostics and keeps
     // the old per-OpStore trace retention separate from the result-id memoizer.
-    std::unordered_map<size_t, std::vector<SourceTraceCacheEntry>> opstore_source_trace_cache_;
+    UnorderedMap<size_t, std::vector<SourceTraceCacheEntry>> opstore_source_trace_cache_;
 
     // Debug only
     bool verbose_;
     uint64_t flags_;
 
     // Counts how many times each branch instruction was taken, used to abort infinite loops
-    std::unordered_map<uint32_t, uint64_t> branch_counters_;
+    UnorderedMap<uint32_t, uint64_t> branch_counters_;
 
     // These hold information about any pointers that reference physical storage
     // buffers
     std::vector<PointerV>                        physical_address_pointers_;
     std::vector<std::pair<PointerV, PointerV>>   pointers_to_physical_address_pointers_;
-    std::unordered_map<uint32_t, DataSourceBits> data_source_bits_;
+    UnorderedMap<uint32_t, DataSourceBits> data_source_bits_;
 
     // These hold information about descriptor buffer stuff
     // Descriptor writeout OpStore instruction id -> write counter for that writeout code
-    std::unordered_map<uint32_t, uint32_t> merged_descriptor_write_count;
+    UnorderedMap<uint32_t, uint32_t> merged_descriptor_write_count;
 
     // Control flow
     struct FunctionInfo
@@ -1076,11 +1134,11 @@ class SPIRVSimulator
     };
 
     uint32_t                                   prev_defined_func_id_;
-    std::unordered_map<uint32_t, FunctionInfo> funcs_;
+    UnorderedMap<uint32_t, FunctionInfo> funcs_;
 
     // Control flow graph of the whole program, used for loop detection and analysis
     CFG cfg_;
-    std::unordered_map<uint32_t, LoopInfo> loops_;
+    UnorderedMap<uint32_t, LoopInfo> loops_;
     std::vector<ActiveLoop> loop_stack_;
 
     uint32_t prev_block_id_             = 0;
@@ -1103,13 +1161,13 @@ class SPIRVSimulator
     std::vector<Frame> call_stack_;
 
     // result_id -> Value
-    // std::unordered_map<uint32_t, Value> globals_;
+    // UnorderedMap<uint32_t, Value> globals_;
     std::vector<Value> values_;
     std::vector<ValueMetadata> value_meta_;
     std::vector<Value> function_heap_;
 
     // storage_class -> heap_index -> Heap Value for all non-function storage classes
-    std::unordered_map<uint32_t, std::vector<Value>> heaps_;
+    UnorderedMap<uint32_t, std::vector<Value>> heaps_;
 
     void BuildAllLoops()
     {
@@ -1191,7 +1249,7 @@ class SPIRVSimulator
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags = nullptr);
-    virtual std::vector<DataSourceBits> FindDataSourcesFromResultIDImpl(uint32_t result_id, uint32_t* property_flags, std::unordered_set<uint32_t>& visiting, bool* trace_depends_on_memory = nullptr, DataTraceRole trace_role = DataTraceRole::RawValue);
+    virtual std::vector<DataSourceBits> FindDataSourcesFromResultIDImpl(uint32_t result_id, uint32_t* property_flags, UnorderedSet<uint32_t>& visiting, bool* trace_depends_on_memory = nullptr, DataTraceRole trace_role = DataTraceRole::RawValue);
     virtual void                        InvalidateDataSourceTraceCache();
     virtual void                        TrimDataSourceTraceCache();
     virtual bool                        HasDecorator(uint32_t result_id, spv::Decoration decorator) const;
