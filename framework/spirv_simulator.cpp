@@ -168,7 +168,7 @@ bool SPIRVSimulator::IsLoopCounterPhi(uint32_t candidate_id) const
     This function tries to detect if a OpPhi instruction is used for the common loop counter pattern in spirv-code
     generated using the khronos tools to compile it from higher level languages.
     */
-    const Instruction& def = instructions_[result_id_to_inst_index_.at(candidate_id)];
+    const Instruction& def = instructions_[GetInstructionIndexForResultId(candidate_id)];
     if (def.opcode != spv::Op::OpPhi)
     {
         return false;
@@ -252,7 +252,7 @@ uint32_t SPIRVSimulator::DeriveDescriptorSizeID(const Instruction& branch_inst) 
     assertm(branch_inst.opcode == spv::Op::OpBranchConditional, "SPIRV-Simulator: DeriveDescriptorSizeID called on non-OpBranchConditional instruction");
 
     uint32_t cond_id = branch_inst.words[1];
-    const Instruction& cond_inst = instructions_[result_id_to_inst_index_.at(cond_id)];
+    const Instruction& cond_inst = instructions_[GetInstructionIndexForResultId(cond_id)];
 
     // If this is not a integer comparison, assume the loop is not used for descriptor writeout
     if (!IsRelationalIntCompare(cond_inst.opcode))
@@ -515,7 +515,7 @@ void SPIRVSimulator::ParseAll()
     const size_t instruction_count = ids_per_instruction_.size();
     instructions_.reserve(instruction_count);
     block_label_per_instruction_.reserve(instruction_count);
-    result_id_to_inst_index_.reserve(instruction_count);
+    result_id_to_inst_index_.assign(program_words_[3], kInvalidInstructionIndex);
 
     size_t instruction_index = 0;
 
@@ -566,13 +566,11 @@ void SPIRVSimulator::ParseAll()
         {
             if (has_type)
             {
-                result_id_to_inst_index_[instruction.words[2]] = instruction_index;
-                num_result_ids_                                = std::max(num_result_ids_, instruction.words[2]) + 1;
+                SetInstructionIndexForResultId(instruction.words[2], instruction_index);
             }
             else
             {
-                result_id_to_inst_index_[instruction.words[1]] = instruction_index;
-                num_result_ids_                                = std::max(num_result_ids_, instruction.words[1]) + 1;
+                SetInstructionIndexForResultId(instruction.words[1], instruction_index);
             }
         }
 
@@ -1288,7 +1286,7 @@ void SPIRVSimulator::on_loop_iteration(uint32_t header)
     {
         // Just jump to the merge block of the current loop
         const LoopInfo& current_loop = loops_[header];
-        call_stack_.back().pc = result_id_to_inst_index_.at(current_loop.merge);
+        call_stack_.back().pc = GetInstructionIndexForResultId(current_loop.merge);
         std::cout << "SPIRV simulator: WARNING: Loop reached the max number of debug iterations, jumping to merge block and exiting loop" << std::endl;
         simulation_results_->aborted_long_loop = true;
     }
@@ -1716,10 +1714,7 @@ const Type& SPIRVSimulator::GetTypeByResultId(uint32_t result_id) const
     Returns the type struct mapping to a given result_id.
     result_id must be the result ID of a spirv instruction.
     */
-    assertm(result_id_to_inst_index_.find(result_id) != result_id_to_inst_index_.end(),
-            "SPIRV simulator: No instruction found for result_id");
-
-    size_t             instruction_index = result_id_to_inst_index_.at(result_id);
+    size_t             instruction_index = GetInstructionIndexForResultId(result_id);
     const Instruction& instruction       = instructions_[instruction_index];
 
     bool has_result = false;
@@ -2608,10 +2603,7 @@ uint32_t SPIRVSimulator::GetTypeID(uint32_t result_id) const
     /*
     Given a result ID, return the type ID of the value it maps to.
     */
-    assertm(result_id_to_inst_index_.find(result_id) != result_id_to_inst_index_.end(),
-            "SPIRV simulator: No instruction found for result_id");
-
-    size_t             instruction_index = result_id_to_inst_index_.at(result_id);
+    size_t             instruction_index = GetInstructionIndexForResultId(result_id);
     const Instruction& instruction       = instructions_[instruction_index];
 
     bool has_result = false;
@@ -2968,8 +2960,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     bool* trace_depends_on_memory,
     DataTraceRole trace_role)
 {
-    auto result_inst_it = result_id_to_inst_index_.find(result_id);
-    if (result_inst_it == result_id_to_inst_index_.end())
+    if (!HasInstructionForResultId(result_id))
     {
         return {};
     }
@@ -3010,7 +3001,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
 
     std::vector<DataSourceBits> results;
 
-    uint32_t           instruction_index = result_inst_it->second;
+    uint32_t           instruction_index = GetInstructionIndexForResultId(result_id);
     const Instruction& instruction       = instructions_[instruction_index];
 
     bool has_result = false;
@@ -3050,7 +3041,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     const bool propagate_value_property_flags = (trace_role == DataTraceRole::RawValue);
 
     auto trace_id_with_role = [&](uint32_t id, DataTraceRole child_role) {
-        if (id == 0 || result_id_to_inst_index_.find(id) == result_id_to_inst_index_.end())
+        if (id == 0 || !HasInstructionForResultId(id))
         {
             return;
         }
@@ -5912,14 +5903,14 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
                     uint32_t loop_merge_id = cfg_.blocks[current_block_id_].loop_merge;
                     uint32_t loop_terminator_id = loop_merge_id + 1;
 
-                    const Instruction& terminator_instruction = instructions_[result_id_to_inst_index_[loop_terminator_id]];
+                    const Instruction& terminator_instruction = instructions_[GetInstructionIndexForResultId(loop_terminator_id)];
 
                     // If loop merge is immidiately followed by a OpBranchConditional we take the conditional and use it to derive the size
                     if (terminator_instruction.opcode == spv::Op::OpBranchConditional)
                     {
                         is_static_writeout = false;
                         uint32_t condition_id = terminator_instruction.words[1];
-                        const Instruction& condition_instruction = instructions_[result_id_to_inst_index_[condition_id]];
+                        const Instruction& condition_instruction = instructions_[GetInstructionIndexForResultId(condition_id)];
 
                         descriptor_size_id = DeriveDescriptorSizeID(condition_instruction);
 
@@ -6297,7 +6288,7 @@ void SPIRVSimulator::Op_Branch(const Instruction& instruction)
     assert(instruction.opcode == spv::Op::OpBranch);
 
     uint32_t result_id    = instruction.words[1];
-    call_stack_.back().pc = result_id_to_inst_index_.at(result_id);
+    call_stack_.back().pc = GetInstructionIndexForResultId(result_id);
 }
 
 void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
@@ -6389,7 +6380,7 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         visisted_fork_branches_->insert(target_label);
     }
 
-    call_stack_.back().pc = result_id_to_inst_index_.at(target_label);
+    call_stack_.back().pc = GetInstructionIndexForResultId(target_label);
 }
 
 void SPIRVSimulator::Op_Return(const Instruction& instruction)
@@ -10669,7 +10660,7 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
 
     // TODO: Create a execution for if appropriate
 
-    call_stack_.back().pc = result_id_to_inst_index_.at(label_id);
+    call_stack_.back().pc = GetInstructionIndexForResultId(label_id);
 }
 
 void SPIRVSimulator::Op_MatrixTimesVector(const Instruction& instruction)

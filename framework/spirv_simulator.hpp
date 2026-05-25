@@ -1029,7 +1029,9 @@ class SPIRVSimulator
     std::vector<uint32_t>                               block_label_per_instruction_;
     UnorderedMap<uint32_t, std::vector<uint32_t>> spec_instr_words_;
     UnorderedMap<uint32_t, Instruction>           spec_instructions_;
-    UnorderedMap<uint32_t, size_t>                result_id_to_inst_index_;
+    static constexpr size_t kInvalidInstructionIndex = std::numeric_limits<size_t>::max();
+
+    std::vector<size_t>                             result_id_to_inst_index_;
     UnorderedMap<uint32_t, Type>                  types_;
     UnorderedMap<uint32_t, std::vector<uint32_t>> struct_members_;
     UnorderedMap<uint32_t, uint32_t>              forward_type_declarations_; // Unused, consider removing this
@@ -1192,6 +1194,29 @@ class SPIRVSimulator
 
     // Helpers
     // TODO: Many more of these can be const, fix
+    bool HasInstructionForResultId(uint32_t result_id) const
+    {
+        return result_id < result_id_to_inst_index_.size() &&
+               result_id_to_inst_index_[result_id] != kInvalidInstructionIndex;
+    }
+
+    size_t GetInstructionIndexForResultId(uint32_t result_id) const
+    {
+        assert(HasInstructionForResultId(result_id));
+        return result_id_to_inst_index_[result_id];
+    }
+
+    void SetInstructionIndexForResultId(uint32_t result_id, size_t instruction_index)
+    {
+        if (result_id >= result_id_to_inst_index_.size())
+        {
+            result_id_to_inst_index_.resize(result_id + 1, kInvalidInstructionIndex);
+        }
+
+        result_id_to_inst_index_[result_id] = instruction_index;
+        num_result_ids_ = std::max(num_result_ids_, result_id + 1);
+    }
+
     virtual void DecodeHeader();
     virtual void ParseAll();
     virtual void Validate();
