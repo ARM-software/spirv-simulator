@@ -774,7 +774,19 @@ T ArithmeticRightShiftUnsigned(T value, unsigned shift, unsigned bitWidth)
     return shifted;
 }
 
-size_t CountBitsUInt(uint64_t value);
+constexpr size_t CountBitsUInt(uint64_t value, size_t max_bits)
+{
+    size_t count = 0;
+
+    while (max_bits)
+    {
+        count += (value & 1);
+        value >>= 1;
+        --max_bits;
+    }
+
+    return count;
+}
 
 // Bitcast can be very annoying to import on certain platforms, even if c++20 is supported
 // Just do this for now, and we can replace this with the std::bit_cast version in the future
@@ -1193,7 +1205,6 @@ class SPIRVSimulator
                         const std::span<const uint32_t>& operand_words);
 
     // Helpers
-    // TODO: Many more of these can be const, fix
     bool HasInstructionForResultId(uint32_t result_id) const
     {
         return result_id < result_id_to_inst_index_.size() &&
@@ -1219,7 +1230,7 @@ class SPIRVSimulator
 
     virtual void DecodeHeader();
     virtual void ParseAll();
-    virtual void Validate();
+    virtual void Validate() const;
     virtual void BuildCFGFromWords();
     virtual void InitializeIdOpsTable() {
         ParseState parse_state = { program_words_.data(), &ids_per_instruction_ };
@@ -1245,11 +1256,11 @@ class SPIRVSimulator
     virtual void ExecuteInstructions();
     virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, std::set<uint32_t>* visited_set, SimulationData* fork_input_data = nullptr, SimulationResults* fork_simulation_results = nullptr);
 
-    virtual std::string  GetValueString(const Value&);
-    virtual std::string  GetTypeString(const Type&);
-    virtual void         PrintInstruction(const Instruction&);
+    virtual std::string  GetValueString(const Value&) const;
+    virtual std::string  GetTypeString(const Type&) const;
+    virtual void         PrintInstruction(const Instruction&) const;
     virtual void         HandleUnimplementedOpcode(const Instruction&);
-    virtual Value        MakeScalar(uint32_t type_id, const uint32_t*& words);
+    virtual Value        MakeScalar(uint32_t type_id, const uint32_t*& words) const;
     virtual Value        MakeDefault(uint32_t type_id, const uint32_t** initial_data = nullptr);
     virtual uint64_t     RemapHostToClientPointer(uint64_t host_pointer) const;
     virtual void         WritePointer(const PointerV& ptr, const Value& value);
@@ -1260,17 +1271,17 @@ class SPIRVSimulator
     virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
     virtual uint32_t     GetTypeID(uint32_t result_id) const;
-    virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value);
-    virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data);
+    virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value) const;
+    virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data) const;
     virtual uint64_t     GetPointerOffset(const PointerV& pointer_value) const;
 
     virtual std::pair<std::byte*, uint64_t> ResolvePointerV(const PointerV& pointer_value) const;
 
-    virtual size_t   CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary);
+    virtual size_t   CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary) const;
     virtual size_t   GetBitsizeOfType(uint32_t type_id) const;
-    virtual uint32_t GetTargetPointerType(const PointerV& pointer);
-    virtual size_t   GetBitsizeOfTargetType(const PointerV& pointer);
-    virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output);
+    virtual uint32_t GetTargetPointerType(const PointerV& pointer) const;
+    virtual size_t   GetBitsizeOfTargetType(const PointerV& pointer) const;
+    virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output) const;
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags = nullptr);
@@ -1364,7 +1375,7 @@ class SPIRVSimulator
         value_meta_[result_id].flags |= pointer.pointee_flags;
     };
 
-    virtual void ExtractFlags(uint32_t result_id, uint64_t& out_meta) {
+    virtual void ExtractFlags(uint32_t result_id, uint64_t& out_meta) const {
       out_meta |= value_meta_[result_id].flags;
     };
 
@@ -1388,10 +1399,10 @@ class SPIRVSimulator
         std::get<PointerV>(values_[pointer_id]).pointee_flags = value_meta_[result_id].flags;
     };
 
-    virtual bool HasFlags(uint32_t result_id, uint64_t flags) {
+    virtual bool HasFlags(uint32_t result_id, uint64_t flags) const {
         return value_meta_[result_id].flags & flags;
     };
-    virtual bool HasFlagsPointee(const PointerV& pointer, uint64_t flags) {
+    virtual bool HasFlagsPointee(const PointerV& pointer, uint64_t flags) const {
         return pointer.pointee_flags & flags;
     };
 

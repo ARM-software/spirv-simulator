@@ -52,3 +52,7 @@ void SPIRVSimulator::Op_<name>(const Instruction& instruction)
 - Run tests with `ctest --output-on-failure`. Fix any errors shown.
 - When adding opcodes, include positive/edge cases and pointer/descriptor coverage where applicable.
 - For shader-driven scenarios, place inputs in `test_shaders/` and reference them via `./spirv_simulator` in tests.
+
+## Performance measurements
+- For performance runs, make sure you build in release mode (made with `-DCMAKE_BUILD_TYPE=Release`, eg in a `build_release` folder).
+- Performance can be measured like this: `taskset 1 perf stat -r 100 build_release/spirv_simulator test_shaders/aztec_ruins_shader_4.spv`

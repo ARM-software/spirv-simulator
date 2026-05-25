@@ -18,7 +18,7 @@ constexpr uint32_t kWordCountShift = 16u;
 constexpr uint32_t kOpcodeMask     = 0xFFFFu;
 const std::string  execIndent      = "                      # ";
 
-static inline bool SPIRVIsFloatOp(spv::Op op)
+static inline constexpr bool SPIRVIsFloatOp(spv::Op op)
 {
     switch (op) {
         // ---- Floating-point arithmetic ----
@@ -45,7 +45,7 @@ static inline bool SPIRVIsFloatOp(spv::Op op)
     }
 }
 
-static inline bool SPIRVIsArithmeticOp(spv::Op op)
+static inline constexpr bool SPIRVIsArithmeticOp(spv::Op op)
 {
     switch (op) {
         // ---- Integer arithmetic ----
@@ -84,7 +84,7 @@ static inline bool SPIRVIsArithmeticOp(spv::Op op)
     }
 }
 
-static bool IsRelationalIntCompare(spv::Op op)
+static inline constexpr bool IsRelationalIntCompare(spv::Op op)
 {
     switch (op) {
         case spv::Op::OpULessThan:
@@ -142,7 +142,7 @@ static std::vector<PhiIncoming> GetPhiIncoming(const Instruction& phi)
     return incoming;
 }
 
-const char* StorageClassName(spv::StorageClass sc)
+constexpr const char* StorageClassName(spv::StorageClass sc)
 {
     switch (sc) {
         case spv::StorageClassUniformConstant: return "UniformConstant";
@@ -190,7 +190,7 @@ bool SPIRVSimulator::IsLoopCounterPhi(uint32_t candidate_id) const
     uint32_t header_label   = header.label;
     uint32_t continue_label = header.loop_continue;
 
-    for (auto& inc : incoming) {
+    for (const auto& inc : incoming) {
         if (inc.parent_label == continue_label) {
             from_continue_val = inc.value_id;
             break;
@@ -472,13 +472,13 @@ void SPIRVSimulator::DecodeHeader()
     stream_ = std::span<const uint32_t>(program_words_).subspan(5);
 }
 
-void SPIRVSimulator::Validate()
+void SPIRVSimulator::Validate() const
 {
     /*
     Do some early sanity checking and validation.
     */
     // TODO: Expand this (a lot)
-    for (auto& [id, t] : types_)
+    for (const auto& [id, t] : types_)
     {
         assertm(!(t.kind == Type::Kind::Array && !types_.contains(t.array.elem_type_id)),
                 "SPIRV simulator: Missing  array elem type");
@@ -1345,7 +1345,7 @@ void SPIRVSimulator::HandleUnimplementedOpcode(const Instruction& instruction)
     }
 }
 
-std::string SPIRVSimulator::GetValueString(const Value& value)
+std::string SPIRVSimulator::GetValueString(const Value& value) const
 {
     if (std::holds_alternative<double>(value))
     {
@@ -1387,7 +1387,7 @@ std::string SPIRVSimulator::GetValueString(const Value& value)
     return "";
 }
 
-std::string SPIRVSimulator::GetTypeString(const Type& type)
+std::string SPIRVSimulator::GetTypeString(const Type& type) const
 {
     if (type.kind == Type::Kind::Void)
     {
@@ -1462,7 +1462,7 @@ std::string SPIRVSimulator::GetTypeString(const Type& type)
     return "";
 }
 
-void SPIRVSimulator::PrintInstruction(const Instruction& instruction)
+void SPIRVSimulator::PrintInstruction(const Instruction& instruction) const
 {
     bool has_result = false;
     bool has_type   = false;
@@ -1746,20 +1746,7 @@ const Type& SPIRVSimulator::GetTypeByTypeId(uint32_t type_id) const
 //  Value creation and inspect helpers
 // ---------------------------------------------------------------------------
 
-size_t CountBitsUInt(uint64_t value, size_t max_bits)
-{
-    size_t count = 0;
-
-    while (max_bits)
-    {
-        count += value & 1;
-        value >>= 1;
-        max_bits -= 1;
-    }
-    return count;
-}
-
-size_t SPIRVSimulator::CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary)
+size_t SPIRVSimulator::CountSetBits(const Value& value, uint32_t type_id, bool* is_arbitrary) const
 {
     assertm(types_.find(type_id) != types_.end(), "SPIRV simulator: No valid type for the given ID was found");
 
@@ -1921,7 +1908,7 @@ size_t SPIRVSimulator::GetBitsizeOfType(uint32_t type_id) const
     return bitcount;
 }
 
-uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer)
+uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer) const
 {
     assertm(types_.find(pointer.base_type_id) != types_.end(),
             "SPIRV simulator: No valid type for the given pointer type ID was found");
@@ -1968,7 +1955,7 @@ uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer)
     return type_id;
 }
 
-size_t SPIRVSimulator::GetBitsizeOfTargetType(const PointerV& pointer)
+size_t SPIRVSimulator::GetBitsizeOfTargetType(const PointerV& pointer) const
 {
     /*
     Returns the full bitsize of the type pointed to by the given pointer.
@@ -1982,7 +1969,7 @@ size_t SPIRVSimulator::GetBitsizeOfTargetType(const PointerV& pointer)
     return GetBitsizeOfType(type_id);
 }
 
-void SPIRVSimulator::GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output)
+void SPIRVSimulator::GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output) const
 {
     /*
     Gets all the scalar types in a compond types, laid out as they are in memory.
@@ -2063,7 +2050,7 @@ bool SPIRVSimulator::IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, u
     return false;
 }
 
-void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data)
+void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data) const
 {
     /*
     Extracts 32 bit word values with type matching type_id from the external_pointer byte buffer
@@ -2194,7 +2181,7 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
     }
 }
 
-void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value)
+void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value) const
 {
     /*
     Writes the value stored in result_id to the external pointer
@@ -2619,7 +2606,7 @@ uint32_t SPIRVSimulator::GetTypeID(uint32_t result_id) const
     return 0;
 }
 
-Value SPIRVSimulator::MakeScalar(uint32_t type_id, const uint32_t*& words)
+Value SPIRVSimulator::MakeScalar(uint32_t type_id, const uint32_t*& words) const
 {
     const Type& type = GetTypeByTypeId(type_id);
 
@@ -5479,7 +5466,7 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
             {
                 std::shared_ptr<VectorV> component_vector = std::get<std::shared_ptr<VectorV>>(component_value);
 
-                for (auto& vec_component : component_vector->elems)
+                for (const auto& vec_component : component_vector->elems)
                 {
                     vec->elems.push_back(vec_component);
                 }

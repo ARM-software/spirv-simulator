@@ -189,8 +189,8 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     MOCK_METHOD(::SPIRVSimulator::Value&, GetValue, (uint32_t id), (const override));
     MOCK_METHOD(void, TransferFlags, (uint32_t target, uint32_t source), (override));
     MOCK_METHOD(void, TransferFlags, (uint32_t target, uint64_t source), (override));
-    MOCK_METHOD(bool, HasFlags, (uint32_t target, uint64_t flags), (override));
-    MOCK_METHOD(void, ExtractFlags, (uint32_t result_id, uint64_t& out_meta), (override));
+    MOCK_METHOD(bool, HasFlags, (uint32_t target, uint64_t flags), (const override));
+    MOCK_METHOD(void, ExtractFlags, (uint32_t result_id, uint64_t& out_meta), (const override));
     MOCK_METHOD(void, SetFlags, (uint32_t target, uint64_t flags), (override));
     MOCK_METHOD(const ::SPIRVSimulator::Type&, GetTypeByTypeId, (uint32_t id), (const override));
     MOCK_METHOD(const ::SPIRVSimulator::Type&, GetTypeByResultId, (uint32_t id), (const override));
