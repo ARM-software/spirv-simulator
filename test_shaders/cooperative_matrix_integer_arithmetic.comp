@@ -1,0 +1,57 @@
+#version 460
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_cooperative_matrix : require
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputBuffer
+{
+    int  signed_matrix_values[4];
+    uint unsigned_matrix_values[4];
+} input_buffer;
+
+layout(set = 0, binding = 1, std430) buffer OutputBuffer
+{
+    int  signed_result[4];
+    uint unsigned_result[4];
+} output_buffer;
+
+void main()
+{
+    coopmat<int,  gl_ScopeSubgroup, 2, 2, gl_MatrixUseAccumulator> signed_matrix;
+    coopmat<uint, gl_ScopeSubgroup, 2, 2, gl_MatrixUseAccumulator> unsigned_matrix;
+
+    coopMatLoad(signed_matrix,
+                input_buffer.signed_matrix_values,
+                0,
+                2,
+                gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(unsigned_matrix,
+                input_buffer.unsigned_matrix_values,
+                0,
+                2,
+                gl_CooperativeMatrixLayoutRowMajor);
+
+    signed_matrix = signed_matrix + signed_matrix;
+    signed_matrix = signed_matrix - signed_matrix;
+    signed_matrix = signed_matrix * signed_matrix; 
+    signed_matrix = signed_matrix / signed_matrix; 
+    signed_matrix = -signed_matrix;
+
+    unsigned_matrix = unsigned_matrix + unsigned_matrix; 
+    unsigned_matrix = unsigned_matrix - unsigned_matrix; 
+    unsigned_matrix = unsigned_matrix * unsigned_matrix; 
+    unsigned_matrix = unsigned_matrix / unsigned_matrix;
+
+    coopMatStore(signed_matrix,
+                 output_buffer.signed_result,
+                 0,
+                 2,
+                 gl_CooperativeMatrixLayoutRowMajor);
+
+    coopMatStore(unsigned_matrix,
+                 output_buffer.unsigned_result,
+                 0,
+                 2,
+                 gl_CooperativeMatrixLayoutRowMajor);
+}
