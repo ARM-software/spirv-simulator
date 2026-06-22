@@ -2832,7 +2832,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
 
                     if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
                     {
-                        remapped_pointer = &(buffer_data[buffer_address - pointer_value]);
+                        remapped_pointer = &(buffer_data[pointer_value - buffer_address]);
                         break;
                     }
                 }
@@ -3520,10 +3520,10 @@ uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
         const std::byte* buffer_data = static_cast<std::byte*>(entry.second.second);
 
         uint64_t host_pointer_start = bit_cast<uint64_t>(&buffer_data[0]);
-        uint64_t host_pointer_end   = bit_cast<uint64_t>(&buffer_data[buffer_size-1]);
+        uint64_t host_pointer_end   = host_pointer_start + buffer_size;
         if (host_pointer >= host_pointer_start && host_pointer < host_pointer_end)
         {
-            return buffer_address;
+            return buffer_address + (host_pointer - host_pointer_start);
         }
     }
     return 0;
@@ -8965,8 +8965,8 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
 
             if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
             {
-                remapped_pointer = &(buffer_data[buffer_address - pointer_value]);
-                buffer_offset_bytes = buffer_address - pointer_value;
+                remapped_pointer = &(buffer_data[pointer_value - buffer_address]);
+                buffer_offset_bytes = pointer_value - buffer_address;
                 break;
             }
         }
@@ -9137,13 +9137,13 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
 
         if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
         {
-            remapped_pointer = &(buffer_data[buffer_address - pointer_value]);
-            buffer_offset_bytes = buffer_address - pointer_value;
+            remapped_pointer = &(buffer_data[pointer_value - buffer_address]);
+            buffer_offset_bytes = pointer_value - buffer_address;
             break;
         }
     }
 
-    PointerV new_pointer{ pointer_value, 0, type_id, result_id, type.pointer.storage_class, {} };
+    PointerV new_pointer{ bit_cast<uint64_t>(remapped_pointer), 0, type_id, result_id, type.pointer.storage_class, {} };
     // TODO: Derive IDX path from buffer_offset_bytes, assume whole array is packed with same type as pointee type
     physical_address_pointers_.push_back(new_pointer);
     SetValue(result_id, new_pointer);
