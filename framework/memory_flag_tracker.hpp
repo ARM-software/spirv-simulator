@@ -73,16 +73,17 @@ public:
     struct DetailedFlagSpan {
         Address start;
         Address end; // exclusive
+        Address root_address;
         Flags flags;
         FragmentId fragment_id;
         MappingOrigin origin;
 
         DetailedFlagSpan()
-            : start(0), end(0), flags(0), fragment_id(0),
+            : start(0), end(0), root_address(0), flags(0), fragment_id(0),
             origin(MappingOrigin::WriteRoot) {}
 
-        DetailedFlagSpan(Address s, Address e, Flags f, FragmentId frag, MappingOrigin o)
-            : start(s), end(e), flags(f), fragment_id(frag), origin(o) {}
+        DetailedFlagSpan(Address s, Address e, Address r, Flags f, FragmentId frag, MappingOrigin o)
+            : start(s), end(e), root_address(r), flags(f), fragment_id(frag), origin(o) {}
     };
 
     struct HistoryEntry {
@@ -242,7 +243,7 @@ public:
         const Fragment& frag = getFragmentConst(live.fragment_id);
         const Flags effective = live.local_flags | frag.sharedFlagsAt(off);
 
-        return QueryResult(addr, frag.source_write_address(), effective, live.fragment_id, live.origin);
+        return QueryResult(addr, frag.source_write_address() + off, effective, live.fragment_id, live.origin);
     }
 
     // Returns visible flagged spans over [addr, addr+size).
@@ -333,6 +334,7 @@ public:
                 appendMerged(out, DetailedFlagSpan(
                     pieceStart,
                     pieceEnd,
+                    frag.source_write_address() + sp.start,
                     flags,
                     live.fragment_id,
                     live.origin));
@@ -593,6 +595,7 @@ private:
 
         if (!out.empty() &&
             out.back().end == span.start &&
+            out.back().root_address + (out.back().end - out.back().start) == span.root_address &&
             out.back().flags == span.flags &&
             out.back().fragment_id == span.fragment_id &&
             out.back().origin == span.origin) {

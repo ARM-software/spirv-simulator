@@ -7,12 +7,6 @@
 - Tests: `test/` (gtest/gmock suites and harness) and sample shaders in `test_shaders/`.
 - Generated artifacts live in `build/` (not committed).
 
-## Build, Test, and Development Commands
-- Configure: `cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo`
-- Build: `cmake --build build` (or `cmake --build build --target run_tests` to compile tests too).
-- Run simulator: `cd build && ./spirv_simulator ../test_shaders/<shader>.spirv`
-- Run unit tests: `cd build && ctest`
-
 ## Coding Style & Naming Conventions
 - C++20, 4-space indentation, braces on new lines for control blocks as in existing sources.
 - Keep header guards/`#pragma once`, grouped includes, and minimal headers in headers.
@@ -21,6 +15,9 @@
 
 ## Notes & Configuration Tips
 - The SPIRV simulator implements the SPIRV specification and parses SPIRV code to extract information about pointers and memory usage.
+
+## Code reviews
+- Do not run compilation or tests as part of code reviews.
 
 ## Adding support for a new SPIRV OpCode
 - Opcodes are handled in the c++ files `framework/spirv_simulator.cpp` and `framework/spirv_simulator.hpp`, and the class `SPIRVSimulator`
