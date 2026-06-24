@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sys/types.h>
 #ifndef ARM_SPIRV_SIMULATOR_HPP
 #define ARM_SPIRV_SIMULATOR_HPP
 
@@ -297,7 +298,8 @@ struct Type
         Opaque,
         NamedBarrier,
         AccelerationStructureKHR,
-        RayQueryKHR
+        RayQueryKHR,
+        CooperativeMatrixKHR
     } kind;
 
     struct ScalarTypeData
@@ -347,18 +349,29 @@ struct Type
     {
         uint32_t id; // The issue here is that even having the same data layout, structs are different types
     };
+    struct CooperativeMatrixTypeData
+    {
+        // A two-dimensional ordered collection of scalars
+        // with memory spread across multiple shader invocations
+        uint32_t component_type_id;
+        uint32_t scope_id;
+        uint32_t row_count_id;
+        uint32_t col_count_id;
+        uint32_t use_id;
+    };
 
     union
     {
-        ScalarTypeData       scalar;
-        VectorTypeData       vector;
-        MatrixTypeData       matrix;
-        ArrayTypeData        array;
-        PointerTypeData      pointer;
-        ImageTypeData        image;
-        SampledImageTypeData sampled_image;
-        OpaqueTypeData       opaque;
-        StructTypeData       structure;
+        ScalarTypeData              scalar;
+        VectorTypeData              vector;
+        MatrixTypeData              matrix;
+        ArrayTypeData               array;
+        PointerTypeData             pointer;
+        ImageTypeData               image;
+        SampledImageTypeData        sampled_image;
+        OpaqueTypeData              opaque;
+        StructTypeData              structure;
+        CooperativeMatrixTypeData   coopMatrix;
     };
     Type() : kind(Kind::Void) { scalar = { 0, false }; }
 
@@ -399,6 +412,21 @@ struct Type
         Type t;
         t.kind   = Kind::Matrix;
         t.matrix = MatrixTypeData{ .col_type_id = column_type_id, .col_count = column_count };
+        return t;
+    }
+
+    static Type CooperativeMatrix(uint32_t component_type_id, uint32_t scope_id,
+                                  uint32_t row_count_id, uint32_t col_count_id, uint32_t use_id)
+    {
+        Type t;
+        t.kind = Kind::CooperativeMatrixKHR;
+        t.coopMatrix = CooperativeMatrixTypeData{
+            .component_type_id = component_type_id,
+            .scope_id = scope_id,
+            .row_count_id = row_count_id,
+            .col_count_id = col_count_id,
+            .use_id = use_id
+        };
         return t;
     }
 
@@ -1192,6 +1220,8 @@ class SPIRVSimulator
         }
     }
 
+    std::shared_ptr<MatrixV> matrixMulAdd(uint32_t mat_A_id, uint32_t mat_B_id, uint32_t mat_C_id, uint32_t result_type_id, bool saturate_accumulate=false);
+
     virtual void on_loop_begin(uint32_t header);
     virtual void on_loop_exit (uint32_t header);
     virtual void on_loop_iteration(uint32_t header);
@@ -1475,6 +1505,7 @@ class SPIRVSimulator
     void T_NamedBarrier(const Instruction&);
     void T_AccelerationStructureKHR(const Instruction&);
     void T_RayQueryKHR(const Instruction&);
+    void T_CooperativeMatrixKHR(const Instruction&);
     void Op_EntryPoint(const Instruction&);
     void Op_ExtInstImport(const Instruction&);
     void Op_String(const Instruction&);
@@ -1652,6 +1683,10 @@ class SPIRVSimulator
     void Op_ReportIntersectionKHR(const Instruction&);
     void Op_IgnoreIntersectionKHR(const Instruction&);
     void Op_TerminateRayKHR(const Instruction&);
+    void Op_CooperativeMatrixLoadKHR(const Instruction&);
+    void Op_CooperativeMatrixStoreKHR(const Instruction&);
+    void Op_CooperativeMatrixLengthKHR(const Instruction&);
+    void Op_CooperativeMatrixMulAddKHR(const Instruction&);
 };
 
 } // namespace SPIRVSimulator

@@ -1,0 +1,54 @@
+#version 460
+#extension GL_KHR_memory_scope_semantics : required
+#extension GL_KHR_cooperative_matrix : required
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer OutputBuffer
+{
+    vec4 transformed_position;
+} output_buffer;
+
+layout(set = 0, binding = 1, std430) readonly buffer InputBuffer
+{
+    vec4 rotation_row_0;
+    vec4 rotation_row_1;
+    vec4 rotation_row_2;
+    vec4 translation;
+    vec4 point;
+} input_buffer;
+
+void main()
+{
+    // Assemble a homogeneous 4x4 transform from the separate rotation rows and translation.
+    float transform_values[16] = float[16](
+        input_buffer.rotation_row_0.x, input_buffer.rotation_row_0.y, input_buffer.rotation_row_0.z, input_buffer.translation.x,
+        input_buffer.rotation_row_1.x, input_buffer.rotation_row_1.y, input_buffer.rotation_row_1.z, input_buffer.translation.y,
+        input_buffer.rotation_row_2.x, input_buffer.rotation_row_2.y, input_buffer.rotation_row_2.z, input_buffer.translation.z,
+        0.0,                          0.0,                          0.0,                          1.0
+    );
+
+    float point_values[4] = float[4](
+        input_buffer.point.x,
+        input_buffer.point.y,
+        input_buffer.point.z,
+        1.0
+    );
+
+    float zero_values[4] = float[4](0.0, 0.0, 0.0, 0.0);
+    float result_values[4];
+
+    coopmat<float, gl_ScopeSubgroup, 4, 4, gl_MatrixUseA> transform_matrix;
+    coopmat<float, gl_ScopeSubgroup, 4, 1, gl_MatrixUseB> point_matrix;
+    coopmat<float, gl_ScopeSubgroup, 4, 1, gl_MatrixUseAccumulator> accumulator_matrix;
+    coopmat<float, gl_ScopeSubgroup, 4, 1, gl_MatrixUseAccumulator> result_matrix;
+
+    coopMatLoad(transform_matrix, transform_values, 0, 4, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(point_matrix, point_values, 0, 1, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(accumulator_matrix, zero_values, 0, 1, gl_CooperativeMatrixLayoutRowMajor);
+
+    result_matrix = coopMatMulAdd(transform_matrix, point_matrix, accumulator_matrix);
+
+    coopMatStore(result_matrix, result_values, 0, 1, gl_CooperativeMatrixLayoutRowMajor);
+    output_buffer.transformed_position = vec4(result_values[0], result_values[1], result_values[2], result_values[3]);
+}
