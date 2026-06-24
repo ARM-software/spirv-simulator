@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <concepts>
 #include <memory>
 #include <set>
 #include <span>
@@ -648,6 +649,37 @@ struct MatrixV
         }
     }
 };
+
+template <typename BinaryOp> requires std::is_invocable_r_v<SPIRVSimulator::Value, BinaryOp, SPIRVSimulator::Value, SPIRVSimulator::Value>
+std::shared_ptr<MatrixV> MatrixElementWiseOp(std::shared_ptr<MatrixV>& lhs, std::shared_ptr<MatrixV>& rhs, BinaryOp& binary_op)
+{
+    if(lhs->cols.size() != rhs->cols.size()) return nullptr;
+    uint32_t col_count = lhs->cols.size();
+
+    std::shared_ptr<MatrixV> result_matrix = std::make_shared<MatrixV>();
+    result_matrix->cols.reserve(lhs->cols.size());
+
+    for (uint32_t col = 0; col < col_count; ++col)
+    {
+        std::shared_ptr<VectorV> lhs_vec = std::get<std::shared_ptr<VectorV>>(lhs->cols[col]);
+        std::shared_ptr<VectorV> rhs_vec = std::get<std::shared_ptr<VectorV>>(rhs->cols[col]);
+
+        if(lhs_vec->elems.size() != rhs_vec->elems.size()) return nullptr;
+        uint32_t row_count = lhs_vec->elems.size();
+
+        std::shared_ptr<VectorV> result_vec = std::make_shared<VectorV>();
+        result_vec->elems.reserve(row_count);
+
+        for (uint32_t row = 0; row < row_count; ++row)
+        {
+            result_vec->elems.push_back(binary_op(lhs_vec->elems[row], rhs_vec->elems[row]));
+        }
+
+        result_matrix->cols.push_back(result_vec);
+    }
+
+    return result_matrix;
+}
 
 inline bool operator==(const MatrixV& a, const MatrixV& b)
 {

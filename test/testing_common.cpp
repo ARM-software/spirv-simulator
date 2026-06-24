@@ -86,6 +86,10 @@ std::string opcode_to_string(spv::Op opcode)
         {
             return "x";
         }
+        case spv::OpCooperativeMatrixMulAddKHR:
+        {
+            return "MulAdd";
+        }
         case spv::OpSDiv:
         case spv::OpUDiv:
         case spv::OpFDiv:

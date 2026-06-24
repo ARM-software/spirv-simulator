@@ -2005,6 +2005,11 @@ uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer) const
             type_id = type->pointer.pointee_type_id;
             type    = &GetTypeByTypeId(type_id);
         }
+        else if (type->kind == Type::Kind::CooperativeMatrixKHR)
+        {
+            type_id = type->coopMatrix.component_type_id;
+            type    = &GetTypeByTypeId(type_id);
+        }
         else
         {
             assertx("SPIRV simulator: Unhandled type in GetBitsizeOfTargetType");
@@ -6626,7 +6631,7 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
     OpFAdd
 
     Floating-point addition of Operand 1 and Operand 2.
-    Result Type must be a scalar or vector of floating-point type.
+    Result Type must be a scalar, vector or cooperative matrix of floating-point type.
     The types of Operand 1 and Operand 2 both must be the same as Result Type.
 
     Results are computed per component.
@@ -6638,7 +6643,44 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind &&
+                GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind == Type::Kind::Float,
+                "SPIRV simulator: matrix component type must be same for both operands and Float");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+
+        auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value {
+            return std::get<double>(lhs) + std::get<double>(rhs);
+        };
+
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_div);
+        assertm(result != nullptr, "SPIRV simulator: OpFAdd failed on cooperative Matrix");
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -6796,7 +6838,44 @@ void SPIRVSimulator::Op_FMul(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind &&
+                GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind == Type::Kind::Float,
+                "SPIRV simulator: matrix component type must be same for both operands and Float");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+
+        auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value {
+            return std::get<double>(lhs) * std::get<double>(rhs);
+        };
+
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_div);
+        assertm(result != nullptr, "SPIRV simulator: OpFMul failed on cooperative Matrix");
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -6965,7 +7044,7 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
 
     Integer addition of Operand 1 and Operand 2.
 
-    Result Type must be a scalar or vector of integer type.
+    Result Type must be a scalar, vector of integer type or cooperative matrix.
 
     The type of Operand 1 and Operand 2 must be a scalar or vector of integer type. They must have the same number of
     components as Result Type. They must have the same component width as Result Type.
@@ -7061,62 +7140,57 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
-    else if (type.kind == Type::Kind::CooperativeMatrixKHR) {
-        const Type& op1_type = GetTypeByResultId(instruction.words[3]);
-        const Type& op2_type = GetTypeByResultId(instruction.words[4]);
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
 
-        const Value& op1_val = GetValue(instruction.words[3]);
-        const Value& op2_val = GetValue(instruction.words[4]);
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
 
-        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR, "SPIRV simulator: Op1 must be Cooperative Matrix");
-        assertm(op2_type.kind == Type::Kind::Int,
-                "SPIRV simulator: Can only add scalar integer to matrices in Op_IAdd");
-        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind == Type::Kind::Int,
-                "SPIRV simulator: matrix component type must be scalar integer");
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind,
+                "SPIRV simulator: matrix component type must be same for both operands");
 
-        int64_t col_count = std::get<int64_t>(GetValue(type.coopMatrix.col_count_id));
-        int64_t row_count = std::get<int64_t>(GetValue(type.coopMatrix.row_count_id));
-        std::shared_ptr<MatrixV> matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
-        std::shared_ptr<MatrixV> result_matrix = std::make_shared<MatrixV>();
-        result_matrix->cols.reserve(col_count);
-        for (size_t i = 0; i < col_count; ++i)
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+        auto bin_op_add = [](const Value& lhs, const Value& rhs) -> Value
         {
-            std::shared_ptr<VectorV> src_vec = std::get<std::shared_ptr<VectorV>>(matrix->cols[i]);
-            std::shared_ptr<VectorV> result_vec = std::make_shared<VectorV>();
-            result_vec->elems.reserve(row_count);
-
-            for (size_t j = 0; j < row_count; ++j){
-                Value elem_result;
-                if (std::holds_alternative<uint64_t>(src_vec->elems[i]) && std::holds_alternative<uint64_t>(op2_val))
-                {
-                    elem_result = (std::get<uint64_t>(src_vec->elems[i]) + std::get<uint64_t>(op2_val));
-                }
-                else if (std::holds_alternative<uint64_t>(src_vec->elems[i]) &&
-                         std::holds_alternative<int64_t>(op2_val))
-                {
-                    elem_result = (std::get<uint64_t>(src_vec->elems[i]) + std::get<int64_t>(op2_val));
-                }
-                else if (std::holds_alternative<int64_t>(src_vec->elems[i]) && std::holds_alternative<int64_t>(op2_val))
-                {
-                    elem_result = (std::get<int64_t>(src_vec->elems[i]) + std::get<int64_t>(op2_val));
-                }
-                else if (std::holds_alternative<int64_t>(src_vec->elems[i]) &&
-                         std::holds_alternative<uint64_t>(op2_val))
-                {
-                    elem_result = (std::get<int64_t>(src_vec->elems[i]) + std::get<uint64_t>(op2_val));
-                }
-                else
-                {
-                    assertx("SPIRV simulator: Could not find valid parameter type combination for Op_IAdd vector operand");
-                }
-
-                result_vec->elems.push_back(elem_result);
+            if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                return std::get<uint64_t>(lhs) + std::get<uint64_t>(rhs);
+            }
+            else if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                return std::get<uint64_t>(lhs) + std::get<int64_t>(rhs);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                return std::get<int64_t>(lhs) + std::get<int64_t>(rhs);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                return std::get<int64_t>(lhs) + std::get<uint64_t>(rhs);
             }
 
-            result_matrix->cols.push_back(result_vec);
-        }
+            assertx("SPIRV simulator: Could not find valid parameter type combination for Op_IAdd");
+        };
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_add);
 
-        SetValue(result_id, result_matrix);
+        assertm(result != nullptr, "SPIRV simulator: OpIAdd failed on cooperative matrix");
+        SetValue(result_id, result);
     }
     else
     {
@@ -7133,7 +7207,7 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
     OpISub
 
     Integer subtraction of Operand 2 from Operand 1.
-    Result Type must be a scalar or vector of integer type.
+    Result Type must be a scalar, vector of integer type or Cooperative Matrix.
     The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
     They must have the same number of components as Result Type. They must have the same component width as Result Type.
     The resulting value equals the low-order N bits of the correct result R, where N is the component width
@@ -7306,6 +7380,62 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         {
             assertx("SPIRV simulator: Could not find valid parameter type combination for Op_ISub");
         }
+    }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        const Type& comp_op1_type = GetTypeByTypeId(op1_type.coopMatrix.component_type_id) ;
+        const Type& comp_op2_type = GetTypeByTypeId(op2_type.coopMatrix.component_type_id) ;
+        const Type& comp_result_type = GetTypeByTypeId(result_type.coopMatrix.component_type_id) ;
+        assertm(comp_op1_type.kind == comp_op2_type.kind && comp_op1_type.kind == Type::Kind::Int,
+                "SPIRV simulator: matrix component type must be same for both operands");
+        assertm(comp_result_type.kind == comp_op1_type.kind,
+                "SPIRV simulator: result matrix component type must be same as operands");
+        assertm(comp_op1_type.scalar.width == comp_op1_type.scalar.width &&
+                comp_op1_type.scalar.width == comp_result_type.scalar.width,
+                "SPIRV simulator: matrix component type must be of same bit width for result and operands");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+        auto bin_op_sub = [](const Value& lhs, const Value& rhs) -> Value{
+            if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                return std::get<uint64_t>(lhs) - std::get<uint64_t>(rhs);
+            }
+            else if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                return std::get<uint64_t>(lhs) - std::get<int64_t>(rhs);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                return std::get<int64_t>(lhs) - std::get<int64_t>(rhs);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                return std::get<int64_t>(lhs) - std::get<uint64_t>(rhs);
+            }
+            assertx("SPIRV simulator: Could not find valid parameter type combination for Op_ISub");
+        };
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_sub);
+        assertm(result != nullptr, "SPIRV simulator: OpISub: matrices not the same size");
+        SetValue(result_id, result);
     }
     else
     {
@@ -7939,7 +8069,47 @@ void SPIRVSimulator::Op_ConvertUToF(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        const Type& val_type = GetTypeByResultId(value_id);
+        const Value& val_op = GetValue(value_id);
+
+        assertm(val_type.kind == Type::Kind::CooperativeMatrixKHR &&
+            std::holds_alternative<std::shared_ptr<MatrixV>>(val_op),
+            "SPIRV simulator: Operand set to be matrix type in OpConvertUToF, but it is not, illegal input parameters");
+        const Type& comp_type = GetTypeByTypeId(val_type.coopMatrix.component_type_id);
+        const Type& result_comp_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        assertm(comp_type.kind == Type::Kind::Int && comp_type.scalar.is_signed == false,
+                "SPIRV simulator: Operand matrix does not contain unsinged scalars");
+        assertm(result_comp_type.kind == Type::Kind::Float,
+                "SPIRV simulator: Result matrix does not contain floats");
+        uint64_t val_col_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.col_count_id));
+        uint64_t val_row_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.row_count_id));
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id)) == val_col_count,
+                "SPIRV simulator: operand and result matrix size mismatch - columns");
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id)) == val_row_count, 
+                "SPIRV simulator: operand and result matrix size mismatch - rows");
+
+        std::shared_ptr<MatrixV> src_mat = std::get<std::shared_ptr<MatrixV>>(val_op);
+        std::shared_ptr<MatrixV> result = std::make_shared<MatrixV>();
+        result->cols.reserve(val_col_count);
+        for ( size_t col = 0; col < val_col_count; ++col)
+        {
+            std::shared_ptr<VectorV> src_col = std::get<std::shared_ptr<VectorV>>(src_mat->cols[col]);
+            std::shared_ptr<VectorV> res_col = std::make_shared<VectorV>();
+            res_col->elems.reserve(val_row_count);
+            for (size_t row = 0; row < val_row_count; ++row)
+            {
+                    uint64_t element = std::get<uint64_t>(src_col->elems[row]);
+                    res_col->elems.push_back((double)element);
+
+            }
+            result->cols.push_back(res_col);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -8005,7 +8175,47 @@ void SPIRVSimulator::Op_ConvertSToF(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        const Type& val_type = GetTypeByResultId(value_id);
+        const Value& val_op = GetValue(value_id);
+
+        assertm(val_type.kind == Type::Kind::CooperativeMatrixKHR &&
+            std::holds_alternative<std::shared_ptr<MatrixV>>(val_op),
+            "SPIRV simulator: Operand set to be matrix type in OpConvertSToF, but it is not, illegal input parameters");
+        const Type& comp_type = GetTypeByTypeId(val_type.coopMatrix.component_type_id);
+        const Type& result_comp_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        assertm(comp_type.kind == Type::Kind::Int && comp_type.scalar.is_signed == true,
+                "SPIRV simulator: Operand matrix does not contain singed scalars");
+        assertm(result_comp_type.kind == Type::Kind::Float,
+                "SPIRV simulator: Result matrix does not contain floats");
+        uint64_t val_col_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.col_count_id));
+        uint64_t val_row_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.row_count_id));
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id)) == val_col_count,
+                "SPIRV simulator: operand and result matrix size mismatch - columns");
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id)) == val_row_count, 
+                "SPIRV simulator: operand and result matrix size mismatch - rows");
+
+        std::shared_ptr<MatrixV> src_mat = std::get<std::shared_ptr<MatrixV>>(val_op);
+        std::shared_ptr<MatrixV> result = std::make_shared<MatrixV>();
+        result->cols.reserve(val_col_count);
+        for ( size_t col = 0; col < val_col_count; ++col)
+        {
+            std::shared_ptr<VectorV> src_col = std::get<std::shared_ptr<VectorV>>(src_mat->cols[col]);
+            std::shared_ptr<VectorV> res_col = std::make_shared<VectorV>();
+            res_col->elems.reserve(val_row_count);
+            for (size_t row = 0; row < val_row_count; ++row)
+            {
+                    int64_t element = std::get<int64_t>(src_col->elems[row]);
+                    res_col->elems.push_back((double)element);
+
+            }
+            result->cols.push_back(res_col);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -8069,7 +8279,49 @@ void SPIRVSimulator::Op_FDiv(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind &&
+                GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind == Type::Kind::Float,
+                "SPIRV simulator: matrix component type must be same for both operands and Float");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+
+        auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value {
+            double rh = std::get<double>(rhs);
+            if (rh == 0)
+            {
+                rh = 1;
+            }
+            return std::get<double>(lhs) / rh;
+        };
+
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_div);
+        assertm(result != nullptr, "SPIRV simulator: OpFDiv failed on cooperative Matrix");
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -8365,7 +8617,44 @@ void SPIRVSimulator::Op_FSub(const Instruction& instruction)
 
     const Type& type = GetTypeByTypeId(type_id);
 
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind &&
+                GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind == Type::Kind::Float,
+                "SPIRV simulator: matrix component type must be same for both operands and Float");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+
+        auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value {
+            return std::get<double>(lhs) - std::get<double>(rhs);
+        };
+
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_div);
+        assertm(result != nullptr, "SPIRV simulator: OpFSub failed on cooperative Matrix");
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         Value result     = std::make_shared<VectorV>();
         auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -9036,7 +9325,49 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     // First, we extract all the data from the operands into a vector
     //
     std::vector<std::byte> bytes;
-    if (std::holds_alternative<std::shared_ptr<VectorV>>(operand))
+    if (std::holds_alternative<std::shared_ptr<MatrixV>>(operand))
+    {
+        assertm(type.kind == Type::Kind::CooperativeMatrixKHR &&
+                operand_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: can only bitcast coopMatrices to other coopMatrices");
+        //verify result.size == operand.size
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id)) == 
+                std::get<uint64_t>(GetValue(operand_type.coopMatrix.col_count_id)),
+                "SPIRV simulator: Result operand, size mismatch - columns");
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id)) == 
+                std::get<uint64_t>(GetValue(operand_type.coopMatrix.row_count_id)),
+                "SPIRV simulator: Result operand, size mismatch - rows");
+
+        const Type&              elem_type = GetTypeByTypeId(operand_type.coopMatrix.component_type_id);
+        std::shared_ptr<MatrixV> matrix    = std::get<std::shared_ptr<MatrixV>>(operand);
+        for ( const Value& col : matrix->cols)
+        {
+            std::shared_ptr<VectorV> column = std::get<std::shared_ptr<VectorV>>(col);
+            for (const Value& elem : column->elems)
+            {
+                if (std::holds_alternative<double>(elem))
+                {
+                    double value = std::get<double>(elem);
+                    extract_bytes<double>(bytes, value, elem_type.scalar.width);
+                }
+                else if (std::holds_alternative<uint64_t>(elem))
+                {
+                    uint64_t value = std::get<uint64_t>(elem);
+                    extract_bytes<uint64_t>(bytes, value, elem_type.scalar.width);
+                }
+                else if (std::holds_alternative<int64_t>(elem))
+                {
+                    int64_t value = std::get<int64_t>(elem);
+                    extract_bytes<int64_t>(bytes, value, elem_type.scalar.width);
+                }
+                else
+                {
+                    assertx("SPIRV simulator: invalid operand element type in Op_Bitcast, must be numeric");
+                }
+            }
+        }
+    }
+    else if (std::holds_alternative<std::shared_ptr<VectorV>>(operand))
     {
         const Type&              elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
         std::shared_ptr<VectorV> vec       = std::get<std::shared_ptr<VectorV>>(operand);
@@ -9103,7 +9434,51 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     //
     bool holds_pbuffer_ptr = false;
     Value result;
-    if (type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        const Type&              elem_type       = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        uint32_t                 elem_size_bytes = elem_type.scalar.width / 8;
+        std::shared_ptr<MatrixV> mat             = std::make_shared<MatrixV>();
+        uint32_t                 current_byte    = 0;
+        uint64_t col_count = std::get<uint64_t>(GetValue(operand_type.coopMatrix.col_count_id));
+        uint64_t row_count = std::get<uint64_t>(GetValue(operand_type.coopMatrix.row_count_id));
+
+        for (uint64_t col = 0; col < col_count; ++col)
+        {
+            std::shared_ptr<VectorV> column = std::make_shared<VectorV>();
+            for (uint64_t row = 0; row < row_count; ++row)
+            {
+
+                if (elem_type.kind == Type::Kind::Float)
+                {
+                    double value = 0.0;
+                    std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
+                    column->elems.push_back(value);
+                }
+                else if ((elem_type.kind == Type::Kind::Int) && !elem_type.scalar.is_signed)
+                {
+                    uint64_t value = 0;
+                    std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
+                    column->elems.push_back(value);
+                }
+                else if ((elem_type.kind == Type::Kind::Int) && elem_type.scalar.is_signed)
+                {
+                    int64_t value = 0;
+                    std::memcpy(&value, &(bytes[current_byte]), elem_size_bytes);
+                    column->elems.push_back(value);
+                }
+                else
+                {
+                    assertx("SPIRV simulator: invalid result element type in Op_Bitcast, must be numeric");
+                }
+            }
+
+            mat->cols.push_back(column);
+        }
+        
+        result = mat;
+    }
+    else if (type.kind == Type::Kind::Vector)
     {
         const Type&              elem_type       = GetTypeByTypeId(type.vector.elem_type_id);
         uint32_t                 elem_size_bytes = elem_type.scalar.width / 8;
@@ -9211,7 +9586,7 @@ void SPIRVSimulator::Op_IMul(const Instruction& instruction)
     OpIMul
 
     Integer multiplication of Operand 1 and Operand 2.
-    Result Type must be a scalar or vector of integer type.
+    Result Type must be a scalar, vector of integer type or CooperativeMatrix.
 
     The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
     They must have the same number of components as Result Type. They must have the same component width as Result Type.
@@ -9287,6 +9662,48 @@ void SPIRVSimulator::Op_IMul(const Instruction& instruction)
             assertx("SPIRV simulator: Could not find valid parameter type combination for Op_IMul");
         }
 
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind,
+                "SPIRV simulator: matrix component type must be same for both operand");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+        auto bin_op_mul = [](const Value& lhs, const Value& rhs) -> Value{
+            if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                return (std::get<uint64_t>(lhs) * std::get<uint64_t>(rhs));
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                return (std::get<int64_t>(lhs) * std::get<int64_t>(rhs));
+            }
+
+            assertx("SPIRV simulator: Could not find valid parameter type combination for Op_IMul");
+        };
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_mul);
+        assertm(result != nullptr, "SPIRV simulator: OpIMul: matrices not the same size");
         SetValue(result_id, result);
     }
     else
@@ -9431,6 +9848,76 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
 
         Value result = std::get<uint64_t>(val_op1) / op2;
 
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind,
+                "SPIRV simulator: matrix component type must be same for both operands");
+        assertm(!GetTypeByTypeId(op2_type.coopMatrix.component_type_id).scalar.is_signed, 
+                "SPIRV simulator: OpUDiv: Divisor must be unsigned");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+        auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value{
+            if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                uint64_t rh = std::get<uint64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                return (std::get<uint64_t>(lhs) / rh);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                uint64_t rh = std::get<uint64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                return (std::get<int64_t>(lhs) / rh);
+            }
+            else if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                int64_t rh = std::get<int64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                return (std::get<uint64_t>(lhs) / rh);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                int64_t rh = std::get<int64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                return (std::get<int64_t>(lhs) / rh);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Could not find valid parameter type combination for Op_UDiv");
+            }
+        };
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_div);
+        assertm(result != nullptr, "SPIRV simulator: OpIMul: matrices not the same size");
         SetValue(result_id, result);
     }
     else
@@ -12073,7 +12560,7 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
 
     Signed-integer division of Operand 1 divided by Operand 2.
 
-    Result Type must be a scalar or vector of integer type.
+    Result Type must be a scalar, vector of integer type or cooperative matrix.
 
     The type of Operand 1 and Operand 2 must be a scalar or vector of integer type.
     They must have the same number of components as Result Type. They must have the same component width as Result Type.
@@ -12154,6 +12641,59 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
         Value result = std::get<int64_t>(val_op1) / op2;
 
         SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        uint32_t op1_id = instruction.words[3];
+        uint32_t op2_id = instruction.words[4];
+
+        const Type& op1_type = GetTypeByResultId(op1_id);
+        const Type& op2_type = GetTypeByResultId(op2_id);
+        const Type& result_type = GetTypeByResultId(result_id);
+
+        assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+        assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
+                "SPIRV simulator: Op2 must be Cooperative Matrix");
+        assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
+                GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind,
+                "SPIRV simulator: matrix component type must be same for both operands");
+
+        const Value& op1_val = GetValue(op1_id);
+        const Value& op2_val = GetValue(op2_id);
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op1_val),
+                "SPIRV simulator: what? op1 is coopMatrix, but does not contain MatrixV");
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(op2_val),
+                "SPIRV simulator: what? op2 is coopMatrix, but does not contain MatrixV");
+        std::shared_ptr<MatrixV> op1_matrix = std::get<std::shared_ptr<MatrixV>>(op1_val);
+        std::shared_ptr<MatrixV> op2_matrix = std::get<std::shared_ptr<MatrixV>>(op2_val);
+        auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value{
+            if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                uint64_t rh = std::get<uint64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                return (std::get<uint64_t>(lhs) / rh);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                int64_t rh = std::get<int64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                return (std::get<int64_t>(lhs) / rh);
+            }
+            else
+            {
+                assertx("SPIRV simulator: Could not find valid parameter type combination for Op_SDiv");
+            }
+        };
+        std::shared_ptr<MatrixV> result = MatrixElementWiseOp(op1_matrix, op2_matrix, bin_op_div);
+        assertm(result != nullptr, "SPIRV simulator: OpIMul: matrices not the same size");
+        SetValue(result_id, result);
+
     }
     else
     {
@@ -13365,7 +13905,47 @@ void SPIRVSimulator::Op_ConvertFToS(const Instruction& instruction)
     const Type& type         = GetTypeByTypeId(type_id);
     const Type& operand_type = GetTypeByResultId(operand_id);
 
-    if (operand_type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        const Type& val_type = GetTypeByResultId(operand_id);
+        const Value& val_op = GetValue(operand_id);
+
+        assertm(val_type.kind == Type::Kind::CooperativeMatrixKHR &&
+            std::holds_alternative<std::shared_ptr<MatrixV>>(val_op),
+            "SPIRV simulator: Operand set to be matrix type in OpConvertFToS, but it is not, illegal input parameters");
+        const Type& comp_type = GetTypeByTypeId(val_type.coopMatrix.component_type_id);
+        const Type& result_comp_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        assertm(comp_type.kind == Type::Kind::Float,
+                "SPIRV simulator: Operand matrix does not contain floats");
+        assertm(result_comp_type.kind == Type::Kind::Int && result_comp_type.scalar.is_signed == true,
+                "SPIRV simulator: Result matrix does not contain signed scalars");
+        uint64_t val_col_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.col_count_id));
+        uint64_t val_row_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.row_count_id));
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id)) == val_col_count,
+                "SPIRV simulator: operand and result matrix size mismatch - columns");
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id)) == val_row_count, 
+                "SPIRV simulator: operand and result matrix size mismatch - rows");
+
+        std::shared_ptr<MatrixV> src_mat = std::get<std::shared_ptr<MatrixV>>(val_op);
+        std::shared_ptr<MatrixV> result = std::make_shared<MatrixV>();
+        result->cols.reserve(val_col_count);
+        for ( size_t col = 0; col < val_col_count; ++col)
+        {
+            std::shared_ptr<VectorV> src_col = std::get<std::shared_ptr<VectorV>>(src_mat->cols[col]);
+            std::shared_ptr<VectorV> res_col = std::make_shared<VectorV>();
+            res_col->elems.reserve(val_row_count);
+            for (size_t row = 0; row < val_row_count; ++row)
+            {
+                    double element = std::get<double>(src_col->elems[row]);
+                    res_col->elems.push_back((int64_t)element);
+
+            }
+            result->cols.push_back(res_col);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (operand_type.kind == Type::Kind::Vector)
     {
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
                 "SPIRV simulator: Operand is set to be vector type, but it is not, illegal input parameters");
@@ -13429,7 +14009,47 @@ void SPIRVSimulator::Op_ConvertFToU(const Instruction& instruction)
     const Type& type         = GetTypeByTypeId(type_id);
     const Type& operand_type = GetTypeByResultId(operand_id);
 
-    if (operand_type.kind == Type::Kind::Vector)
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        const Type& val_type = GetTypeByResultId(operand_id);
+        const Value& val_op = GetValue(operand_id);
+
+        assertm(val_type.kind == Type::Kind::CooperativeMatrixKHR &&
+            std::holds_alternative<std::shared_ptr<MatrixV>>(val_op),
+            "SPIRV simulator: Operand set to be matrix type in OpConvertFToU, but it is not, illegal input parameters");
+        const Type& comp_type = GetTypeByTypeId(val_type.coopMatrix.component_type_id);
+        const Type& result_comp_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        assertm(comp_type.kind == Type::Kind::Float,
+                "SPIRV simulator: Operand matrix does not contain floats");
+        assertm(result_comp_type.kind == Type::Kind::Int && result_comp_type.scalar.is_signed == false,
+                "SPIRV simulator: Result matrix does not contain unsigned scalars");
+        uint64_t val_col_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.col_count_id));
+        uint64_t val_row_count = std::get<uint64_t>(GetValue(val_type.coopMatrix.row_count_id));
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id)) == val_col_count,
+                "SPIRV simulator: operand and result matrix size mismatch - columns");
+        assertm(std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id)) == val_row_count, 
+                "SPIRV simulator: operand and result matrix size mismatch - rows");
+
+        std::shared_ptr<MatrixV> src_mat = std::get<std::shared_ptr<MatrixV>>(val_op);
+        std::shared_ptr<MatrixV> result = std::make_shared<MatrixV>();
+        result->cols.reserve(val_col_count);
+        for ( size_t col = 0; col < val_col_count; ++col)
+        {
+            std::shared_ptr<VectorV> src_col = std::get<std::shared_ptr<VectorV>>(src_mat->cols[col]);
+            std::shared_ptr<VectorV> res_col = std::make_shared<VectorV>();
+            res_col->elems.reserve(val_row_count);
+            for (size_t row = 0; row < val_row_count; ++row)
+            {
+                    double element = std::get<double>(src_col->elems[row]);
+                    res_col->elems.push_back((uint64_t)element);
+
+            }
+            result->cols.push_back(res_col);
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (operand_type.kind == Type::Kind::Vector)
     {
         assertm(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
                 "SPIRV simulator: Operand is set to be vector type, but it is not, illegal input parameters");
