@@ -739,10 +739,42 @@ void SPIRVSimulator::ExecuteInstructions()
     {
         const PointerV& phys_ppointer = pointer_pair.first;
         const PointerV& phys_pointer  = pointer_pair.second;
+        const auto      resolved_src  = ResolvePointerV(phys_ppointer);
+
+        const std::byte* canonical_source_ptr  = resolved_src.first;
+        uint64_t         canonical_byte_offset = resolved_src.second;
+
+        // Canonicalize nested PhysicalStorageBuffer locations against the containing
+        // physical-address-backed host block so gfxr can consume source_ptr + byte_offset
+        // through the same block_infos contract used by other buffer-backed sources.
+        if (phys_ppointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer &&
+            resolved_src.first != nullptr)
+        {
+            const uint64_t resolved_src_address = bit_cast<uint64_t>(resolved_src.first);
+            for (const auto& map_entry : simulation_data_->physical_address_buffers)
+            {
+                const size_t           buffer_size = map_entry.second.first;
+                const std::byte* const buffer_data = static_cast<std::byte*>(map_entry.second.second);
+                if (buffer_data == nullptr || buffer_size == 0)
+                {
+                    continue;
+                }
+
+                const uint64_t host_pointer_start = bit_cast<uint64_t>(buffer_data);
+                const uint64_t host_pointer_end   = host_pointer_start + buffer_size;
+                if (resolved_src_address >= host_pointer_start && resolved_src_address < host_pointer_end)
+                {
+                    canonical_source_ptr  = buffer_data;
+                    canonical_byte_offset = (resolved_src_address - host_pointer_start) + resolved_src.second;
+                    break;
+                }
+            }
+        }
 
         DataSourceBits source_data;
         source_data.location       = BitLocation::StorageClass;
         source_data.storage_class  = (spv::StorageClass)phys_ppointer.storage_class;
+        source_data.source_ptr     = bit_cast<const void*>(canonical_source_ptr);
         source_data.idx            = 0;
         source_data.bit_offset     = 0;
         source_data.bitcount       = 64;
@@ -783,7 +815,7 @@ void SPIRVSimulator::ExecuteInstructions()
             source_data.set_id     = 0;
         }
 
-        source_data.byte_offset = GetPointerOffset(phys_ppointer);
+        source_data.byte_offset = canonical_byte_offset;
 
         PhysicalAddressData output_result;
         output_result.raw_pointer_value = RemapHostToClientPointer(phys_pointer.pointer_handle);
@@ -1216,7 +1248,20 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
 {
     // Do a shallow copy
     *this = source;
-    simulation_data_ = fork_input_data;
+    if (fork_input_data != nullptr)
+    {
+        // Forks should inherit the current shader input snapshot so pointer remapping and
+        // descriptor/push-constant lookups behave the same as in the source execution.
+        if (source.simulation_data_ != nullptr)
+        {
+            *fork_input_data = *source.simulation_data_;
+        }
+        simulation_data_ = fork_input_data;
+    }
+    else
+    {
+        simulation_data_ = source.simulation_data_;
+    }
     simulation_results_ = fork_simulation_results;
 
     visisted_fork_branches_ = visited_set;
@@ -2821,21 +2866,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                     (*initial_data) += 2;
                 }
 
-                const std::byte* remapped_pointer = nullptr;
-
-                for (const auto& map_entry : simulation_data_->physical_address_buffers)
-                {
-                    uint64_t buffer_address = map_entry.first;
-                    size_t   buffer_size    = map_entry.second.first;
-
-                    const std::byte* buffer_data = static_cast<std::byte*>(map_entry.second.second);
-
-                    if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
-                    {
-                        remapped_pointer = &(buffer_data[pointer_value - buffer_address]);
-                        break;
-                    }
-                }
+                const std::byte* remapped_pointer = RemapClientToHostPointer(pointer_value);
 
                 PointerV new_pointer{
                     bit_cast<uint64_t>(remapped_pointer), 0, type_id, 0, type.pointer.storage_class, {}
@@ -3512,6 +3543,11 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
 
 uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
 {
+    if (host_pointer == 0)
+    {
+        return 0;
+    }
+
     for (const auto& entry : simulation_data_->physical_address_buffers)
     {
         uint64_t buffer_address = entry.first;
@@ -3527,6 +3563,28 @@ uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
         }
     }
     return 0;
+}
+
+const std::byte* SPIRVSimulator::RemapClientToHostPointer(uint64_t client_pointer) const
+{
+    if (client_pointer == 0)
+    {
+        return nullptr;
+    }
+
+    for (const auto& entry : simulation_data_->physical_address_buffers)
+    {
+        uint64_t buffer_address = entry.first;
+        size_t   buffer_size    = entry.second.first;
+
+        const std::byte* buffer_data = static_cast<std::byte*>(entry.second.second);
+
+        if ((client_pointer >= buffer_address) && (client_pointer < (buffer_address + buffer_size)))
+        {
+            return &(buffer_data[client_pointer - buffer_address]);
+        }
+    }
+    return nullptr;
 }
 
 void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
@@ -8953,23 +9011,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         uint64_t pointer_value = 0;
         std::memcpy(&pointer_value, bytes.data(), sizeof(uint64_t));
 
-        const std::byte* remapped_pointer = nullptr;
-        uint64_t buffer_offset_bytes = 0;
-
-        for (const auto& map_entry : simulation_data_->physical_address_buffers)
-        {
-            uint64_t buffer_address = map_entry.first;
-            size_t   buffer_size    = map_entry.second.first;
-
-            const std::byte* buffer_data = static_cast<std::byte*>(map_entry.second.second);
-
-            if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
-            {
-                remapped_pointer = &(buffer_data[pointer_value - buffer_address]);
-                buffer_offset_bytes = pointer_value - buffer_address;
-                break;
-            }
-        }
+        const std::byte* remapped_pointer = RemapClientToHostPointer(pointer_value);
 
         PointerV new_pointer{
             bit_cast<uint64_t>(remapped_pointer), 0, type_id, result_id, type.pointer.storage_class, {}
@@ -9125,23 +9167,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
 
     uint64_t pointer_value = std::get<uint64_t>(operand);
 
-    const std::byte* remapped_pointer = nullptr;
-
-    for (const auto& map_entry : simulation_data_->physical_address_buffers)
-    {
-        uint64_t buffer_address = map_entry.first;
-        size_t   buffer_size    = map_entry.second.first;
-
-        const std::byte* buffer_data = static_cast<std::byte*>(map_entry.second.second);
-        uint64_t        buffer_offset_bytes = 0;
-
-        if ((pointer_value >= buffer_address) && (pointer_value < (buffer_address + buffer_size)))
-        {
-            remapped_pointer = &(buffer_data[pointer_value - buffer_address]);
-            buffer_offset_bytes = pointer_value - buffer_address;
-            break;
-        }
-    }
+    const std::byte* remapped_pointer = RemapClientToHostPointer(pointer_value);
 
     PointerV new_pointer{ bit_cast<uint64_t>(remapped_pointer), 0, type_id, result_id, type.pointer.storage_class, {} };
     // TODO: Derive IDX path from buffer_offset_bytes, assume whole array is packed with same type as pointee type
