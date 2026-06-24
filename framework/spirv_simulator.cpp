@@ -822,7 +822,7 @@ void SPIRVSimulator::ExecuteInstructions()
         source_data.byte_offset = canonical_byte_offset;
 
         PhysicalAddressData output_result;
-        output_result.raw_pointer_value = RemapHostToClientPointer(phys_pointer.pointer_handle);
+        output_result.raw_pointer_value = RemapHostToPhysicalPointer(phys_pointer.pointer_handle);
         output_result.bit_components.push_back(source_data);
         simulation_results_->physical_address_data.push_back(output_result);
     }
@@ -2904,7 +2904,7 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
                     (*initial_data) += 2;
                 }
 
-                const std::byte* remapped_pointer = RemapClientToHostPointer(pointer_value);
+                const std::byte* remapped_pointer = RemapPhysicalToHostPointer(pointer_value);
 
                 PointerV new_pointer{
                     bit_cast<uint64_t>(remapped_pointer), 0, type_id, 0, type.pointer.storage_class, {}
@@ -3579,7 +3579,7 @@ Value SPIRVSimulator::CopyValue(const Value& value) const
 //  Dereference and access helpers
 // ---------------------------------------------------------------------------
 
-uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
+uint64_t SPIRVSimulator::RemapHostToPhysicalPointer(uint64_t host_pointer) const
 {
     if (host_pointer == 0)
     {
@@ -3603,9 +3603,9 @@ uint64_t SPIRVSimulator::RemapHostToClientPointer(uint64_t host_pointer) const
     return 0;
 }
 
-const std::byte* SPIRVSimulator::RemapClientToHostPointer(uint64_t client_pointer) const
+const std::byte* SPIRVSimulator::RemapPhysicalToHostPointer(uint64_t physical_pointer) const
 {
-    if (client_pointer == 0)
+    if (physical_pointer == 0)
     {
         return nullptr;
     }
@@ -3617,9 +3617,9 @@ const std::byte* SPIRVSimulator::RemapClientToHostPointer(uint64_t client_pointe
 
         const std::byte* buffer_data = static_cast<std::byte*>(entry.second.second);
 
-        if ((client_pointer >= buffer_address) && (client_pointer < (buffer_address + buffer_size)))
+        if ((physical_pointer >= buffer_address) && (physical_pointer < (buffer_address + buffer_size)))
         {
-            return &(buffer_data[client_pointer - buffer_address]);
+            return &(buffer_data[physical_pointer - buffer_address]);
         }
     }
     return nullptr;
@@ -6653,7 +6653,7 @@ void SPIRVSimulator::Op_FAdd(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
@@ -6848,7 +6848,7 @@ void SPIRVSimulator::Op_FMul(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
@@ -7150,7 +7150,7 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
@@ -7391,7 +7391,7 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         const Type& comp_op1_type = GetTypeByTypeId(op1_type.coopMatrix.component_type_id) ;
@@ -8289,7 +8289,7 @@ void SPIRVSimulator::Op_FDiv(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
@@ -8627,7 +8627,7 @@ void SPIRVSimulator::Op_FSub(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
@@ -9549,7 +9549,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         uint64_t pointer_value = 0;
         std::memcpy(&pointer_value, bytes.data(), sizeof(uint64_t));
 
-        const std::byte* remapped_pointer = RemapClientToHostPointer(pointer_value);
+        const std::byte* remapped_pointer = RemapPhysicalToHostPointer(pointer_value);
 
         PointerV new_pointer{
             bit_cast<uint64_t>(remapped_pointer), 0, type_id, result_id, type.pointer.storage_class, {}
@@ -9674,7 +9674,7 @@ void SPIRVSimulator::Op_IMul(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
@@ -9747,7 +9747,7 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
 
     uint64_t pointer_value = std::get<uint64_t>(operand);
 
-    const std::byte* remapped_pointer = RemapClientToHostPointer(pointer_value);
+    const std::byte* remapped_pointer = RemapPhysicalToHostPointer(pointer_value);
 
     PointerV new_pointer{ bit_cast<uint64_t>(remapped_pointer), 0, type_id, result_id, type.pointer.storage_class, {} };
     // TODO: Derive IDX path from buffer_offset_bytes, assume whole array is packed with same type as pointee type
@@ -9860,13 +9860,13 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==
                 GetTypeByTypeId(op2_type.coopMatrix.component_type_id).kind,
                 "SPIRV simulator: matrix component type must be same for both operands");
-        assertm(!GetTypeByTypeId(op2_type.coopMatrix.component_type_id).scalar.is_signed, 
+        assertm(!GetTypeByTypeId(op2_type.coopMatrix.component_type_id).scalar.is_signed,
                 "SPIRV simulator: OpUDiv: Divisor must be unsigned");
 
         const Value& op1_val = GetValue(op1_id);
@@ -12652,7 +12652,7 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
         const Type& result_type = GetTypeByResultId(result_id);
 
         assertm(op1_type.kind == Type::Kind::CooperativeMatrixKHR,
-                "SPIRV simulator: Op1 must be Cooperative Matrix"),
+                "SPIRV simulator: Op1 must be Cooperative Matrix");
         assertm(op2_type.kind == Type::Kind::CooperativeMatrixKHR,
                 "SPIRV simulator: Op2 must be Cooperative Matrix");
         assertm(GetTypeByTypeId(op1_type.coopMatrix.component_type_id).kind ==

@@ -1324,8 +1324,8 @@ class SPIRVSimulator
     virtual void         HandleUnimplementedOpcode(const Instruction&);
     virtual Value        MakeScalar(uint32_t type_id, const uint32_t*& words) const;
     virtual Value        MakeDefault(uint32_t type_id, const uint32_t** initial_data = nullptr);
-    virtual uint64_t     RemapHostToClientPointer(uint64_t host_pointer) const;
-    virtual const std::byte* RemapClientToHostPointer(uint64_t client_pointer) const;
+    virtual uint64_t     RemapHostToPhysicalPointer(uint64_t host_pointer) const;
+    virtual const std::byte* RemapPhysicalToHostPointer(uint64_t physical_pointer) const;
     virtual void         WritePointer(const PointerV& ptr, const Value& value);
     virtual Value        ReadPointer(const PointerV& ptr);
     virtual const Value& GetValue(uint32_t result_id) const;
