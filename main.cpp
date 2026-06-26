@@ -2,6 +2,7 @@
 
 #include <spirv_simulator.hpp>
 #include <util.hpp>
+#include <cassert>
 
 static void usage()
 {
@@ -14,7 +15,10 @@ static void usage()
 
 static std::string get_str(const char* in, int& remaining)
 {
-    assert(in != nullptr);
+    if (in == nullptr)
+    {
+        return "";
+    }
     if (remaining == 0)
     {
         usage();
@@ -60,7 +64,7 @@ int main(int argc, char** argv)
     SPIRVSimulator::MemoryFlagTracker mem_tracker;
     SPIRVSimulator::SimulationData sim_data;
     SPIRVSimulator::SimulationResults results;
-    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(filename.c_str()), &mem_tracker, &sim_data, &results, nullptr, verbose);
+    SPIRVSimulator::SPIRVSimulator sim(util::ReadFile(filename.c_str()), &mem_tracker, &sim_data, &results, nullptr, verbose, ERROR_PRINT_CONTEXT);
     sim.Run();
 
     auto physical_address_data = results.physical_address_data;

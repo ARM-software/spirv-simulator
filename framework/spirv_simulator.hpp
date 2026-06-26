@@ -18,10 +18,11 @@
 #include <vector>
 #include <functional>
 #include <type_traits>
-#include <cassert>
 #include <limits>
 #include <stdexcept>
 #include <queue>
+#include <sstream>
+#include <cassert>
 
 #ifdef DEBUG_BUILD
 #define MAX_LOOP_COUNT 100
@@ -88,7 +89,60 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
 // If set, the simulator will crash when it encounters access to an incomplete buffer.
 // If this is not set, access to such buffers will return the default value of the type.
 #define ERROR_RAISE_ON_BUFFERS_INCOMPLETE 1
+// If set, the simulator will print a bunch of valuable context whenever handled errors occur
+#define ERROR_PRINT_CONTEXT               2
 
+#ifdef NDEBUG
+
+#define assertxc(msg)                      \
+    do                                     \
+    {                                      \
+        if (flags_ & ERROR_PRINT_CONTEXT)\
+        {                                  \
+            PrintExecutionContext();       \
+        }                                  \
+        throw std::runtime_error(msg);     \
+    } while (0)
+
+#define assertmc(exp, msg)                 \
+    do                                     \
+    {                                      \
+        if (!(exp))                        \
+        {                                  \
+            if (flags_ & ERROR_PRINT_CONTEXT)\
+            {                              \
+                PrintExecutionContext();   \
+            }                              \
+            throw std::runtime_error(msg); \
+        }                                  \
+    } while (0)
+
+#else
+
+#define assertxc(msg)                      \
+    do                                     \
+    {                                      \
+        if (flags_ & ERROR_PRINT_CONTEXT)  \
+        {                                  \
+            PrintExecutionContext();       \
+        }                                  \
+        assert((void(msg), false));        \
+    } while (0)
+
+#define assertmc(exp, msg)                 \
+    do                                     \
+    {                                      \
+        if (!(exp))                        \
+        {                                  \
+            if (flags_ & ERROR_PRINT_CONTEXT)\
+            {                              \
+                PrintExecutionContext();   \
+            }                              \
+            assert((void(msg), exp));      \
+        }                                  \
+    } while (0)
+
+#endif
 
 // Used for descriptor loop tracking
 struct PhiIncoming {
@@ -1065,6 +1119,7 @@ class SPIRVSimulator
     bool Run();
 
     std::set<std::string> unsupported_opcodes;
+    std::set<uint32_t>    unsupported_opextinsts;
 
     virtual ~SPIRVSimulator() = default;
 
@@ -1317,9 +1372,12 @@ class SPIRVSimulator
     virtual bool ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void ExecuteInstructions();
     virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, std::set<uint32_t>* visited_set, SimulationData* fork_input_data = nullptr, SimulationResults* fork_simulation_results = nullptr);
+    virtual void PrintExecutionContext() const;
 
     virtual std::string  GetValueString(const Value&) const;
     virtual std::string  GetTypeString(const Type&) const;
+    virtual void         PrintInstructionOperandChainVisiting(size_t pc, UnorderedSet<uint32_t>& visiting) const;
+    virtual void         PrintInstructionOperandChain(size_t pc) const;
     virtual void         PrintInstruction(const Instruction&) const;
     virtual void         HandleUnimplementedOpcode(const Instruction&);
     virtual Value        MakeScalar(uint32_t type_id, const uint32_t*& words) const;
