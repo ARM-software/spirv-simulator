@@ -1018,6 +1018,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(T_RayQueryKHR)
         case spv::Op::OpTypeCooperativeMatrixKHR:
             R(T_CooperativeMatrixKHR);
+        case spv::Op::OpTypeTensorARM:
+            R(T_TensorARM);
         case spv::Op::OpEntryPoint:
             R(Op_EntryPoint)
         case spv::Op::OpExtInstImport:
@@ -1400,6 +1402,12 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_CooperativeMatrixLengthKHR)
         case spv::Op::OpCooperativeMatrixMulAddKHR:
             R(Op_CooperativeMatrixMulAddKHR)
+        case spv::Op::OpTensorReadARM:
+            R(Op_TensorReadARM);
+        case spv::Op::OpTensorWriteARM:
+            R(Op_TensorWriteARM);
+        case spv::Op::OpTensorQuerySizeARM:
+            R(Op_TensorQuerySizeARM);
         default:
         {
             return false;
@@ -1718,6 +1726,14 @@ std::string SPIRVSimulator::GetTypeString(const Type& type) const
     if (type.kind == Type::Kind::RayQueryKHR)
     {
         return "RayQueryKHR";
+    }
+    if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        return "CooperativeMatrixKHR";
+    }
+    if (type.kind == Type::Kind::TensorARM)
+    {
+        return "TensorARM";
     }
 
     return "";
@@ -2281,6 +2297,11 @@ uint32_t SPIRVSimulator::GetTargetPointerType(const PointerV& pointer) const
         else if (type->kind == Type::Kind::CooperativeMatrixKHR)
         {
             type_id = type->coopMatrix.component_type_id;
+            type    = &GetTypeByTypeId(type_id);
+        }
+        else if (type->kind == Type::Kind::TensorARM)
+        {
+            type_id = type->tensor.element_type_id;
             type    = &GetTypeByTypeId(type_id);
         }
         else
@@ -3202,6 +3223,11 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
             }
 
             return (uint64_t)0;
+        }
+        case Type::Kind::TensorARM:
+        {
+            // This is just data and can be ignored
+            return 0;
         }
         default:
         {
@@ -6440,6 +6466,37 @@ void SPIRVSimulator::T_CooperativeMatrixKHR(const Instruction& instruction)
     types_[result_id] = type;
 }
 
+void SPIRVSimulator::T_TensorARM(const Instruction& instruction)
+{
+    // Tensors can only be passed to the shader in the form of a tensor view
+    // through a binding. Therefore, they should be handled similarly to buffer views.
+    // Furthermore, tensors may only contain scalars and due to that are considered
+    // exclusively arbitrary data.
+    assert(instruction.opcode == spv::Op::OpTypeTensorARM);
+    assertm(instruction.word_count >= 3, "SPIRV Simulator: OpTypeTensorARM requires at least 3 arguments");
+
+    uint32_t result_id    = instruction.words[1];
+    uint32_t elem_type_id = instruction.words[2];
+
+    std::optional<uint32_t> rank_id;
+    if (instruction.word_count >= 4)
+    {
+        rank_id = instruction.words[3];
+    }
+
+    std::optional<uint32_t> shape_id;
+    if (instruction.word_count >= 5)
+    {
+        shape_id = instruction.words[4];
+    }
+
+    Type type;
+    type.kind = Type::Kind::TensorARM;
+    type.tensor = {elem_type_id, rank_id, shape_id};
+    types_[result_id] = type;
+    SetIsArbitrary(result_id);
+}
+
 // ---------------------------------------------------------------------------
 //  Oparation implementations
 // ---------------------------------------------------------------------------
@@ -6692,6 +6749,11 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         }
 
         SetValue(result_id, aggregate);
+    }
+    else if (type.kind == Type::Kind::TensorARM)
+    {
+        SetValue(result_id, MakeDefault(type_id));
+        SetIsArbitrary(result_id);
     }
     else
     {
@@ -17463,5 +17525,112 @@ void SPIRVSimulator::Op_CooperativeMatrixMulAddKHR(const Instruction& instructio
     TransferFlags(result_id, flags);
 }
 
+void SPIRVSimulator::Op_TensorReadARM(const Instruction& instruction)
+{
+    // Reading arbitrary data
+    // Return the expected number of arbitrary values
+    assert(instruction.opcode == spv::Op::OpTensorReadARM);
+
+    uint32_t type_id    = instruction.words[1];
+    uint32_t result_id  = instruction.words[2];
+    uint32_t tensor_id  = instruction.words[3];
+    uint32_t coords_id  = instruction.words[4];
+    std::optional<uint32_t> tensor_ops = 
+        instruction.word_count >= 6 ? std::optional<uint32_t>(instruction.words[5]) : std::nullopt;
+#ifdef DEBUG_BUILD
+    // result type is valid?
+    Type result_type = GetTypeByTypeId(type_id);
+    assertm(result_type.kind == Type::Kind::Int || result_type.kind == Type::Kind::Float ||
+            result_type.kind == Type::Kind::Array && GetTypeByTypeId(result_type.array.elem_type_id).kind == Type::Kind::Int ||
+            result_type.kind == Type::Kind::Array && GetTypeByTypeId(result_type.array.elem_type_id).kind == Type::Kind::Float,
+            "SPIRV simulator: TensorRead result must be scalar or array of scalars");
+
+    // tensor is ranked and coords match rank?
+    Type tensor_t = GetTypeByResultId(tensor_id);
+    assertm(tensor_t.tensor.rank_id.has_value(), "SPIRV simulator: TensorRead tensor must be ranked");
+    Value rank = GetValue(tensor_t.tensor.rank_id.value());
+    Type coord_type = GetTypeByResultId(coords_id);
+    Value coord_count = GetValue(coord_type.array.length_id);
+    assertm(std::get<uint64_t>(rank) == std::get<uint64_t>(coord_count),
+            "SPIRV simulator: TensorRead number of coords must be equal to rank of tensor");
+    assertm(GetTypeByTypeId(coord_type.array.elem_type_id).kind == Type::Kind::Int,
+            "SPIRV simulator: TensorRead coords must be integer type scalars");
+
+    // legal tensor operand?
+    if (tensor_ops.has_value())
+    {
+        assertm(tensor_ops.value() != 0x4, "SPIRV simulator: MakeElementAvailableARM illegal for TensorRead");
+    }
+#endif
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_TensorWriteARM(const Instruction& instruction)
+{
+    // Writing arbitrary data is not interesting
+    // checks for correctness and NoOp
+    assert(instruction.opcode == spv::Op::OpTensorWriteARM);
+
+    uint32_t tensor_id = instruction.words[1];
+    uint32_t coords_id = instruction.words[2];
+    uint32_t object_id = instruction.words[3];
+    std::optional<uint32_t> tensor_ops = 
+        instruction.word_count >= 5 ? std::optional<uint32_t>(instruction.words[4]) : std::nullopt;
+
+#ifdef DEBUG_BUILD
+    // tensor is ranked and coords match rank?
+    Type tensor_type = GetTypeByResultId(tensor_id);
+    assertm(tensor_type.tensor.rank_id.has_value(), "SPIRV simulator: TensorWrite tensor must be ranked");
+    Value rank = GetValue(tensor_type.tensor.rank_id.value());
+    Type coord_type = GetTypeByResultId(coords_id);
+    Value coord_count = GetValue(coord_type.array.length_id);
+    assertm(std::get<uint64_t>(rank) == std::get<uint64_t>(coord_count),
+            "SPIRV simulator: TensorWrite number of coords must be equal to rank of tensor");
+    assertm(GetTypeByTypeId(coord_type.array.elem_type_id).kind == Type::Kind::Int,
+            "SPIRV simulator: TensorWrite coords must be integer type scalars");
+
+    // check object type valid?
+    Type object_type = GetTypeByResultId(object_id);
+    assertm(object_type.kind == Type::Kind::Int || object_type.kind == Type::Kind::Float ||
+            object_type.kind == Type::Kind::Array && GetTypeByTypeId(object_type.array.elem_type_id).kind == Type::Kind::Int ||
+            object_type.kind == Type::Kind::Array && GetTypeByTypeId(object_type.array.elem_type_id).kind == Type::Kind::Float,
+            "SPIRV simulator: TensorWrite result must be scalar or array of scalars");
+    if (object_type.kind == Type::Kind::Array)
+    {
+        Type array_elem_type = GetTypeByTypeId(object_type.array.elem_type_id);
+        assertm(array_elem_type.kind == GetTypeByTypeId(tensor_type.tensor.element_type_id).kind,
+                "SPIRV simulator: TensorWrite object must be type contained in tensor");
+    }
+    else {
+        assertm(object_type.kind == GetTypeByTypeId(tensor_type.tensor.element_type_id).kind,
+                "SPIRV simulator: TensorWrite object must be type contained in tensor");
+    }
+#endif
+    // Do nothing, since we are writing arbitrary data into tensor
+}
+
+void SPIRVSimulator::Op_TensorQuerySizeARM(const Instruction& instruction)
+{
+    // Get the size along one of the dimensions
+    assert(instruction.opcode == spv::Op::OpTensorQuerySizeARM);
+
+    uint32_t type_id      = instruction.words[1];
+    uint32_t result_id    = instruction.words[2];
+    uint32_t tensor_id    = instruction.words[3];
+    uint32_t dimension_id = instruction.words[4];
+#ifdef DEBUG_BUILD
+    assertm(GetTypeByTypeId(type_id).kind == Type::Kind::Int,
+            "SPIRV simulator: TensorQuerySize result type must be integer scalar");
+
+    assertm(GetTypeByTypeId(tensor_id).tensor.rank_id.has_value(),
+            "SPIRV simulator: TensorQuerySize tensor must be ranked");
+
+    assertm(GetTypeByTypeId(dimension_id).kind == Type::Kind::Int,
+            "SPIRV simulator: TensorQuerySize dimension must be given as integer scalar");
+#endif
+    SetValue(result_id, MakeDefault(dimension_id));
+    SetIsArbitrary(result_id);
+}
 
 } // namespace SPIRVSimulator

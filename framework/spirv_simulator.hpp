@@ -354,7 +354,8 @@ struct Type
         NamedBarrier,
         AccelerationStructureKHR,
         RayQueryKHR,
-        CooperativeMatrixKHR
+        CooperativeMatrixKHR,
+        TensorARM,
     } kind;
 
     struct ScalarTypeData
@@ -414,6 +415,12 @@ struct Type
         uint32_t col_count_id;
         uint32_t use_id;
     };
+    struct TensorTypeData
+    {
+        uint32_t element_type_id;
+        std::optional<uint32_t> rank_id;
+        std::optional<uint32_t> shape_id;
+    };
 
     union
     {
@@ -427,6 +434,7 @@ struct Type
         OpaqueTypeData              opaque;
         StructTypeData              structure;
         CooperativeMatrixTypeData   coopMatrix;
+        TensorTypeData              tensor;
     };
     Type() : kind(Kind::Void) { scalar = { 0, false }; }
 
@@ -481,6 +489,18 @@ struct Type
             .row_count_id = row_count_id,
             .col_count_id = col_count_id,
             .use_id = use_id
+        };
+        return t;
+    }
+
+    static Type Tensor(uint32_t element_type_id, std::optional<uint32_t> rank_id, std::optional<uint32_t> shape_id)
+    {
+        Type t;
+        t.kind = Kind::TensorARM;
+        t.tensor = TensorTypeData{
+            .element_type_id = element_type_id,
+            .rank_id = rank_id,
+            .shape_id = shape_id,
         };
         return t;
     }
@@ -1596,6 +1616,7 @@ class SPIRVSimulator
     void T_AccelerationStructureKHR(const Instruction&);
     void T_RayQueryKHR(const Instruction&);
     void T_CooperativeMatrixKHR(const Instruction&);
+    void T_TensorARM(const Instruction&);
     void Op_EntryPoint(const Instruction&);
     void Op_ExtInstImport(const Instruction&);
     void Op_String(const Instruction&);
@@ -1786,6 +1807,9 @@ class SPIRVSimulator
     void Op_CooperativeMatrixStoreKHR(const Instruction&);
     void Op_CooperativeMatrixLengthKHR(const Instruction&);
     void Op_CooperativeMatrixMulAddKHR(const Instruction&);
+    void Op_TensorReadARM(const Instruction&);
+    void Op_TensorWriteARM(const Instruction&);
+    void Op_TensorQuerySizeARM(const Instruction&);
 };
 
 } // namespace SPIRVSimulator
