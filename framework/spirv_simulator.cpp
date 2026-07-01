@@ -11244,6 +11244,37 @@ void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
 
         SetValue(result_id, result);
     }
+    else if (type.kind == Type::Kind::CooperativeMatrixKHR)
+    {
+        Type component_type = GetTypeByTypeId(type.coopMatrix.component_type_id);
+        assertm(component_type.kind == Type::Kind::Float, "SPIRV simulator: Matrix elements must be float");
+
+        assertm(std::holds_alternative<std::shared_ptr<MatrixV>>(val_op),
+                "SPIRV simulator: Operand not a CooperativeMatrix type");
+        std::shared_ptr<MatrixV> mat = std::get<std::shared_ptr<MatrixV>>(val_op);
+
+        uint64_t col_count = std::get<uint64_t>(GetValue(type.coopMatrix.col_count_id));
+        uint64_t row_count = std::get<uint64_t>(GetValue(type.coopMatrix.row_count_id));
+
+        std::shared_ptr<MatrixV> result_mat = std::make_shared<MatrixV>();
+        result_mat->cols.reserve(col_count);
+
+        for (uint32_t col = 0; col < col_count; ++col)
+        {
+            // get the column
+            std::shared_ptr<VectorV> column = std::get<std::shared_ptr<VectorV>>(mat->cols[col]);
+            std::shared_ptr<VectorV> result_col = std::make_shared<VectorV>();
+            //  iterate through column
+            for (uint32_t row = 0; row < row_count; ++row)
+            {
+                double result_elem = 0 - std::get<double>(column->elems[row]);
+                result_col->elems.push_back(Value(result_elem));
+            }
+            result_mat->cols.push_back(result_col);
+        }
+
+        SetValue(result_id, result_mat);
+    }
     else
     {
         std::cout << GetTypeString(type) << std::endl;
