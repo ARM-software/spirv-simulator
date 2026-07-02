@@ -4388,6 +4388,42 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
+    case 27:
+        { // Exp
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::exp");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::exp(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::exp(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler exp2");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+            break;
+        }
     case 29:
         { // exp2
             const Value& operand = GetValue(operand_words[0]);
@@ -4395,7 +4431,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             if (type.kind == Type::Kind::Vector)
             {
                 assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
-                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::log2");
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::exp2");
 
                 Value result     = std::make_shared<VectorV>();
                 auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
@@ -4417,13 +4453,13 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
             else
             {
-                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler exp2");
             }
 
             TransferFlags(result_id, operand_words[0]);
             break;
         }
-        case 30:
+    case 30:
         { // log2
             const Value& operand = GetValue(operand_words[0]);
 
@@ -4458,7 +4494,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
-        case 31:
+    case 31:
         { // Sqrt
             const Value& operand = GetValue(operand_words[0]);
 
@@ -4493,7 +4529,52 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
-        case 38:
+    case 37:
+        { // FMin
+            const Value& operand_1 = GetValue(operand_words[0]);
+            const Value& operand_2 = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
+                            std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::umin");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
+                auto operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    assertmc(std::holds_alternative<uint64_t>(operand_1_val->elems[i]), "SPIRV simulator: Elements are not floats in FMin vector operand 1");
+                    assertmc(std::holds_alternative<uint64_t>(operand_2_val->elems[i]), "SPIRV simulator: Elements are not floats in FMin vector operand 2");
+
+                    result_vec->elems.push_back(std::min(std::get<double>(operand_1_val->elems[i]),
+                                            std::get<double>(operand_2_val->elems[i])));
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result;
+
+                result = std::min(std::get<double>(operand_1), std::get<double>(operand_2));
+
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for FMin");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            break;
+        }
+    case 38:
         { // UMin
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
@@ -4574,7 +4655,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-        case 39:
+    case 39:
         { // SMin
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
@@ -4655,7 +4736,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-        case 40:
+    case 40:
         { // FMax
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
@@ -4695,7 +4776,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-        case 41:
+    case 41:
         { // UMax
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
@@ -4776,7 +4857,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-        case 43:
+    case 43:
         { // FClamp
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
@@ -4822,7 +4903,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[2]);
             break;
         }
-        case 44:
+    case 44:
         { // UClamp
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
@@ -4868,7 +4949,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[2]);
             break;
         }
-        case 45:
+    case 45:
         { // SClamp
             const Value& operand = GetValue(operand_words[0]);
             const Value& min_val = GetValue(operand_words[1]);
@@ -4914,7 +4995,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[2]);
             break;
         }
-        case 46:
+    case 46:
         { // FMix
             const Value& x = GetValue(operand_words[0]);
             const Value& y = GetValue(operand_words[1]);
@@ -4963,7 +5044,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[2]);
             break;
         }
-        case 50:
+    case 50:
         { // Fma
             const Value& a_val = GetValue(operand_words[0]);
             const Value& b_val = GetValue(operand_words[1]);
@@ -5007,7 +5088,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[2]);
             break;
         }
-        case 66:
+    case 66:
         { // Length
             const Value& operand      = GetValue(operand_words[0]);
             const Type&  operand_type = GetTypeByResultId(operand_words[0]);
@@ -5063,7 +5144,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
-        case 68:
+    case 68:
         { // Cross
             const Value& operand1 = GetValue(operand_words[0]);
             const Value& operand2 = GetValue(operand_words[1]);
@@ -5090,7 +5171,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             break;
         }
-        case 69:
+    case 69:
         { // Normalize
             const Value& operand = GetValue(operand_words[0]);
 
@@ -5133,7 +5214,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
-        case 71:
+    case 71:
         { // Reflect
             /*
             For the incident vector I and surface orientation N, the result is the reflection direction:
@@ -5193,7 +5274,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-        case 79:
+    case 79:
         { // NMin
             const Value& x_val = GetValue(operand_words[0]);
             const Value& y_val = GetValue(operand_words[1]);
@@ -5262,7 +5343,7 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-        default:
+    default:
         {
             if (verbose_)
             {
@@ -11131,6 +11212,7 @@ void SPIRVSimulator::Op_FNegate(const Instruction& instruction)
     }
     else
     {
+        std::cout << GetTypeString(type) << std::endl;
         assertxc("SPIRV simulator: Invalid result type, must be vector or float");
     }
 
