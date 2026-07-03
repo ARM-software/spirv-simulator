@@ -20,7 +20,14 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "spirv.hpp"
+#ifndef SPIRV_HEADERS_PRESENT
+#define SPIRV_HEADERS_PRESENT 0
+#endif
+#if SPIRV_HEADERS_PRESENT
+#include <spirv/unified1/spirv.hpp>
+#else
+#include "../external/SPIRV-Tools/external/spirv-headers/include/spirv/unified1/spirv.hpp"
+#endif
 #include <spirv_simulator.hpp>
 
 using namespace testing;

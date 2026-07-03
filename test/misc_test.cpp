@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "spirv.hpp"
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
 
