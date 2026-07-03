@@ -6,7 +6,6 @@
 #include <memory>
 #include <sys/types.h>
 
-#include "spirv.hpp"
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
 

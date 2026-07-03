@@ -1,5 +1,4 @@
 #include "testing_common.hpp"
-#include "spirv.hpp"
 #include "spirv_simulator.hpp"
 
 #include <cstddef>

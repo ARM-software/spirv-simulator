@@ -39,7 +39,7 @@
 #if SPIRV_HEADERS_PRESENT
 #include <spirv/unified1/spirv.hpp>
 #else
-#include "spirv.hpp"
+#include "../external/SPIRV-Tools/external/spirv-headers/include/spirv/unified1/spirv.hpp"
 #endif
 
 #include "spirv-tools/libspirv.h"
