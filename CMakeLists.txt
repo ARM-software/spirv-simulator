@@ -31,6 +31,7 @@ else()
     set(COMPILE_OPTIONS -Wall -Wextra -Wpedantic -Wshadow -fno-fast-math)
 endif()
 
+add_subdirectory(external/unordered_dense)
 add_subdirectory(framework)
 add_subdirectory(test)
 
