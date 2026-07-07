@@ -1755,6 +1755,7 @@ class SPIRVSimulator
     void Op_GroupNonUniformShuffleXor(const Instruction&);
     void Op_GroupNonUniformUMax(const Instruction&);
     void Op_GroupNonUniformBitwiseAnd(const Instruction&);
+    void Op_GroupNonUniformQuadSwap(const Instruction&);
     void Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction&);
     void Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction&);
     void Op_RayQueryGetIntersectionGeometryIndexKHR(const Instruction&);

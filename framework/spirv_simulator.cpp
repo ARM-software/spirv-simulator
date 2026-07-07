@@ -1202,6 +1202,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_GroupNonUniformUMax)
         case spv::Op::OpGroupNonUniformBitwiseAnd:
             R(Op_GroupNonUniformBitwiseAnd)
+        case spv::Op::OpGroupNonUniformQuadSwap:
+            R(Op_GroupNonUniformQuadSwap)
         case spv::Op::OpRayQueryGetIntersectionBarycentricsKHR:
             R(Op_RayQueryGetIntersectionBarycentricsKHR)
         case spv::Op::OpRayQueryGetIntersectionFrontFaceKHR:
@@ -15633,6 +15635,58 @@ void SPIRVSimulator::Op_GroupNonUniformBitwiseAnd(const Instruction& instruction
     SetValue(result_id, GetValue(value_id));
     TransferFlags(result_id, value_id);
     SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GroupNonUniformQuadSwap(const Instruction& instruction)
+{
+    /*
+    Swap the Value of the invocation within the quad with another invocation in the quad using Direction.
+
+    Result Type must be a scalar or vector of floating-point type, integer type, or Boolean type.
+
+    Execution is a Scope, but has no effect on the behavior of this instruction. It must be Subgroup.
+
+    The type of Value must be the same as Result Type.
+
+    Direction is the kind of swap to perform.
+
+    Direction must be a scalar of integer type, whose Signedness operand is 0.
+
+    Direction must come from a constant instruction.
+
+    The value returned in Result is the value provided to Value by another invocation in the same quad scope instance.
+    The invocation providing this value is determined according to Direction.
+
+    A Direction of 0 indicates a horizontal swap;
+    - Invocations with quad indices of 0 and 1 swap values
+    - Invocations with quad indices of 2 and 3 swap values
+    A Direction of 1 indicates a vertical swap;
+    - Invocations with quad indices of 0 and 2 swap values
+    - Invocations with quad indices of 1 and 3 swap values
+    A Direction of 2 indicates a diagonal swap;
+    - Invocations with quad indices of 0 and 3 swap values
+    - Invocations with quad indices of 1 and 2 swap values
+
+    Direction must be one of the above values.
+
+    If a tangled invocation within the quad reads Value from an invocation not part of the tangled invocation within the same quad,
+    the resulting value is poison.
+
+    An invocation will not execute a dynamic instance of this instruction (X') until
+    all invocations in its quad have executed all dynamic instances that are program-ordered before X'.
+     */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformQuadSwap);
+
+    uint32_t type_id      = instruction.words[1];
+    uint32_t result_id    = instruction.words[2];
+    uint32_t exec_id      = instruction.words[3];
+    uint32_t value_id     = instruction.words[4];
+
+    // TODO: Group op warnings
+
+    SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);   uint32_t direction_id = instruction.words[5];
 }
 
 void SPIRVSimulator::Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction& instruction)
