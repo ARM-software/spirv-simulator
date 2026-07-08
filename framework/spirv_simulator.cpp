@@ -22,6 +22,142 @@ constexpr uint32_t kWordCountShift = 16u;
 constexpr uint32_t kOpcodeMask     = 0xFFFFu;
 const std::string  execIndent      = "                      # ";
 
+static inline uint16_t FloatToHalfBits(float value)
+{
+	uint32_t bits      = bit_cast<uint32_t>(value);
+	uint32_t sign      = (bits >> 16) & 0x8000u;
+	uint32_t exponent  = (bits >> 23) & 0xffu;
+	uint32_t mantissa  = bits & 0x7fffffu;
+
+	if (exponent == 0xffu)
+	{
+		uint32_t half_mantissa = mantissa >> 13;
+		if (mantissa != 0 && half_mantissa == 0)
+		{
+			half_mantissa = 1;
+		}
+		return static_cast<uint16_t>(sign | 0x7c00u | half_mantissa);
+	}
+
+	int32_t half_exponent = static_cast<int32_t>(exponent) - 127 + 15;
+	if (half_exponent >= 31)
+	{
+		return static_cast<uint16_t>(sign | 0x7c00u);
+	}
+
+	if (half_exponent <= 0)
+	{
+		if (half_exponent < -10)
+		{
+			return static_cast<uint16_t>(sign);
+		}
+
+		mantissa |= 0x800000u;
+		uint32_t shift         = static_cast<uint32_t>(14 - half_exponent);
+		uint32_t half_mantissa = mantissa >> shift;
+		uint32_t remainder     = mantissa & ((1u << shift) - 1u);
+		uint32_t halfway       = 1u << (shift - 1u);
+		if (remainder > halfway || (remainder == halfway && (half_mantissa & 1u)))
+		{
+			++half_mantissa;
+		}
+
+		return static_cast<uint16_t>(sign | half_mantissa);
+	}
+
+	uint32_t half_mantissa = mantissa >> 13;
+	uint32_t remainder     = mantissa & 0x1fffu;
+	if (remainder > 0x1000u || (remainder == 0x1000u && (half_mantissa & 1u)))
+	{
+		++half_mantissa;
+		if (half_mantissa == 0x400u)
+		{
+			half_mantissa = 0;
+			++half_exponent;
+			if (half_exponent >= 31)
+			{
+				return static_cast<uint16_t>(sign | 0x7c00u);
+			}
+		}
+	}
+
+	return static_cast<uint16_t>(sign | (static_cast<uint32_t>(half_exponent) << 10) | half_mantissa);
+}
+
+static inline float HalfBitsToFloat(uint16_t value)
+{
+	uint32_t sign     = (static_cast<uint32_t>(value) & 0x8000u) << 16;
+	uint32_t exponent = (static_cast<uint32_t>(value) >> 10) & 0x1fu;
+	uint32_t mantissa = static_cast<uint32_t>(value) & 0x03ffu;
+	uint32_t bits;
+
+	if (exponent == 0)
+	{
+		if (mantissa == 0)
+		{
+			bits = sign;
+		}
+		else
+		{
+			int32_t normalized_exponent = -14;
+			while ((mantissa & 0x0400u) == 0)
+			{
+				mantissa <<= 1;
+				--normalized_exponent;
+			}
+			mantissa &= 0x03ffu;
+			bits = sign | (static_cast<uint32_t>(normalized_exponent + 127) << 23) | (mantissa << 13);
+		}
+	}
+	else if (exponent == 0x1fu)
+	{
+		bits = sign | 0x7f800000u | (mantissa << 13);
+	}
+	else
+	{
+		bits = sign | ((exponent + 112u) << 23) | (mantissa << 13);
+	}
+
+	return bit_cast<float>(bits);
+}
+
+static inline uint64_t MaskToWidth(uint64_t value, uint32_t width)
+{
+	if (width >= 64)
+	{
+		return value;
+	}
+
+	return value & ((uint64_t(1) << width) - 1);
+}
+
+static inline int64_t SignExtendToInt64(uint64_t value, uint32_t width)
+{
+	value = MaskToWidth(value, width);
+	if (width == 0 || width >= 64)
+	{
+		return bit_cast<int64_t>(value);
+	}
+
+	uint64_t sign_bit = uint64_t(1) << (width - 1);
+	if (value & sign_bit)
+	{
+		value |= ~((uint64_t(1) << width) - 1);
+	}
+
+	return bit_cast<int64_t>(value);
+}
+
+static inline uint64_t GetIntegerBits(const Value& value)
+{
+	if (std::holds_alternative<uint64_t>(value))
+	{
+		return std::get<uint64_t>(value);
+	}
+
+	return bit_cast<uint64_t>(std::get<int64_t>(value));
+}
+
 static inline constexpr bool SPIRVIsFloatOp(spv::Op op)
 {
     switch (op) {
@@ -1070,6 +1206,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_ImageSampleDrefImplicitLod)
         case spv::Op::OpImageSampleExplicitLod:
             R(Op_ImageSampleExplicitLod)
+        case spv::Op::OpImageSampleDrefExplicitLod:
+            R(Op_ImageSampleDrefExplicitLod)
         case spv::Op::OpImageFetch:
             R(Op_ImageFetch)
         case spv::Op::OpImageGather:
@@ -1082,6 +1220,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_ImageQuerySize)
         case spv::Op::OpImageQuerySizeLod:
             R(Op_ImageQuerySizeLod)
+        case spv::Op::OpImageQueryLevels:
+            R(Op_ImageQueryLevels)
         case spv::Op::OpFNegate:
             R(Op_FNegate)
         case spv::Op::OpMatrixTimesScalar:
@@ -1144,12 +1284,18 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_MatrixTimesMatrix)
         case spv::Op::OpIsNan:
             R(Op_IsNan)
+        case spv::Op::OpIsInf:
+            R(Op_IsInf)
         case spv::Op::OpFunctionParameter:
             R(Op_FunctionParameter)
         case spv::Op::OpEmitVertex:
             R(Op_EmitVertex)
         case spv::Op::OpEndPrimitive:
             R(Op_EndPrimitive)
+        case spv::Op::OpUConvert:
+            R(Op_UConvert)
+        case spv::Op::OpSConvert:
+            R(Op_SConvert)
         case spv::Op::OpFConvert:
             R(Op_FConvert)
         case spv::Op::OpImage:
@@ -1164,6 +1310,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_FMod)
         case spv::Op::OpAtomicOr:
             R(Op_AtomicOr)
+        case spv::Op::OpAtomicXor:
+            R(Op_AtomicXor)
         case spv::Op::OpAtomicUMax:
             R(Op_AtomicUMax)
         case spv::Op::OpAtomicUMin:
@@ -1188,6 +1336,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_GroupNonUniformBroadcastFirst)
         case spv::Op::OpGroupNonUniformElect:
             R(Op_GroupNonUniformElect)
+        case spv::Op::OpGroupNonUniformFAdd:
+            R(Op_GroupNonUniformFAdd)
         case spv::Op::OpGroupNonUniformFMax:
             R(Op_GroupNonUniformFMax)
         case spv::Op::OpGroupNonUniformFMin:
@@ -1206,6 +1356,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_GroupNonUniformQuadSwap)
         case spv::Op::OpRayQueryGetIntersectionBarycentricsKHR:
             R(Op_RayQueryGetIntersectionBarycentricsKHR)
+        case spv::Op::OpRayQueryGetIntersectionTriangleVertexPositionsKHR:
+            R(Op_RayQueryGetIntersectionTriangleVertexPositionsKHR)
         case spv::Op::OpRayQueryGetIntersectionFrontFaceKHR:
             R(Op_RayQueryGetIntersectionFrontFaceKHR)
         case spv::Op::OpRayQueryGetIntersectionGeometryIndexKHR:
@@ -3474,6 +3626,12 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             local_depends_on_memory = true;
             uint32_t pointer_id = instruction.words[3];
 
+            if (pointer_id >= values_.size() || std::holds_alternative<std::monostate>(values_[pointer_id]))
+            {
+                trace_address_id(pointer_id);
+                break;
+            }
+
             // Prefer the resolved memory-location store map. It is the
             // most up-to-date representation when the same memory was written
             // via a different but equivalent pointer ID.
@@ -4099,11 +4257,130 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 {
     const Type& type = GetTypeByTypeId(type_id);
 
-    switch (instruction_literal)
-    {
-        case 4:
-        { // FAbs
-            const Value& operand = GetValue(operand_words[0]);
+	    switch (instruction_literal)
+	    {
+	        case 1:
+	        { // Round
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::round");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    Value elem_result = (double)std::round(std::get<double>(vec->elems[i]));
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                Value result = (double)std::round(std::get<double>(operand));
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 2:
+	        { // RoundEven
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::roundEven");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    double tval = std::get<double>(vec->elems[i]);
+	                    double floor_val = std::floor(tval);
+	                    double frac = tval - floor_val;
+	                    double elem_result = floor_val;
+	                    if (frac > 0.5 || (frac == 0.5 && std::fmod(std::abs(floor_val), 2.0) != 0.0))
+	                    {
+	                        elem_result = floor_val + 1.0;
+	                    }
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                double tval = std::get<double>(operand);
+	                double floor_val = std::floor(tval);
+	                double frac = tval - floor_val;
+	                double result = floor_val;
+	                if (frac > 0.5 || (frac == 0.5 && std::fmod(std::abs(floor_val), 2.0) != 0.0))
+	                {
+	                    result = floor_val + 1.0;
+	                }
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 3:
+	        { // Trunc
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::trunc");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    Value elem_result = (double)std::trunc(std::get<double>(vec->elems[i]));
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                Value result = (double)std::trunc(std::get<double>(operand));
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 4:
+	        { // FAbs
+	            const Value& operand = GetValue(operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -4134,12 +4411,187 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
 
-            TransferFlags(result_id, operand_words[0]);
-            break;
-        }
-        case 8:
-        { // Floor
-            const Value& operand = GetValue(operand_words[0]);
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 5:
+	        { // SAbs
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::SAbs");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    int64_t tval;
+	                    if (std::holds_alternative<uint64_t>(vec->elems[i]))
+	                    {
+	                        tval = bit_cast<int64_t>(std::get<uint64_t>(vec->elems[i]));
+	                    }
+	                    else
+	                    {
+	                        tval = std::get<int64_t>(vec->elems[i]);
+	                    }
+	                    Value elem_result = (int64_t)std::abs(tval);
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Int)
+	            {
+	                int64_t tval;
+	                if (std::holds_alternative<uint64_t>(operand))
+	                {
+	                    tval = bit_cast<int64_t>(std::get<uint64_t>(operand));
+	                }
+	                else
+	                {
+	                    tval = std::get<int64_t>(operand);
+	                }
+	                Value result = (int64_t)std::abs(tval);
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 6:
+	        { // FSign
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::FSign");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    double tval = std::get<double>(vec->elems[i]);
+	                    Value elem_result = 0.0;
+	                    if (tval > 0.0)
+	                    {
+	                        elem_result = 1.0;
+	                    }
+	                    else if (tval < 0.0)
+	                    {
+	                        elem_result = -1.0;
+	                    }
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                double tval = std::get<double>(operand);
+	                Value result = 0.0;
+	                if (tval > 0.0)
+	                {
+	                    result = 1.0;
+	                }
+	                else if (tval < 0.0)
+	                {
+	                    result = -1.0;
+	                }
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 7:
+	        { // SSign
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::SSign");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    int64_t tval;
+	                    if (std::holds_alternative<uint64_t>(vec->elems[i]))
+	                    {
+	                        tval = bit_cast<int64_t>(std::get<uint64_t>(vec->elems[i]));
+	                    }
+	                    else
+	                    {
+	                        tval = std::get<int64_t>(vec->elems[i]);
+	                    }
+	                    int64_t elem_result = 0;
+	                    if (tval > 0)
+	                    {
+	                        elem_result = 1;
+	                    }
+	                    else if (tval < 0)
+	                    {
+	                        elem_result = -1;
+	                    }
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Int)
+	            {
+	                int64_t tval;
+	                if (std::holds_alternative<uint64_t>(operand))
+	                {
+	                    tval = bit_cast<int64_t>(std::get<uint64_t>(operand));
+	                }
+	                else
+	                {
+	                    tval = std::get<int64_t>(operand);
+	                }
+	                int64_t result = 0;
+	                if (tval > 0)
+	                {
+	                    result = 1;
+	                }
+	                else if (tval < 0)
+	                {
+	                    result = -1;
+	                }
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	        case 8:
+	        { // Floor
+	            const Value& operand = GetValue(operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -4350,6 +4802,46 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
+        case 25:
+        { // Atan2
+            const Value& y = GetValue(operand_words[0]);
+            const Value& x = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(y) &&
+                            std::holds_alternative<std::shared_ptr<VectorV>>(x),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::atan2");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto yvec = std::get<std::shared_ptr<VectorV>>(y);
+                auto xvec = std::get<std::shared_ptr<VectorV>>(x);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result =
+                        (double)std::atan2(std::get<double>(yvec->elems[i]), std::get<double>(xvec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::atan2(std::get<double>(y), std::get<double>(x));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            break;
+        }
         case 26:
         { // Pow
             const Value& base     = GetValue(operand_words[0]);
@@ -4530,9 +5022,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
-    case 31:
-        { // Sqrt
-            const Value& operand = GetValue(operand_words[0]);
+	    case 31:
+	        { // Sqrt
+	            const Value& operand = GetValue(operand_words[0]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -4562,12 +5054,47 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
 
-            TransferFlags(result_id, operand_words[0]);
-            break;
-        }
-    case 37:
-        { // FMin
-            const Value& operand_1 = GetValue(operand_words[0]);
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	    case 32:
+	        { // InverseSqrt
+	            const Value& operand = GetValue(operand_words[0]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::inverseSqrt");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    Value elem_result = (double)(1.0 / std::sqrt(std::get<double>(vec->elems[i])));
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                Value result = (double)(1.0 / std::sqrt(std::get<double>(operand)));
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            break;
+	        }
+	    case 37:
+	        { // FMin
+	            const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
@@ -5031,9 +5558,9 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[2]);
             break;
         }
-    case 46:
-        { // FMix
-            const Value& x = GetValue(operand_words[0]);
+	    case 46:
+	        { // FMix
+	            const Value& x = GetValue(operand_words[0]);
             const Value& y = GetValue(operand_words[1]);
             const Value& a = GetValue(operand_words[2]);
 
@@ -5077,9 +5604,103 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             TransferFlags(result_id, operand_words[0]);
             TransferFlags(result_id, operand_words[1]);
-            TransferFlags(result_id, operand_words[2]);
-            break;
-        }
+	            TransferFlags(result_id, operand_words[2]);
+	            break;
+	        }
+	    case 48:
+	        { // Step
+	            const Value& edge = GetValue(operand_words[0]);
+	            const Value& x    = GetValue(operand_words[1]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(edge) &&
+	                            std::holds_alternative<std::shared_ptr<VectorV>>(x),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::step");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto edge_vec = std::get<std::shared_ptr<VectorV>>(edge);
+	                auto x_vec    = std::get<std::shared_ptr<VectorV>>(x);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    double edge_d      = std::get<double>(edge_vec->elems[i]);
+	                    double x_d         = std::get<double>(x_vec->elems[i]);
+	                    Value  elem_result = x_d < edge_d ? 0.0 : 1.0;
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                double edge_d = std::get<double>(edge);
+	                double x_d    = std::get<double>(x);
+	                Value  result = x_d < edge_d ? 0.0 : 1.0;
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            TransferFlags(result_id, operand_words[1]);
+	            break;
+	        }
+	    case 49:
+	        { // SmoothStep
+	            const Value& edge0 = GetValue(operand_words[0]);
+	            const Value& edge1 = GetValue(operand_words[1]);
+	            const Value& x     = GetValue(operand_words[2]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(edge0) &&
+	                            std::holds_alternative<std::shared_ptr<VectorV>>(edge1) &&
+	                            std::holds_alternative<std::shared_ptr<VectorV>>(x),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::smoothstep");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto edge0_vec = std::get<std::shared_ptr<VectorV>>(edge0);
+	                auto edge1_vec = std::get<std::shared_ptr<VectorV>>(edge1);
+	                auto x_vec     = std::get<std::shared_ptr<VectorV>>(x);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    double edge0_d = std::get<double>(edge0_vec->elems[i]);
+	                    double edge1_d = std::get<double>(edge1_vec->elems[i]);
+	                    double x_d     = std::get<double>(x_vec->elems[i]);
+	                    double t       = std::clamp((x_d - edge0_d) / (edge1_d - edge0_d), 0.0, 1.0);
+	                    Value  elem_result = t * t * (3.0 - 2.0 * t);
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                double edge0_d = std::get<double>(edge0);
+	                double edge1_d = std::get<double>(edge1);
+	                double x_d     = std::get<double>(x);
+	                double t       = std::clamp((x_d - edge0_d) / (edge1_d - edge0_d), 0.0, 1.0);
+	                Value  result  = t * t * (3.0 - 2.0 * t);
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            TransferFlags(result_id, operand_words[1]);
+	            TransferFlags(result_id, operand_words[2]);
+	            break;
+	        }
     case 50:
         { // Fma
             const Value& a_val = GetValue(operand_words[0]);
@@ -5122,6 +5743,70 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             TransferFlags(result_id, operand_words[1]);
             TransferFlags(result_id, operand_words[2]);
+            break;
+        }
+    case 58:
+        { // PackHalf2x16
+            const Value& operand      = GetValue(operand_words[0]);
+            const Type&  operand_type = GetTypeByResultId(operand_words[0]);
+
+            assertmc(type.kind == Type::Kind::Int && type.scalar.width == 32,
+                    "SPIRV simulator: Result type for PackHalf2x16 must be a 32-bit int");
+            assertmc(operand_type.kind == Type::Kind::Vector && operand_type.vector.elem_count == 2,
+                    "SPIRV simulator: Operand for PackHalf2x16 must be a two-component vector");
+
+            const Type& elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
+            assertmc(elem_type.kind == Type::Kind::Float,
+                    "SPIRV simulator: Operand elements for PackHalf2x16 must be floats");
+
+            auto     vec    = std::get<std::shared_ptr<VectorV>>(operand);
+            uint32_t low    = FloatToHalfBits(static_cast<float>(std::get<double>(vec->elems[0])));
+            uint32_t high   = FloatToHalfBits(static_cast<float>(std::get<double>(vec->elems[1])));
+            uint32_t packed = low | (high << 16);
+
+            if (type.scalar.is_signed)
+            {
+                SetValue(result_id, static_cast<int64_t>(bit_cast<int32_t>(packed)));
+            }
+            else
+            {
+                SetValue(result_id, static_cast<uint64_t>(packed));
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+        }
+    case 62:
+        { // UnpackHalf2x16
+            const Value& operand      = GetValue(operand_words[0]);
+            const Type&  operand_type = GetTypeByResultId(operand_words[0]);
+
+            assertmc(type.kind == Type::Kind::Vector && type.vector.elem_count == 2,
+                    "SPIRV simulator: Result type for UnpackHalf2x16 must be a two-component vector");
+            assertmc(operand_type.kind == Type::Kind::Int && operand_type.scalar.width == 32,
+                    "SPIRV simulator: Operand for UnpackHalf2x16 must be a 32-bit int");
+
+            const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+            assertmc(elem_type.kind == Type::Kind::Float,
+                    "SPIRV simulator: Result elements for UnpackHalf2x16 must be floats");
+
+            uint32_t packed;
+            if (std::holds_alternative<uint64_t>(operand))
+            {
+                packed = static_cast<uint32_t>(std::get<uint64_t>(operand));
+            }
+            else
+            {
+                packed = bit_cast<uint32_t>(static_cast<int32_t>(std::get<int64_t>(operand)));
+            }
+
+            Value result     = std::make_shared<VectorV>();
+            auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+            result_vec->elems.push_back(static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(packed & 0xffffu))));
+            result_vec->elems.push_back(static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(packed >> 16))));
+
+            SetValue(result_id, result_vec);
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
     case 66:
@@ -5310,10 +5995,10 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-    case 79:
-        { // NMin
-            const Value& x_val = GetValue(operand_words[0]);
-            const Value& y_val = GetValue(operand_words[1]);
+	    case 79:
+	        { // NMin
+	            const Value& x_val = GetValue(operand_words[0]);
+	            const Value& y_val = GetValue(operand_words[1]);
 
             if (type.kind == Type::Kind::Vector)
             {
@@ -5375,14 +6060,83 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                 assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
             }
 
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            break;
-        }
-    default:
-        {
-            if (verbose_)
-            {
+	            TransferFlags(result_id, operand_words[0]);
+	            TransferFlags(result_id, operand_words[1]);
+	            break;
+	        }
+	    case 80:
+	        { // NMax
+	            const Value& x_val = GetValue(operand_words[0]);
+	            const Value& y_val = GetValue(operand_words[1]);
+
+	            if (type.kind == Type::Kind::Vector)
+	            {
+	                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(x_val) &&
+	                            std::holds_alternative<std::shared_ptr<VectorV>>(y_val),
+	                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::NMax");
+
+	                Value result     = std::make_shared<VectorV>();
+	                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+	                auto x = std::get<std::shared_ptr<VectorV>>(x_val);
+	                auto y = std::get<std::shared_ptr<VectorV>>(y_val);
+
+	                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+	                {
+	                    double x_d = std::get<double>(x->elems[i]);
+	                    double y_d = std::get<double>(y->elems[i]);
+
+	                    Value elem_result;
+	                    if (std::isnan(x_d))
+	                    {
+	                        elem_result = y_d;
+	                    }
+	                    else if (std::isnan(y_d))
+	                    {
+	                        elem_result = x_d;
+	                    }
+	                    else
+	                    {
+	                        elem_result = std::max(x_d, y_d);
+	                    }
+	                    result_vec->elems.push_back(elem_result);
+	                }
+
+	                SetValue(result_id, result_vec);
+	            }
+	            else if (type.kind == Type::Kind::Float)
+	            {
+	                double x_d = std::get<double>(x_val);
+	                double y_d = std::get<double>(y_val);
+
+	                Value result;
+	                if (std::isnan(x_d))
+	                {
+	                    result = y_d;
+	                }
+	                else if (std::isnan(y_d))
+	                {
+	                    result = x_d;
+	                }
+	                else
+	                {
+	                    result = std::max(x_d, y_d);
+	                }
+	                SetValue(result_id, result);
+	            }
+	            else
+	            {
+	                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+	            }
+
+	            TransferFlags(result_id, operand_words[0]);
+	            TransferFlags(result_id, operand_words[1]);
+	            break;
+	        }
+	    default:
+	        {
+	            if (verbose_)
+	            {
                 std::cout << "SPIRV simulator: Unhandled OpExtInst GLSL set operation: " << instruction_literal
                           << std::endl;
                 std::cout << "SPIRV simulator: Setting output to default value, this will likely crash" << std::endl;
@@ -13548,6 +14302,60 @@ void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
     TransferFlags(result_id, instruction.words[3]);
 }
 
+void SPIRVSimulator::Op_IsInf(const Instruction& instruction)
+{
+    /*
+    OpIsInf
+
+    Result is true if x is an infinity for the floating-point encoding used by the type of x, otherwise result is false.
+    */
+    assert(instruction.opcode == spv::Op::OpIsInf);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t x_id      = instruction.words[3];
+
+    std::cout << "SPIRV simulator: WARNING: OpIsInf executed, keep this in mind if you see broken behaviour here"
+              << std::endl;
+
+    const Type&  type  = GetTypeByTypeId(type_id);
+    const Value& x_val = GetValue(x_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+        assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(x_val),
+                "SPIRV simulator: Invalid value type for operand 1, must be vector when using vector type");
+
+        auto x_vec = std::get<std::shared_ptr<VectorV>>(x_val);
+
+        assertmc(std::holds_alternative<double>(x_vec->elems[0]),
+                "SPIRV simulator: Invalid vector component value for operand 1, must be float");
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            result_vec->elems.push_back((uint64_t)(std::isinf(std::get<double>(x_vec->elems[i]))));
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::BoolT)
+    {
+        assertmc(std::holds_alternative<double>(x_val), "SPIRV simulator: Invalid value for operand 1, must be float");
+        Value result = (uint64_t)(std::isinf(std::get<double>(x_val)));
+
+        SetValue(result_id, result);
+    }
+    else
+    {
+        assertxc("SPIRV simulator: Invalid result type, must be vector or bool");
+    }
+
+    TransferFlags(result_id, instruction.words[3]);
+}
+
 void SPIRVSimulator::Op_SampledImage(const Instruction& instruction)
 {
     /*
@@ -13671,6 +14479,21 @@ void SPIRVSimulator::Op_ImageSampleExplicitLod(const Instruction& instruction)
     uint32_t sampled_image_id   = instruction.words[3];
     uint32_t coordinate_id      = instruction.words[4];
     uint32_t image_operand_mask = instruction.words[5];
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_ImageSampleDrefExplicitLod(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpImageSampleDrefExplicitLod);
+
+    uint32_t type_id            = instruction.words[1];
+    uint32_t result_id          = instruction.words[2];
+    uint32_t sampled_image_id   = instruction.words[3];
+    uint32_t coordinate_id      = instruction.words[4];
+    uint32_t dref_id            = instruction.words[5];
+    uint32_t image_operand_mask = instruction.words[6];
 
     SetValue(result_id, MakeDefault(type_id));
     SetIsArbitrary(result_id);
@@ -14080,6 +14903,29 @@ void SPIRVSimulator::Op_ImageQuerySizeLod(const Instruction& instruction)
     SetIsArbitrary(result_id);
 }
 
+void SPIRVSimulator::Op_ImageQueryLevels(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpImageQueryLevels);
+
+    uint32_t result_type_id = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t image_id       = instruction.words[3];
+
+    const Type& result_type = GetTypeByTypeId(result_type_id);
+    assertmc(result_type.kind == Type::Kind::Int, "SPIRV simulator: Op_ImageQueryLevels result type must be int");
+
+    if (result_type.scalar.is_signed)
+    {
+        SetValue(result_id, int64_t(1));
+    }
+    else
+    {
+        SetValue(result_id, uint64_t(1));
+    }
+
+    SetIsArbitrary(result_id);
+}
+
 void SPIRVSimulator::Op_FunctionParameter(const Instruction& instruction)
 {
     /*
@@ -14125,6 +14971,126 @@ void SPIRVSimulator::Op_EndPrimitive(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpEndPrimitive);
     std::cout << "SPIRV simulator: WARNING: Geometry shaders not implemented, instructions are ignored" << std::endl;
+}
+
+void SPIRVSimulator::Op_UConvert(const Instruction& instruction)
+{
+    /*
+    OpUConvert
+
+    Convert value numerically from one unsigned integer width to another width.
+    */
+    assert(instruction.opcode == spv::Op::OpUConvert);
+
+    uint32_t type_id    = instruction.words[1];
+    uint32_t result_id  = instruction.words[2];
+    uint32_t operand_id = instruction.words[3];
+
+    const Value& operand      = GetValue(operand_id);
+    const Type&  type         = GetTypeByTypeId(type_id);
+    const Type&  operand_type = GetTypeByResultId(operand_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertmc(operand_type.kind == Type::Kind::Vector,
+                "SPIRV simulator: Operand must be vector type in Op_UConvert");
+        assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                "SPIRV simulator: Operand value must be vector in Op_UConvert");
+
+        const Type& result_elem_type  = GetTypeByTypeId(type.vector.elem_type_id);
+        const Type& operand_elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
+        assertmc(result_elem_type.kind == Type::Kind::Int && !result_elem_type.scalar.is_signed,
+                "SPIRV simulator: Result elements must be unsigned ints in Op_UConvert");
+        assertmc(operand_elem_type.kind == Type::Kind::Int && !operand_elem_type.scalar.is_signed,
+                "SPIRV simulator: Operand elements must be unsigned ints in Op_UConvert");
+        assertmc(type.vector.elem_count == operand_type.vector.elem_count,
+                "SPIRV simulator: Vector sizes must match in Op_UConvert");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+        auto  vec        = std::get<std::shared_ptr<VectorV>>(operand);
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            result_vec->elems.push_back(MaskToWidth(GetIntegerBits(vec->elems[i]), result_elem_type.scalar.width));
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        assertmc(!type.scalar.is_signed, "SPIRV simulator: Result must be unsigned int in Op_UConvert");
+        assertmc(operand_type.kind == Type::Kind::Int && !operand_type.scalar.is_signed,
+                "SPIRV simulator: Operand must be unsigned int in Op_UConvert");
+
+        SetValue(result_id, MaskToWidth(GetIntegerBits(operand), type.scalar.width));
+    }
+    else
+    {
+        assertxc("SPIRV simulator: Invalid result type in Op_UConvert");
+    }
+
+    TransferFlags(result_id, operand_id);
+}
+
+void SPIRVSimulator::Op_SConvert(const Instruction& instruction)
+{
+    /*
+    OpSConvert
+
+    Convert value numerically from one signed integer width to another width.
+    */
+    assert(instruction.opcode == spv::Op::OpSConvert);
+
+    uint32_t type_id    = instruction.words[1];
+    uint32_t result_id  = instruction.words[2];
+    uint32_t operand_id = instruction.words[3];
+
+    const Value& operand      = GetValue(operand_id);
+    const Type&  type         = GetTypeByTypeId(type_id);
+    const Type&  operand_type = GetTypeByResultId(operand_id);
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        assertmc(operand_type.kind == Type::Kind::Vector,
+                "SPIRV simulator: Operand must be vector type in Op_SConvert");
+        assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                "SPIRV simulator: Operand value must be vector in Op_SConvert");
+
+        const Type& result_elem_type  = GetTypeByTypeId(type.vector.elem_type_id);
+        const Type& operand_elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
+        assertmc(result_elem_type.kind == Type::Kind::Int && result_elem_type.scalar.is_signed,
+                "SPIRV simulator: Result elements must be signed ints in Op_SConvert");
+        assertmc(operand_elem_type.kind == Type::Kind::Int && operand_elem_type.scalar.is_signed,
+                "SPIRV simulator: Operand elements must be signed ints in Op_SConvert");
+        assertmc(type.vector.elem_count == operand_type.vector.elem_count,
+                "SPIRV simulator: Vector sizes must match in Op_SConvert");
+
+        Value result     = std::make_shared<VectorV>();
+        auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+        auto  vec        = std::get<std::shared_ptr<VectorV>>(operand);
+
+        for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+        {
+            result_vec->elems.push_back(SignExtendToInt64(GetIntegerBits(vec->elems[i]), result_elem_type.scalar.width));
+        }
+
+        SetValue(result_id, result);
+    }
+    else if (type.kind == Type::Kind::Int)
+    {
+        assertmc(type.scalar.is_signed, "SPIRV simulator: Result must be signed int in Op_SConvert");
+        assertmc(operand_type.kind == Type::Kind::Int && operand_type.scalar.is_signed,
+                "SPIRV simulator: Operand must be signed int in Op_SConvert");
+
+        SetValue(result_id, SignExtendToInt64(GetIntegerBits(operand), type.scalar.width));
+    }
+    else
+    {
+        assertxc("SPIRV simulator: Invalid result type in Op_SConvert");
+    }
+
+    TransferFlags(result_id, operand_id);
 }
 
 void SPIRVSimulator::Op_FConvert(const Instruction& instruction)
@@ -14611,6 +15577,53 @@ void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
     else
     {
         Value result = (int64_t)(std::get<int64_t>(pointee_val) | std::get<int64_t>(value));
+        WritePointer(pointer, result);
+    }
+
+    TransferFlagsToPointee(pointer_id, value_id);
+}
+
+void SPIRVSimulator::Op_AtomicXor(const Instruction& instruction)
+{
+    /*
+    OpAtomicXor
+
+    Atomically write the bitwise XOR of the original pointee value and Value, returning the original value.
+    */
+    assert(instruction.opcode == spv::Op::OpAtomicXor);
+
+    uint32_t type_id    = instruction.words[1];
+    uint32_t result_id  = instruction.words[2];
+    uint32_t pointer_id = instruction.words[3];
+    uint32_t scope_id   = instruction.words[4];
+    uint32_t sem_id     = instruction.words[5];
+    uint32_t value_id   = instruction.words[6];
+
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Value& pointer_val = GetValue(pointer_id);
+    const Value& value       = GetValue(value_id);
+
+    assertmc(std::holds_alternative<PointerV>(pointer_val),
+            "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicXor");
+    assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicXor");
+
+    const PointerV& pointer     = std::get<PointerV>(pointer_val);
+    const Value&    pointee_val = ReadPointer(pointer);
+
+    assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
+            "SPIRV simulator: Operand type is not int in Op_AtomicXor");
+
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
+
+    if (std::holds_alternative<uint64_t>(pointee_val))
+    {
+        Value result = (uint64_t)(std::get<uint64_t>(pointee_val) ^ std::get<uint64_t>(value));
+        WritePointer(pointer, result);
+    }
+    else
+    {
+        Value result = (int64_t)(std::get<int64_t>(pointee_val) ^ std::get<int64_t>(value));
         WritePointer(pointer, result);
     }
 
@@ -15405,6 +16418,28 @@ void SPIRVSimulator::Op_GroupNonUniformFMax(const Instruction& instruction)
     SetIsArbitrary(result_id);
 }
 
+void SPIRVSimulator::Op_GroupNonUniformFAdd(const Instruction& instruction)
+{
+    /*
+    OpGroupNonUniformFAdd
+
+    A floating point add group operation of all Value operands contributed by all tangled invocations within the
+    Execution scope.
+    */
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformFAdd);
+
+    uint32_t type_id        = instruction.words[1];
+    uint32_t result_id      = instruction.words[2];
+    uint32_t exec_id        = instruction.words[3];
+    uint32_t Operation      = instruction.words[4];
+    uint32_t value_id       = instruction.words[5];
+    uint32_t clustersize_id = instruction.words[6];
+
+    SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
+}
+
 void SPIRVSimulator::Op_GroupNonUniformFMin(const Instruction& instruction)
 {
     /*
@@ -15707,6 +16742,33 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction
     {
         std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionBarycentricsKHR is pass-through, creating "
                      "arbitrary dummy value"
+                  << std::endl;
+    }
+
+    Value result = MakeDefault(type_id);
+
+    SetValue(result_id, result);
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionTriangleVertexPositionsKHR(const Instruction& instruction)
+{
+    /*
+    OpRayQueryGetIntersectionTriangleVertexPositionsKHR
+
+    Reserved.
+    */
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionTriangleVertexPositionsKHR);
+
+    uint32_t type_id         = instruction.words[1];
+    uint32_t result_id       = instruction.words[2];
+    uint32_t ray_query_id    = instruction.words[3];
+    uint32_t intersection_id = instruction.words[4];
+
+    if (verbose_)
+    {
+        std::cout << "SPIRV simulator: Ray Op_RayQueryGetIntersectionTriangleVertexPositionsKHR is pass-through, "
+                     "creating arbitrary dummy value"
                   << std::endl;
     }
 

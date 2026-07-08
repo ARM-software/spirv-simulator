@@ -1689,12 +1689,14 @@ class SPIRVSimulator
     void Op_ImageSampleImplicitLod(const Instruction&);
     void Op_ImageSampleDrefImplicitLod(const Instruction&);
     void Op_ImageSampleExplicitLod(const Instruction&);
+    void Op_ImageSampleDrefExplicitLod(const Instruction&);
     void Op_ImageFetch(const Instruction&);
     void Op_ImageGather(const Instruction&);
     void Op_ImageRead(const Instruction&);
     void Op_ImageWrite(const Instruction&);
     void Op_ImageQuerySize(const Instruction&);
     void Op_ImageQuerySizeLod(const Instruction&);
+    void Op_ImageQueryLevels(const Instruction&);
     void Op_FNegate(const Instruction&);
     void Op_MatrixTimesScalar(const Instruction&);
     void Op_MatrixTimesVector(const Instruction&);
@@ -1726,9 +1728,12 @@ class SPIRVSimulator
     void Op_LogicalAnd(const Instruction&);
     void Op_MatrixTimesMatrix(const Instruction&);
     void Op_IsNan(const Instruction&);
+    void Op_IsInf(const Instruction&);
     void Op_FunctionParameter(const Instruction&);
     void Op_EmitVertex(const Instruction&);
     void Op_EndPrimitive(const Instruction&);
+    void Op_UConvert(const Instruction&);
+    void Op_SConvert(const Instruction&);
     void Op_FConvert(const Instruction&);
     void Op_Image(const Instruction&);
     void Op_ConvertFToS(const Instruction&);
@@ -1736,6 +1741,7 @@ class SPIRVSimulator
     void Op_FRem(const Instruction&);
     void Op_FMod(const Instruction&);
     void Op_AtomicOr(const Instruction&);
+    void Op_AtomicXor(const Instruction&);
     void Op_AtomicUMax(const Instruction&);
     void Op_AtomicUMin(const Instruction&);
     void Op_BitReverse(const Instruction&);
@@ -1748,6 +1754,7 @@ class SPIRVSimulator
     void Op_GroupNonUniformBallotBitCount(const Instruction&);
     void Op_GroupNonUniformBroadcastFirst(const Instruction&);
     void Op_GroupNonUniformElect(const Instruction&);
+    void Op_GroupNonUniformFAdd(const Instruction&);
     void Op_GroupNonUniformFMax(const Instruction&);
     void Op_GroupNonUniformFMin(const Instruction&);
     void Op_GroupNonUniformIAdd(const Instruction&);
@@ -1757,6 +1764,7 @@ class SPIRVSimulator
     void Op_GroupNonUniformBitwiseAnd(const Instruction&);
     void Op_GroupNonUniformQuadSwap(const Instruction&);
     void Op_RayQueryGetIntersectionBarycentricsKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionTriangleVertexPositionsKHR(const Instruction&);
     void Op_RayQueryGetIntersectionFrontFaceKHR(const Instruction&);
     void Op_RayQueryGetIntersectionGeometryIndexKHR(const Instruction&);
     void Op_RayQueryGetIntersectionInstanceCustomIndexKHR(const Instruction&);
