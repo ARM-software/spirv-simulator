@@ -1390,8 +1390,6 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_RayQueryGetIntersectionTypeKHR)
         case spv::Op::OpRayQueryGetIntersectionWorldToObjectKHR:
             R(Op_RayQueryGetIntersectionWorldToObjectKHR)
-        case spv::Op::OpRayQueryConfirmIntersectionKHR:
-            R(Op_RayQueryConfirmIntersectionKHR)
         case spv::Op::OpRayQueryGetIntersectionObjectRayDirectionKHR:
             R(Op_RayQueryGetIntersectionObjectRayDirectionKHR)
         case spv::Op::OpRayQueryGetIntersectionObjectRayOriginKHR:
@@ -1402,6 +1400,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_RayQueryInitializeKHR)
         case spv::Op::OpRayQueryProceedKHR:
             R(Op_RayQueryProceedKHR)
+	case spv::Op::OpRayQueryConfirmIntersectionKHR:
+	    R(Op_RayQueryConfirmIntersectionKHR)
         case spv::Op::OpTraceRayKHR:
             R(Op_TraceRayKHR)
         case spv::Op::OpDecorateString:
@@ -4392,7 +4392,6 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
             if (std::holds_alternative<std::shared_ptr<AggregateV>>(*value))
             {
                 const auto agg = std::get<std::shared_ptr<AggregateV>>(*value);
-
                 if (is_execution_fork)
                 {
                     // If we are exploring a fork, correctness is not important for array aggregates
@@ -5257,6 +5256,76 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
+	case 16:
+	{ // Asin
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::tan");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::asin(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::asin(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+	}
+	case 17:
+	{ // Acos
+            const Value& operand = GetValue(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::tan");
+
+                Value result     = std::make_shared<VectorV>();
+                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+                auto vec = std::get<std::shared_ptr<VectorV>>(operand);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    Value elem_result = (double)std::acos(std::get<double>(vec->elems[i]));
+                    result_vec->elems.push_back(elem_result);
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Float)
+            {
+                Value result = (double)std::acos(std::get<double>(operand));
+                SetValue(result_id, result);
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+	}
         case 25:
         { // Atan2
             const Value& y = GetValue(operand_words[0]);
@@ -5666,8 +5735,99 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
                     TransferFlags(result_id, operand_words[0]);
                     break;
                 }
-            case 37:
-	        { // FMin
+    case 34:
+        { // MatrixInverse
+            const Value& matrix_val = GetValue(operand_words[0]);
+            assertmc(type.kind == Type::Kind::Matrix,
+                    "SPIRV simulator: Result not of matrix type in GLSLExtHandler::matrixInverse");
+            assertmc(std::holds_alternative<std::shared_ptr<MatrixV>>(matrix_val),
+                    "SPIRV simulator: Operand not of matrix type in GLSLExtHandler::matrixInverse");
+
+            const Type& col_type = GetTypeByTypeId(type.matrix.col_type_id);
+            assertmc(col_type.kind == Type::Kind::Vector && col_type.vector.elem_count == type.matrix.col_count,
+                    "SPIRV simulator: Matrix is not square in GLSLExtHandler::matrixInverse");
+
+            const uint32_t size = type.matrix.col_count;
+            auto source = std::get<std::shared_ptr<MatrixV>>(matrix_val);
+            assertmc(source->cols.size() == size,
+                    "SPIRV simulator: Invalid column count in GLSLExtHandler::matrixInverse");
+
+            std::vector<std::vector<double>> augmented(size, std::vector<double>(size * 2, 0.0));
+            for (uint32_t col = 0; col < size; ++col)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(source->cols[col]),
+                        "SPIRV simulator: Matrix column is not a vector in GLSLExtHandler::matrixInverse");
+                auto source_col = std::get<std::shared_ptr<VectorV>>(source->cols[col]);
+                assertmc(source_col->elems.size() == size,
+                        "SPIRV simulator: Invalid row count in GLSLExtHandler::matrixInverse");
+                for (uint32_t row = 0; row < size; ++row)
+                {
+                    augmented[row][col] = std::get<double>(source_col->elems[row]);
+                }
+                augmented[col][size + col] = 1.0;
+            }
+
+            bool singular = false;
+            for (uint32_t pivot_col = 0; pivot_col < size; ++pivot_col)
+            {
+                uint32_t pivot_row = pivot_col;
+                for (uint32_t row = pivot_col + 1; row < size; ++row)
+                {
+                    if (std::abs(augmented[row][pivot_col]) > std::abs(augmented[pivot_row][pivot_col]))
+                    {
+                        pivot_row = row;
+                    }
+                }
+                if (augmented[pivot_row][pivot_col] == 0.0)
+                {
+                    singular = true;
+                    break;
+                }
+                std::swap(augmented[pivot_col], augmented[pivot_row]);
+
+                double pivot = augmented[pivot_col][pivot_col];
+                for (uint32_t col = 0; col < size * 2; ++col)
+                {
+                    augmented[pivot_col][col] /= pivot;
+                }
+                for (uint32_t row = 0; row < size; ++row)
+                {
+                    if (row == pivot_col)
+                    {
+                        continue;
+                    }
+                    double factor = augmented[row][pivot_col];
+                    for (uint32_t col = 0; col < size * 2; ++col)
+                    {
+                        augmented[row][col] -= factor * augmented[pivot_col][col];
+                    }
+                }
+            }
+
+            if (singular)
+            {
+                SetValue(result_id, MakeDefault(type_id));
+                SetIsArbitrary(result_id);
+                TransferFlags(result_id, operand_words[0]);
+                break;
+            }
+
+            auto result = std::make_shared<MatrixV>();
+            for (uint32_t col = 0; col < size; ++col)
+            {
+                auto result_col = std::make_shared<VectorV>();
+                for (uint32_t row = 0; row < size; ++row)
+                {
+                    result_col->elems.push_back(augmented[row][size + col]);
+                }
+                result->cols.push_back(result_col);
+            }
+            SetValue(result_id, result);
+            TransferFlags(result_id, operand_words[0]);
+            break;
+        }
+	    case 37:
+	{ // FMin
 	            const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
 
@@ -6632,6 +6792,89 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
+    case 72:
+    {
+        // Refract
+        // For the incident vector I and surface normal N, and the ratio of indices of refraction eta, the result is the refraction vector. The result is computed by
+        //
+        // k = 1.0 - eta * eta * (1.0 - dot(N, I) * dot(N, I))
+        //
+        // if k < 0.0 the result is 0.0
+        //
+        // otherwise, the result is eta * I - (eta * dot(N, I) + sqrt(k)) * N
+        //
+        // This computation assumes the input parameters for the incident vector I and the surface normal N are already normalized.
+        //
+        // The type of I and N must be a scalar or vector with a floating-point component type.
+        //
+        // The type of eta must be a floating-point scalar.
+        //
+        // Result Type, the type of I, the type of N, and the type of eta must all have the same component type.
+        const Value& i_val = GetValue(operand_words[0]);
+        const Value& n_val = GetValue(operand_words[1]);
+        const Value& eta_val = GetValue(operand_words[2]);
+        Type eta_type = GetTypeByResultId(operand_words[2]);
+        assertmc(eta_type.kind == Type::Kind::Float, 
+                 "SPIRV Simulator: GLSLExtHandler::refract eta must be float scalar.");
+
+        double eta_d = std::get<double>(eta_val);
+        if (type.kind == Type::Kind::Vector)
+        {
+            assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(i_val) &&
+                        std::holds_alternative<std::shared_ptr<VectorV>>(n_val) &&
+                        std::holds_alternative<double>(eta_val),
+                    "SPIRV simulator: Operands not of vector type in GLSLExtHandler::refract");
+
+            Value result     = std::make_shared<VectorV>();
+            auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+
+            auto i_vec = std::get<std::shared_ptr<VectorV>>(i_val);
+            auto n_vec = std::get<std::shared_ptr<VectorV>>(n_val);
+
+            double dot_val = 0.0;
+            for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+            {
+                dot_val += std::get<double>(i_vec->elems[i]) * std::get<double>(n_vec->elems[i]);
+            }
+
+            for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+            {
+                double i_d = std::get<double>(i_vec->elems[i]);
+                double n_d = std::get<double>(n_vec->elems[i]);
+
+                double k = 1.0 - eta_d * eta_d * (1.0 - i_d * n_d * i_d * n_d);
+                double elem_result = 0;
+                if (k > 0.0)
+                {
+                    elem_result = eta_d * i_d - (eta_d * n_d * i_d + std::sqrt(k)) * n_d;
+                }
+                result_vec->elems.push_back(elem_result);
+            }
+
+            SetValue(result_id, result_vec);
+        }
+        else if (type.kind == Type::Kind::Float)
+        {
+            double i_d = std::get<double>(i_val);
+            double n_d = std::get<double>(n_val);
+            double k = 1.0 - eta_d * eta_d * (1.0 - i_d * n_d * i_d * n_d);
+            double result = 0;
+            if (k > 0.0)
+            {
+                result = eta_d * i_d - (eta_d * n_d * i_d + std::sqrt(k)) * n_d;
+            }
+
+            SetValue(result_id, result);
+        }
+        else
+        {
+            assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+        }
+
+        TransferFlags(result_id, operand_words[0]);
+        TransferFlags(result_id, operand_words[1]);
+        break;
+    }
     case 74:
         { // FindSMsb
             const Value& operand = GetValue(operand_words[0]);
@@ -11455,14 +11698,33 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
     else if ((type.kind == Type::Kind::Int) && !type.scalar.is_signed)
     {
         uint64_t value = 0;
-        std::memcpy(&value, bytes.data(), type.scalar.width / 8);
+        if (operand_type.scalar.width < 64){
+                uint16_t offset = 8 - bytes.size();
+                assertm(offset > 0, "SPIRV Simulator: Error when using Op_Bitcast");
+                std::memcpy(reinterpret_cast<std::byte*>(&value), bytes.data(), bytes.size());
+        }
+        else
+        {
+                std::memcpy(&value, bytes.data(), type.scalar.width / 8);
+        }
 
         result = value;
     }
     else if ((type.kind == Type::Kind::Int) && type.scalar.is_signed)
     {
         int64_t value = 0;
-        std::memcpy(reinterpret_cast<std::byte*>(&value), bytes.data(), type.scalar.width / 8);
+        // the width of the type is being expanded
+        if (operand_type.scalar.width < 64){
+                uint64_t tmp = 0;
+                uint16_t offset = 8 - bytes.size();
+                assertm(offset > 0, "SPIRV Simulator: Error when using Op_Bitcast");
+                std::memcpy(reinterpret_cast<std::byte*>(&tmp), bytes.data(), bytes.size());
+                value = SignExtendToInt64(tmp, operand_type.scalar.width);
+        }
+        else
+        {
+                std::memcpy(reinterpret_cast<std::byte*>(&value), bytes.data(), type.scalar.width / 8);
+        }
 
         result = value;
     }
@@ -13575,19 +13837,19 @@ void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction)
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) &&
                      std::holds_alternative<uint64_t>(vec2->elems[i]))
             {
-                result_vec->elems.push_back((uint64_t)std::get<int64_t>(vec1->elems[i])
+                result_vec->elems.push_back(std::get<int64_t>(vec1->elems[i])
                                             << std::get<uint64_t>(vec2->elems[i]));
             }
             else if (std::holds_alternative<uint64_t>(vec1->elems[i]) &&
                      std::holds_alternative<int64_t>(vec2->elems[i]))
             {
                 result_vec->elems.push_back((uint64_t)std::get<uint64_t>(vec1->elems[i])
-                                            << std::get<int64_t>(vec2->elems[i]));
+                                            << static_cast<uint64_t>(std::get<int64_t>(vec2->elems[i])));
             }
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
             {
-                result_vec->elems.push_back((uint64_t)std::get<int64_t>(vec1->elems[i])
-                                            << std::get<int64_t>(vec2->elems[i]));
+                result_vec->elems.push_back(std::get<int64_t>(vec1->elems[i])
+                                            << static_cast<uint64_t>(std::get<int64_t>(vec2->elems[i])));
             }
             else
             {
@@ -13605,16 +13867,16 @@ void SPIRVSimulator::Op_ShiftLeftLogical(const Instruction& instruction)
         }
         else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<uint64_t>(op2))
         {
-            result = (uint64_t)std::get<int64_t>(op1) << std::get<uint64_t>(op2);
+            result = std::get<int64_t>(op1) << std::get<uint64_t>(op2);
         }
 
         else if (std::holds_alternative<uint64_t>(op1) && std::holds_alternative<int64_t>(op2))
         {
-            result = (uint64_t)std::get<uint64_t>(op1) << std::get<int64_t>(op2);
+            result = (uint64_t)std::get<uint64_t>(op1) << static_cast<uint64_t>(std::get<int64_t>(op2));
         }
         else if (std::holds_alternative<int64_t>(op1) && std::holds_alternative<int64_t>(op2))
         {
-            result = (uint64_t)std::get<int64_t>(op1) << std::get<int64_t>(op2);
+            result = std::get<int64_t>(op1) << static_cast<uint64_t>(std::get<int64_t>(op2));
         }
         else
         {
