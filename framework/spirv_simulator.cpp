@@ -13648,12 +13648,34 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
         for (uint32_t i = 0; i < type.vector.elem_count; ++i)
         {
             Value elem_result;
+	    int64_t op1;
+            if (std::holds_alternative<int64_t>(vec1->elems[i]))
+            {
+                op1 = std::get<int64_t>(vec1->elems[i]);
+            }
+            else if (std::holds_alternative<uint64_t>(vec1->elems[i]))
+            {
+                op1 = bit_cast<int64_t>(std::get<uint64_t>(vec1->elems[i]));
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid vector element type encountered in Op_SDiv operands");
+            }
 
-            // TODO: Operands dont have to be signed, deal with it and remove the asserts
-            assertmc(std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]),
-                    "SPIRV simulator: Found non-signed int operand vector operands");
+            int64_t op2 = 0;
+            if (std::holds_alternative<int64_t>(vec2->elems[i]))
+            {
+                op2 = std::get<int64_t>(vec2->elems[i]);
+            }
+            else if (std::holds_alternative<uint64_t>(vec2->elems[i]))
+            {
+                op2 = bit_cast<int64_t>(std::get<uint64_t>(vec2->elems[i]));
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid vector element type encountered in Op_SDiv operands");
+            }
 
-            int64_t op2 = std::get<int64_t>(vec2->elems[i]);
             if (op2 == 0)
             {
                 if (verbose_)
@@ -13664,8 +13686,18 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
 
                 op2 = 1;
             }
+	    else if (op2 == -1 && op1 == INT64_MIN)
+	    {
+		if (verbose_)
+		{
+                    std::cout << "SPIRV simulator: Divisor in Op_SDiv is -1 and Dividend is INT64_MIN,"
+			      << "this is undefined behaviour, setting to 1"
+                              << std::endl;
+		}
+		op1 -= 1;
+	    }
 
-            elem_result = std::get<int64_t>(vec1->elems[i]) / op2;
+            elem_result = op1 / op2;
 
             result_vec->elems.push_back(elem_result);
         }
@@ -13674,11 +13706,34 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
     }
     else if (type.kind == Type::Kind::Int)
     {
-        // TODO: Operands dont have to be signed, deal with it and remove the asserts
-        assertmc(std::holds_alternative<int64_t>(val_op1) && std::holds_alternative<int64_t>(val_op2),
-                "SPIRV simulator: Found non-signed int operand");
+        int64_t op1;
+        if (std::holds_alternative<int64_t>(val_op1))
+        {
+                op1 = std::get<int64_t>(val_op1);
+        }
+            else if (std::holds_alternative<uint64_t>(val_op1))
+        {
+                op1 = bit_cast<int64_t>(std::get<uint64_t>(val_op1));
+        }
+        else
+        {
+                assertxc("SPIRV simulator: Invalid vector element type encountered in Op_SDiv operands");
+        }
 
-        int64_t op2 = std::get<int64_t>(val_op2);
+        int64_t op2 = 0;
+        if (std::holds_alternative<int64_t>(val_op2))
+        {
+                op2 = std::get<int64_t>(val_op2);
+        }
+            else if (std::holds_alternative<uint64_t>(val_op2))
+        {
+                op2 = bit_cast<int64_t>(std::get<uint64_t>(val_op2));
+        }
+        else
+        {
+                assertxc("SPIRV simulator: Invalid vector element type encountered in Op_SDiv operands");
+        }
+
         if (op2 == 0)
         {
             if (verbose_)
@@ -13689,8 +13744,18 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
 
             op2 = 1;
         }
+        else if (op2 == -1 && op1 == INT64_MIN)
+        {
+            if (verbose_)
+            {
+                std::cout << "SPIRV simulator: Divisor in Op_SDiv is -1 and Dividend is INT64_MIN,"
+            	      << "this is undefined behaviour, setting to 1"
+                          << std::endl;
+            }
+            op1 -= 1;
+        }
 
-        Value result = std::get<int64_t>(val_op1) / op2;
+        Value result = op1 / op2;
 
         SetValue(result_id, result);
     }
@@ -13723,19 +13788,45 @@ void SPIRVSimulator::Op_SDiv(const Instruction& instruction)
         auto bin_op_div = [](const Value& lhs, const Value& rhs) -> Value{
             if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
             {
-                uint64_t rh = std::get<uint64_t>(rhs);
+                int64_t rh = bit_cast<int64_t>(std::get<uint64_t>(rhs));
                 if (rh == 0){
                     rh = 1;
                 }
-                return (std::get<uint64_t>(lhs) / rh);
+                return (bit_cast<int64_t>(std::get<uint64_t>(lhs)) / rh);
             }
-            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            else if (std::holds_alternative<uint64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
             {
+                int64_t lh = bit_cast<int64_t>(std::get<uint64_t>(lhs));
                 int64_t rh = std::get<int64_t>(rhs);
                 if (rh == 0){
                     rh = 1;
                 }
+                else if (rh == -1 && lh == INT64_MIN)
+                {
+                    lh -= 1;
+                }
+                return (lh / rh);
+            }
+            if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<uint64_t>(rhs))
+            {
+                int64_t rh = bit_cast<int64_t>(std::get<uint64_t>(rhs));
+                if (rh == 0){
+                    rh = 1;
+                }
                 return (std::get<int64_t>(lhs) / rh);
+            }
+            else if (std::holds_alternative<int64_t>(lhs) && std::holds_alternative<int64_t>(rhs))
+            {
+                int64_t lh = std::get<int64_t>(lhs);
+                int64_t rh = std::get<int64_t>(rhs);
+                if (rh == 0){
+                    rh = 1;
+                }
+                else if (rh == -1 && lh == INT64_MIN)
+                {
+                    lh -= 1;
+                }
+                return (lh / rh);
             }
             else
             {
