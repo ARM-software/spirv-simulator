@@ -356,6 +356,7 @@ struct Type
         RayQueryKHR,
         CooperativeMatrixKHR,
         TensorARM,
+        GraphARM
     } kind;
 
     struct ScalarTypeData
@@ -421,6 +422,10 @@ struct Type
         std::optional<uint32_t> rank_id;
         std::optional<uint32_t> shape_id;
     };
+    struct GraphTypeData
+    {
+        uint32_t numInputs;
+    };
 
     union
     {
@@ -435,6 +440,7 @@ struct Type
         StructTypeData              structure;
         CooperativeMatrixTypeData   coopMatrix;
         TensorTypeData              tensor;
+        GraphTypeData               graph;
     };
     Type() : kind(Kind::Void) { scalar = { 0, false }; }
 
@@ -501,6 +507,16 @@ struct Type
             .element_type_id = element_type_id,
             .rank_id = rank_id,
             .shape_id = shape_id,
+        };
+        return t;
+    }
+
+    static Type Graph(uint32_t num_inputs)
+    {
+        Type t;
+        t.kind = Kind::GraphARM;
+        t.graph = GraphTypeData{
+            .numInputs = num_inputs,
         };
         return t;
     }
@@ -1617,6 +1633,7 @@ class SPIRVSimulator
     void T_RayQueryKHR(const Instruction&);
     void T_CooperativeMatrixKHR(const Instruction&);
     void T_TensorARM(const Instruction&);
+    void T_GraphARM(const Instruction&);
     void Op_EntryPoint(const Instruction&);
     void Op_ExtInstImport(const Instruction&);
     void Op_String(const Instruction&);
@@ -1810,6 +1827,12 @@ class SPIRVSimulator
     void Op_TensorReadARM(const Instruction&);
     void Op_TensorWriteARM(const Instruction&);
     void Op_TensorQuerySizeARM(const Instruction&);
+    void Op_GraphConstantARM(const Instruction&);
+    void Op_GraphEntryPointARM(const Instruction&);
+    void Op_GraphARM(const Instruction&);
+    void Op_GraphInputARM(const Instruction&);
+    void Op_GraphSetOutputARM(const Instruction&);
+    void Op_GraphEndARM(const Instruction&);
 };
 
 } // namespace SPIRVSimulator

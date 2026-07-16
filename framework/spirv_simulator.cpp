@@ -1020,6 +1020,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(T_CooperativeMatrixKHR);
         case spv::Op::OpTypeTensorARM:
             R(T_TensorARM);
+        case spv::Op::OpTypeGraphARM:
+            R(T_GraphARM);
         case spv::Op::OpEntryPoint:
             R(Op_EntryPoint)
         case spv::Op::OpExtInstImport:
@@ -1408,6 +1410,18 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_TensorWriteARM);
         case spv::Op::OpTensorQuerySizeARM:
             R(Op_TensorQuerySizeARM);
+        case spv::Op::OpGraphConstantARM:
+            R(Op_GraphConstantARM);
+        case spv::Op::OpGraphEntryPointARM:
+            R(Op_GraphEntryPointARM);
+        case spv::Op::OpGraphARM:
+            R(Op_GraphARM);
+        case spv::Op::OpGraphInputARM:
+            R(Op_GraphInputARM);
+        case spv::Op::OpGraphSetOutputARM:
+            R(Op_GraphSetOutputARM);
+        case spv::Op::OpGraphEndARM:
+            R(Op_GraphEndARM);
         default:
         {
             return false;
@@ -1734,6 +1748,10 @@ std::string SPIRVSimulator::GetTypeString(const Type& type) const
     if (type.kind == Type::Kind::TensorARM)
     {
         return "TensorARM";
+    }
+    if (type.kind == Type::Kind::GraphARM)
+    {
+        return "GraphARM";
     }
 
     return "";
@@ -3228,6 +3246,12 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
         {
             // This is just data and can be ignored
             return 0;
+        }
+        case Type::Kind::GraphARM:
+        {
+            // graph for how input tensors will be transformed to an output tensor
+            // not needed since we don't simulate tensor transformations
+            return (uint64_t)0;
         }
         default:
         {
@@ -6495,6 +6519,21 @@ void SPIRVSimulator::T_TensorARM(const Instruction& instruction)
     type.tensor = {elem_type_id, rank_id, shape_id};
     types_[result_id] = type;
     SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::T_GraphARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpTypeGraphARM);
+
+    uint32_t result_id  = instruction.words[1];
+    uint32_t num_inputs = instruction.words[2];
+
+    Type type;
+    type.kind = Type::Kind::GraphARM;
+    type.graph = {
+        .numInputs = num_inputs,
+    };
+    types_[result_id] = type;
 }
 
 // ---------------------------------------------------------------------------
@@ -17631,6 +17670,63 @@ void SPIRVSimulator::Op_TensorQuerySizeARM(const Instruction& instruction)
 #endif
     SetValue(result_id, MakeDefault(dimension_id));
     SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GraphConstantARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGraphConstantARM);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+    uint32_t graph_const_id = instruction.words[3];
+
+    assertm(GetTypeByTypeId(type_id).kind == Type::Kind::TensorARM,
+            "SPIRV simulator: GraphConstantARM result type must be TensorARM");
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GraphEntryPointARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGraphEntryPointARM);
+
+    uint32_t graph_id = instruction.words[1];
+
+    assertm(GetTypeByResultId(graph_id).kind == Type::Kind::GraphARM,
+            "SPIRV Simulator: GraphEntryPointARM must be return GraphARM type");
+}
+
+void SPIRVSimulator::Op_GraphARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGraphARM);
+
+    uint32_t type_id   = instruction.words[1];
+    uint32_t result_id = instruction.words[2];
+
+    assertm(GetTypeByTypeId(type_id).kind == Type::Kind::GraphARM,
+            "SPIRV simulator: GraphConstantARM result type must be GraphARM");
+
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_GraphInputARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGraphInputARM);
+    // Nothing to do here
+}
+
+void SPIRVSimulator::Op_GraphSetOutputARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGraphSetOutputARM);
+    // Nothing to do here
+}
+
+void SPIRVSimulator::Op_GraphEndARM(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGraphEndARM);
+    // Nothing to do here
 }
 
 } // namespace SPIRVSimulator
