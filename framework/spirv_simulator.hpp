@@ -1781,6 +1781,7 @@ class SPIRVSimulator
     void Op_AtomicOr(const Instruction&);
     void Op_AtomicXor(const Instruction&);
     void Op_AtomicUMax(const Instruction&);
+    void Op_AtomicSMax(const Instruction&);
     void Op_AtomicUMin(const Instruction&);
     void Op_BitReverse(const Instruction&);
     void Op_BitwiseXor(const Instruction&);
