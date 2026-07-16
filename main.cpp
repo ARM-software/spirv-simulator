@@ -72,8 +72,15 @@ int main(int argc, char** argv)
     if (physical_address_data.size() > 0) std::cout << "Pointers to pbuffers:" << std::endl;
     for (const auto& pointer_t : physical_address_data)
     {
-        std::cout << "  Found pointer with address: 0x" << std::hex << pointer_t.raw_pointer_value << std::dec
-                  << " made from input bit components:" << std::endl;
+        std::cout << "  Found pointer with address: 0x" << std::hex << pointer_t.raw_pointer_value << std::dec;
+
+        if (pointer_t.range_valid)
+        {
+            std::cout << "  Which covers byte range: [" << pointer_t.range_start << ", " << pointer_t.range_end << ")";
+        }
+
+        std::cout << " made from input bit components:" << std::endl;
+
         for (auto bit_component : pointer_t.bit_components)
         {
             if (bit_component.location == SPIRVSimulator::BitLocation::Constant)
