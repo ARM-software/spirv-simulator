@@ -482,7 +482,7 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
         }
     }
 
-    if ((simulation_data_->shader_id != UINT64_MAX) && persistent_data_ && (persistent_data_->uninteresting_shaders.contains(simulation_data_->shader_id)))
+    if ((simulation_data_->shader_id != UINT64_MAX) && persistent_data_ && persistent_data_->IsUninteresting(simulation_data_->shader_id))
     {
         done_ = true;
         return;
@@ -849,7 +849,7 @@ bool SPIRVSimulator::Run()
 
     if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && (simulation_data_->shader_id != UINT64_MAX) && persistent_data_)
     {
-        persistent_data_->uninteresting_shaders.insert(simulation_data_->shader_id);
+        persistent_data_->MarkUninteresting(simulation_data_->shader_id);
     }
 
     return false;
