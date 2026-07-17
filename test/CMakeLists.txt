@@ -33,6 +33,11 @@ target_sources(tensor_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} tensor_test.c
 target_compile_definitions(tensor_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
 target_link_libraries(tensor_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
 
+add_executable(memory_tracker_test)
+target_sources(memory_tracker_test PRIVATE memory_tracker_test.cpp)
+target_compile_definitions(memory_tracker_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
+target_link_libraries(memory_tracker_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
+
 include(CTest)
 include(GoogleTest)
 
@@ -44,14 +49,16 @@ gtest_discover_tests(arithmetic_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(declaration_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(misc_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(tensor_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(memory_tracker_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 
 add_custom_target(run_tests
   COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -VV
-  DEPENDS arithmetic_test declaration_test misc_test tensor_test
+  DEPENDS arithmetic_test declaration_test misc_test tensor_test memory_tracker_test
 )
 
 file(GLOB SPIRV_FILES ${PROJECT_SOURCE_DIR}/test_shaders/*.spv ${PROJECT_SOURCE_DIR}/test_shaders/*.spirv)
 foreach(X ${SPIRV_FILES})
 	get_filename_component(TESTNAME ${X} NAME_WLE)
+	string(PREPEND TESTNAME "test_shader.")
 	add_test(NAME ${TESTNAME} COMMAND ${PROJECT_BINARY_DIR}/spirv_simulator ${X})
 endforeach()
