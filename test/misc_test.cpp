@@ -9,6 +9,174 @@
 
 using namespace testing;
 
+class GLSLExtInstructionTests : public SPIRVSimulatorMockBase, public ::testing::Test
+{
+  public:
+    void ExecuteGLSLExtInstruction(uint32_t                         type_id,
+                                   uint32_t                         result_id,
+                                   uint32_t                         instruction_literal,
+                                   const std::span<const uint32_t>& operands)
+    {
+        GLSLExtHandler(type_id, result_id, instruction_literal, operands);
+    }
+};
+
+TEST_F(GLSLExtInstructionTests, FMinAcceptsFloatVectorElements)
+{
+    constexpr uint32_t result_id    = 100;
+    constexpr uint32_t operand_1_id = 101;
+    constexpr uint32_t operand_2_id = 102;
+
+    ::SPIRVSimulator::Value operand_1 =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<double>{ 4.0, -2.0, 8.0 });
+    ::SPIRVSimulator::Value operand_2 =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<double>{ 3.0, -1.0, 7.0 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::vec3)).WillOnce(ReturnRef(types_.at(CommonTypes::vec3)));
+    EXPECT_CALL(*this, GetValue(operand_1_id)).WillOnce(ReturnRef(operand_1));
+    EXPECT_CALL(*this, GetValue(operand_2_id)).WillOnce(ReturnRef(operand_2));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_1_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_2_id)));
+
+    const std::vector<uint32_t> operands{ operand_1_id, operand_2_id };
+    ExecuteGLSLExtInstruction(CommonTypes::vec3, result_id, 37, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<double>(result->elems[0]), 3.0);
+    EXPECT_EQ(std::get<double>(result->elems[1]), -2.0);
+    EXPECT_EQ(std::get<double>(result->elems[2]), 7.0);
+}
+
+TEST_F(GLSLExtInstructionTests, SMaxHandlesSignedIntegerVectors)
+{
+    constexpr uint32_t result_id    = 200;
+    constexpr uint32_t operand_1_id = 201;
+    constexpr uint32_t operand_2_id = 202;
+
+    ::SPIRVSimulator::Value operand_1 =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -4, 2, 8 });
+    ::SPIRVSimulator::Value operand_2 =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -3, -1, 7 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::ivec3)).WillOnce(ReturnRef(types_.at(CommonTypes::ivec3)));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::i64)).WillOnce(ReturnRef(types_.at(CommonTypes::i64)));
+    EXPECT_CALL(*this, GetValue(operand_1_id)).WillOnce(ReturnRef(operand_1));
+    EXPECT_CALL(*this, GetValue(operand_2_id)).WillOnce(ReturnRef(operand_2));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_1_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_2_id)));
+
+    const std::vector<uint32_t> operands{ operand_1_id, operand_2_id };
+    ExecuteGLSLExtInstruction(CommonTypes::ivec3, result_id, 42, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<int64_t>(result->elems[0]), -3);
+    EXPECT_EQ(std::get<int64_t>(result->elems[1]), 2);
+    EXPECT_EQ(std::get<int64_t>(result->elems[2]), 8);
+}
+
+TEST_F(GLSLExtInstructionTests, SMaxHandlesUnsignedResultType)
+{
+    constexpr uint32_t result_type_id = 250;
+    constexpr uint32_t result_id      = 251;
+    constexpr uint32_t operand_1_id   = 252;
+    constexpr uint32_t operand_2_id   = 253;
+
+    const ::SPIRVSimulator::Type result_type = ::SPIRVSimulator::Type::Vector(CommonTypes::u32, 3);
+    ::SPIRVSimulator::Value operand_1 = std::make_shared<::SPIRVSimulator::VectorV>(
+        std::initializer_list<uint64_t>{ 0xffffffffu, 2, 0x80000000u });
+    ::SPIRVSimulator::Value operand_2 = std::make_shared<::SPIRVSimulator::VectorV>(
+        std::initializer_list<int64_t>{ -3, -1, 7 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::u32)).WillOnce(ReturnRef(types_.at(CommonTypes::u32)));
+    EXPECT_CALL(*this, GetValue(operand_1_id)).WillOnce(ReturnRef(operand_1));
+    EXPECT_CALL(*this, GetValue(operand_2_id)).WillOnce(ReturnRef(operand_2));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_1_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_2_id)));
+
+    const std::vector<uint32_t> operands{ operand_1_id, operand_2_id };
+    ExecuteGLSLExtInstruction(result_type_id, result_id, 42, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<uint64_t>(result->elems[0]), 0xffffffffu);
+    EXPECT_EQ(std::get<uint64_t>(result->elems[1]), 2u);
+    EXPECT_EQ(std::get<uint64_t>(result->elems[2]), 7u);
+}
+
+TEST_F(GLSLExtInstructionTests, FindSMsbInterpretsUnsignedOperandAsSigned)
+{
+    constexpr uint32_t result_type_id = 300;
+    constexpr uint32_t result_id      = 301;
+    constexpr uint32_t operand_id     = 302;
+
+    const ::SPIRVSimulator::Type result_type  = ::SPIRVSimulator::Type::Vector(CommonTypes::i32, 3);
+    const ::SPIRVSimulator::Type operand_type = ::SPIRVSimulator::Type::Vector(CommonTypes::u32, 3);
+    ::SPIRVSimulator::Value operand = std::make_shared<::SPIRVSimulator::VectorV>(
+        std::initializer_list<uint64_t>{ 0xffffffffu, 0xfffffffcu, 8 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(operand_id)).WillOnce(ReturnRef(operand_type));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::u32)).WillOnce(ReturnRef(types_.at(CommonTypes::u32)));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::i32)).WillOnce(ReturnRef(types_.at(CommonTypes::i32)));
+    EXPECT_CALL(*this, GetValue(operand_id)).WillOnce(ReturnRef(operand));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_id)));
+
+    const std::vector<uint32_t> operands{ operand_id };
+    ExecuteGLSLExtInstruction(result_type_id, result_id, 74, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<int64_t>(result->elems[0]), -1);
+    EXPECT_EQ(std::get<int64_t>(result->elems[1]), 1);
+    EXPECT_EQ(std::get<int64_t>(result->elems[2]), 3);
+}
+
+TEST_F(GLSLExtInstructionTests, FindUMsbInterpretsSignedOperandAsUnsigned)
+{
+    constexpr uint32_t result_type_id = 400;
+    constexpr uint32_t result_id      = 401;
+    constexpr uint32_t operand_id     = 402;
+
+    const ::SPIRVSimulator::Type result_type  = ::SPIRVSimulator::Type::Vector(CommonTypes::u32, 3);
+    const ::SPIRVSimulator::Type operand_type = ::SPIRVSimulator::Type::Vector(CommonTypes::i32, 3);
+    ::SPIRVSimulator::Value operand = std::make_shared<::SPIRVSimulator::VectorV>(
+        std::initializer_list<int64_t>{ 0, 4, -2147483648ll });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(operand_id)).WillOnce(ReturnRef(operand_type));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::i32)).WillOnce(ReturnRef(types_.at(CommonTypes::i32)));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::u32)).WillOnce(ReturnRef(types_.at(CommonTypes::u32)));
+    EXPECT_CALL(*this, GetValue(operand_id)).WillOnce(ReturnRef(operand));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_id)));
+
+    const std::vector<uint32_t> operands{ operand_id };
+    ExecuteGLSLExtInstruction(result_type_id, result_id, 75, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<uint64_t>(result->elems[0]), 0xffffffffu);
+    EXPECT_EQ(std::get<uint64_t>(result->elems[1]), 2u);
+    EXPECT_EQ(std::get<uint64_t>(result->elems[2]), 31u);
+}
+
 class MemoryBarrierTests : public SPIRVSimulatorMockBase, public ::testing::Test
 {};
 
@@ -142,4 +310,3 @@ TEST_F(StringTests, OpLineExecutesAsNoOp)
 
     EXPECT_TRUE(this->ExecuteInstruction(line_inst));
 }
-

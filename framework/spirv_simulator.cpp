@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <bit>
 #include <cstdint>
 #include <iomanip>
 #include <memory>
@@ -5161,8 +5162,8 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
                 for (uint32_t i = 0; i < type.vector.elem_count; ++i)
                 {
-                    assertmc(std::holds_alternative<uint64_t>(operand_1_val->elems[i]), "SPIRV simulator: Elements are not floats in FMin vector operand 1");
-                    assertmc(std::holds_alternative<uint64_t>(operand_2_val->elems[i]), "SPIRV simulator: Elements are not floats in FMin vector operand 2");
+                    assertmc(std::holds_alternative<double>(operand_1_val->elems[i]), "SPIRV simulator: Elements are not floats in FMin vector operand 1");
+                    assertmc(std::holds_alternative<double>(operand_2_val->elems[i]), "SPIRV simulator: Elements are not floats in FMin vector operand 2");
 
                     result_vec->elems.push_back(std::min(std::get<double>(operand_1_val->elems[i]),
                                             std::get<double>(operand_2_val->elems[i])));
@@ -5383,6 +5384,69 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             else
             {
                 assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            break;
+        }
+    case 42:
+        { // SMax
+            const Value& operand_1 = GetValue(operand_words[0]);
+            const Value& operand_2 = GetValue(operand_words[1]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
+                            std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::smax");
+
+                const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+                assertmc(elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: SMax vector elements must be integers");
+
+                Value result        = std::make_shared<VectorV>();
+                auto  result_vec    = std::get<std::shared_ptr<VectorV>>(result);
+                auto  operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
+                auto  operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
+
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    const int64_t lhs = SignExtendToInt64(GetIntegerBits(operand_1_val->elems[i]),
+                                                          elem_type.scalar.width);
+                    const int64_t rhs = SignExtendToInt64(GetIntegerBits(operand_2_val->elems[i]),
+                                                          elem_type.scalar.width);
+                    const int64_t elem_result = std::max(lhs, rhs);
+                    if (elem_type.scalar.is_signed)
+                    {
+                        result_vec->elems.push_back(elem_result);
+                    }
+                    else
+                    {
+                        result_vec->elems.push_back(
+                            MaskToWidth(bit_cast<uint64_t>(elem_result), elem_type.scalar.width));
+                    }
+                }
+
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Int)
+            {
+                const int64_t lhs = SignExtendToInt64(GetIntegerBits(operand_1), type.scalar.width);
+                const int64_t rhs = SignExtendToInt64(GetIntegerBits(operand_2), type.scalar.width);
+                const int64_t result = std::max(lhs, rhs);
+                if (type.scalar.is_signed)
+                {
+                    SetValue(result_id, result);
+                }
+                else
+                {
+                    SetValue(result_id, MaskToWidth(bit_cast<uint64_t>(result), type.scalar.width));
+                }
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for SMax");
             }
 
             TransferFlags(result_id, operand_words[0]);
@@ -6043,6 +6107,142 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
             TransferFlags(result_id, operand_words[0]);
             TransferFlags(result_id, operand_words[1]);
+            break;
+        }
+    case 74:
+        { // FindSMsb
+            const Value& operand = GetValue(operand_words[0]);
+
+            const Type& operand_type = GetTypeByResultId(operand_words[0]);
+            auto find_signed_msb = [](const Value& value, uint32_t width) {
+                uint64_t bits = MaskToWidth(GetIntegerBits(value), width);
+                const bool negative = width != 0 && (bits & (uint64_t{1} << (width - 1))) != 0;
+                if (negative)
+                {
+                    bits = MaskToWidth(~bits, width);
+                }
+
+                if (bits == 0)
+                {
+                    return int64_t{-1};
+                }
+
+                return static_cast<int64_t>(63u - std::countl_zero(bits));
+            };
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operand not of vector type in GLSLExtHandler::findSMsb");
+                assertmc(operand_type.kind == Type::Kind::Vector,
+                        "SPIRV simulator: FindSMsb operand type must be a vector");
+                const Type& operand_elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
+                const Type& result_elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+                assertmc(operand_elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindSMsb input elements must be integers");
+                assertmc(result_elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindSMsb result elements must be integers");
+
+                Value result      = std::make_shared<VectorV>();
+                auto  result_vec  = std::get<std::shared_ptr<VectorV>>(result);
+                auto  operand_vec = std::get<std::shared_ptr<VectorV>>(operand);
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    const int64_t index = find_signed_msb(operand_vec->elems[i], operand_elem_type.scalar.width);
+                    if (result_elem_type.scalar.is_signed)
+                    {
+                        result_vec->elems.push_back(index);
+                    }
+                    else
+                    {
+                        result_vec->elems.push_back(
+                            MaskToWidth(bit_cast<uint64_t>(index), result_elem_type.scalar.width));
+                    }
+                }
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Int)
+            {
+                assertmc(operand_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindSMsb operand must be an integer");
+                const int64_t index = find_signed_msb(operand, operand_type.scalar.width);
+                if (type.scalar.is_signed)
+                {
+                    SetValue(result_id, index);
+                }
+                else
+                {
+                    SetValue(result_id, MaskToWidth(bit_cast<uint64_t>(index), type.scalar.width));
+                }
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for FindSMsb");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+        }
+    case 75:
+        { // FindUMsb
+            const Value& operand      = GetValue(operand_words[0]);
+            const Type&  operand_type = GetTypeByResultId(operand_words[0]);
+            auto find_unsigned_msb = [](const Value& value, uint32_t width) {
+                const uint64_t bits = MaskToWidth(GetIntegerBits(value), width);
+                return bits == 0 ? int64_t{-1} : static_cast<int64_t>(63u - std::countl_zero(bits));
+            };
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operand not of vector type in GLSLExtHandler::findUMsb");
+                assertmc(operand_type.kind == Type::Kind::Vector,
+                        "SPIRV simulator: FindUMsb operand type must be a vector");
+                const Type& operand_elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
+                const Type& result_elem_type  = GetTypeByTypeId(type.vector.elem_type_id);
+                assertmc(operand_elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindUMsb input elements must be integers");
+                assertmc(result_elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindUMsb result elements must be integers");
+
+                Value result      = std::make_shared<VectorV>();
+                auto  result_vec  = std::get<std::shared_ptr<VectorV>>(result);
+                auto  operand_vec = std::get<std::shared_ptr<VectorV>>(operand);
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    const int64_t index = find_unsigned_msb(operand_vec->elems[i], operand_elem_type.scalar.width);
+                    if (result_elem_type.scalar.is_signed)
+                    {
+                        result_vec->elems.push_back(index);
+                    }
+                    else
+                    {
+                        result_vec->elems.push_back(
+                            MaskToWidth(bit_cast<uint64_t>(index), result_elem_type.scalar.width));
+                    }
+                }
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Int)
+            {
+                assertmc(operand_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindUMsb operand must be an integer");
+                const int64_t index = find_unsigned_msb(operand, operand_type.scalar.width);
+                if (type.scalar.is_signed)
+                {
+                    SetValue(result_id, index);
+                }
+                else
+                {
+                    SetValue(result_id, MaskToWidth(bit_cast<uint64_t>(index), type.scalar.width));
+                }
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for FindUMsb");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
             break;
         }
 	    case 79:
