@@ -48,7 +48,9 @@ public:
         Write,
         Copy,
         MarkLocal,
-        MarkLineage
+        MarkLineage,
+        MarkUniformDerivedRange,
+        PromoteUniformDerivedRange
     };
 
     enum class MappingOrigin {
@@ -68,6 +70,27 @@ public:
 
         QueryResult(Address a, Address b, Flags f, FragmentId frag, MappingOrigin o)
             : address(a), root_address(b), flags(f), fragment_id(frag), origin(o) {}
+    };
+
+
+    enum class MemoryPatternKind {
+        Unknown,
+        UniformDerivedElements
+    };
+
+    struct UniformDerivedRange {
+        Address start = 0;
+        Address end = 0; // exclusive
+        Size element_size = 0;
+        Flags flags = 0;
+        Flags promoted_flags = 0;
+        FragmentId class_id = 0;
+        MemoryPatternKind kind = MemoryPatternKind::Unknown;
+
+        bool contains(Address addr) const { return addr >= start && addr < end; }
+        bool elementCompatible(Address addr, Size elem_size) const {
+            return elem_size == element_size && element_size != 0 && contains(addr) && ((addr - start) % element_size) == 0;
+        }
     };
 
     struct DetailedFlagSpan {
@@ -205,6 +228,64 @@ public:
                 piece.fragment_offset + (piece.abs_end - piece.abs_start),
                 flags);
         }
+    }
+
+    // Mark a dense range of equal-sized elements whose values were produced by the
+    // same thread-dependent expression family.  This deliberately does not mark
+    // the range as a pbuffer pointer yet; it records that all elements in the
+    // range should be promoted together if one compatible element is later proven.
+    FragmentId markUniformDerivedRange(Address addr, Size size, Size element_size, Flags flags) {
+        if (size == 0 || element_size == 0) {
+            return 0;
+        }
+        if ((size % element_size) != 0) {
+            return 0;
+        }
+
+        const Address end = checkedEnd(addr, size);
+        FragmentId class_id = next_fragment_id_++;
+        UniformDerivedRange range;
+        range.start = addr;
+        range.end = end;
+        range.element_size = element_size;
+        range.flags = flags;
+        range.class_id = class_id;
+        range.kind = MemoryPatternKind::UniformDerivedElements;
+        uniform_derived_ranges_.push_back(range);
+#if ENABLE_HISTORY
+        history_.emplace_back(OpKind::MarkUniformDerivedRange, addr, size, flags, 0);
+#endif
+        return class_id;
+    }
+
+    // If addr is one element inside a previously marked uniform-derived range,
+    // promote the whole compatible range. Returns the promoted range when this
+    // proves a class of elements, otherwise nullopt.
+    std::optional<UniformDerivedRange> promoteUniformDerivedRangeContaining(Address addr, Size element_size, Flags flags) {
+        if (element_size == 0 || flags == 0) {
+            return std::nullopt;
+        }
+        for (UniformDerivedRange& range : uniform_derived_ranges_) {
+            if (!range.elementCompatible(addr, element_size)) {
+                continue;
+            }
+            range.promoted_flags |= flags;
+            markLineage(range.start, range.end - range.start, flags);
+#if ENABLE_HISTORY
+            history_.emplace_back(OpKind::PromoteUniformDerivedRange, range.start, range.end - range.start, flags, addr);
+#endif
+            return range;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<UniformDerivedRange> queryUniformDerivedRange(Address addr) const {
+        for (const UniformDerivedRange& range : uniform_derived_ranges_) {
+            if (range.contains(addr)) {
+                return range;
+            }
+        }
+        return std::nullopt;
     }
 
     // Effective flags at a single address, or nullopt if unmapped.
@@ -585,6 +666,7 @@ private:
 
     // History log.
     std::vector<HistoryEntry> history_;
+    std::vector<UniformDerivedRange> uniform_derived_ranges_;
 
     FragmentId next_fragment_id_;
 

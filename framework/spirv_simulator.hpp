@@ -77,6 +77,9 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
 #define SPS_FLAG_IS_DESCRIPTOR_BUFFER     64
 // Used to mark pointer pointing to uninitialized bindings, these may be legal and needs special handling
 #define SPS_FLAG_IS_UNINITIALIZED_BINDING 128
+// Value/address belongs to a dense uniform-derived memory class. If one element
+// is later proven, the persistent memory tracker may promote the whole class.
+#define SPS_FLAG_UNIFORM_DERIVED_RANGE    256
 
 // Used to track metadata about value source chains
 #define SPS_FLAG_IS_FLOAT_SOURCE        1
@@ -191,6 +194,21 @@ struct PhysicalAddressData;
 
 // The following struct contains input values that should be populated by the user
 //////////////////////////////////////////////////////////////////////
+struct ComputeDispatchDimensions
+{
+    uint64_t x = 1;
+    uint64_t y = 1;
+    uint64_t z = 1;
+};
+
+struct ComputeLocalSize
+{
+    uint64_t x = 1;
+    uint64_t y = 1;
+    uint64_t z = 1;
+    bool valid = false;
+};
+
 struct SimulationData
 {
     // The SpirV ID of the entry point to use
@@ -225,6 +243,15 @@ struct SimulationData
     // Any buffer that has the VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT set must have a corresponding entry here.
     // Unlike the PhysicalAddressCandidate map, the vector of DescriptorCandidate's can be empty, no errors will be raised if a descriptor is found without a candidate in this list.
     UnorderedMap<const void*, std::vector<DescriptorCandidate>> descriptor_candidates;
+
+    // Dispatch dimensions for compute shaders. Local size is normally derived
+    // from OpExecutionMode LocalSize/LocalSizeId when possible. The user still
+    // needs to provide workgroup counts for range analysis.
+    ComputeDispatchDimensions compute_num_workgroups;
+
+    // Optional override. If valid is false, the simulator will derive local size
+    // from the selected entry point's execution mode when the shader provides it.
+    ComputeLocalSize compute_local_size;
 
     // Optional value, a unique identifier for the input shader.
     // If provided, this can allow the simulator to massively speed up simulation time
@@ -316,7 +343,16 @@ struct DataSourceBits
 struct PhysicalAddressData
 {
     std::vector<DataSourceBits> bit_components;
-    uint64_t                    raw_pointer_value;
+    uint64_t                    raw_pointer_value = 0;
+
+    // Optional dense range metadata. When range_valid is true, this result
+    // describes a class of equally-sized pbuffer pointer elements, not just one
+    // scalar pointer. [range_start, range_end) is in the same address space as
+    // the source_ptr/byte_offset representation used elsewhere.
+    bool     range_valid = false;
+    uint64_t range_start = 0;
+    uint64_t range_end = 0;
+    uint64_t range_element_size = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -581,6 +617,24 @@ using Value = std::variant<std::monostate,
 struct ValueMetadata
 {
     uint64_t flags = 0;
+
+    // Conservative integer/byte range metadata for values derived from compute
+    // builtins. The simulator still executes one invocation, but this records
+    // the dense range represented by the expression when that is known.
+    bool     range_valid = false;
+    bool     thread_dependent = false;
+    bool     dense_range = false;
+    uint64_t range_min = 0;
+    uint64_t range_max = 0; // inclusive
+    uint64_t range_stride = 1;
+
+    // For pointer values, this optionally describes the byte addresses covered
+    // by a dense thread-dependent access chain.
+    bool     address_range_valid = false;
+    uint64_t address_range_min = 0;
+    uint64_t address_range_max = 0; // inclusive byte address
+    uint64_t address_range_stride = 1;
+    uint64_t address_element_size = 0;
 };
 
 struct PointerV
@@ -1185,6 +1239,8 @@ class SPIRVSimulator
     // non-existent/empty)
     UnorderedMap<uint32_t, std::string>           entry_points_;
     UnorderedMap<uint32_t, spv::ExecutionModel>   entry_point_models_;
+    UnorderedMap<uint32_t, ComputeLocalSize>       entry_point_local_sizes_;
+    ComputeLocalSize                               active_compute_local_size_;
     std::vector<uint32_t>                               program_words_;
     std::span<const uint32_t>                           stream_;
     std::vector<Instruction>                            instructions_;
@@ -1344,6 +1400,17 @@ class SPIRVSimulator
     }
 
     std::shared_ptr<MatrixV> matrixMulAdd(uint32_t mat_A_id, uint32_t mat_B_id, uint32_t mat_C_id, uint32_t result_type_id, bool saturate_accumulate=false);
+
+    uint64_t GetUIntScalarValue(uint32_t result_id) const;
+    void DeriveActiveComputeLocalSize(uint32_t entry_point_function_id);
+    bool TrySetComputeBuiltinValueAndRange(uint32_t result_id, const PointerV& pointer, uint32_t type_id);
+    void PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
+    void PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
+    void PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
+    void PropagateBinaryRangeDiv(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
+    void PropagateBinaryRangeMod(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
+    bool TryGetDenseStoreRange(const PointerV& pointer, uint32_t pointer_id, uint32_t result_id, uint64_t& dst_start, uint64_t& byte_size, uint64_t& element_size);
+    void PromoteUniformDerivedRangeForPointerValue(uint64_t source_addr, uint64_t element_size);
 
     virtual void on_loop_begin(uint32_t header);
     virtual void on_loop_exit (uint32_t header);
@@ -1669,6 +1736,7 @@ class SPIRVSimulator
     void Op_MemoryModel(const Instruction&);
     void Op_MemoryBarrier(const Instruction&);
     void Op_ExecutionMode(const Instruction&);
+    void Op_ExecutionModeId(const Instruction&);
     void Op_Source(const Instruction&);
     void Op_SourceExtension(const Instruction&);
     void Op_Name(const Instruction&);
