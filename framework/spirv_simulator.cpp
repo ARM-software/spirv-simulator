@@ -1386,6 +1386,12 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_RayQueryGetIntersectionTypeKHR)
         case spv::Op::OpRayQueryGetIntersectionWorldToObjectKHR:
             R(Op_RayQueryGetIntersectionWorldToObjectKHR)
+        case spv::Op::OpRayQueryConfirmIntersectionKHR:
+            R(Op_RayQueryConfirmIntersectionKHR)
+        case spv::Op::OpRayQueryGetIntersectionObjectRayDirectionKHR:
+            R(Op_RayQueryGetIntersectionObjectRayDirectionKHR)
+        case spv::Op::OpRayQueryGetIntersectionObjectRayOriginKHR:
+            R(Op_RayQueryGetIntersectionObjectRayOriginKHR)
         case spv::Op::OpRayQueryGetWorldRayDirectionKHR:
             R(Op_RayQueryGetWorldRayDirectionKHR)
         case spv::Op::OpRayQueryInitializeKHR:
@@ -17683,6 +17689,31 @@ void SPIRVSimulator::Op_RayQueryGetIntersectionWorldToObjectKHR(const Instructio
     SetIsArbitrary(result_id);
 }
 
+
+void SPIRVSimulator::Op_RayQueryConfirmIntersectionKHR(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpRayQueryConfirmIntersectionKHR);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionObjectRayDirectionKHR(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionObjectRayDirectionKHR);
+
+    const uint32_t type_id   = instruction.words[1];
+    const uint32_t result_id = instruction.words[2];
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+}
+
+void SPIRVSimulator::Op_RayQueryGetIntersectionObjectRayOriginKHR(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpRayQueryGetIntersectionObjectRayOriginKHR);
+
+    const uint32_t type_id   = instruction.words[1];
+    const uint32_t result_id = instruction.words[2];
+    SetValue(result_id, MakeDefault(type_id));
+    SetIsArbitrary(result_id);
+}
 void SPIRVSimulator::Op_RayQueryGetWorldRayDirectionKHR(const Instruction& instruction)
 {
     /*

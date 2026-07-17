@@ -1881,6 +1881,9 @@ class SPIRVSimulator
     void Op_RayQueryGetIntersectionTKHR(const Instruction&);
     void Op_RayQueryGetIntersectionTypeKHR(const Instruction&);
     void Op_RayQueryGetIntersectionWorldToObjectKHR(const Instruction&);
+    void Op_RayQueryConfirmIntersectionKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionObjectRayDirectionKHR(const Instruction&);
+    void Op_RayQueryGetIntersectionObjectRayOriginKHR(const Instruction&);
     void Op_RayQueryGetWorldRayDirectionKHR(const Instruction&);
     void Op_RayQueryInitializeKHR(const Instruction&);
     void Op_RayQueryProceedKHR(const Instruction&);
