@@ -5768,69 +5768,6 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[1]);
             break;
         }
-    case 42:
-        { // SMax
-            const Value& operand_1 = GetValue(operand_words[0]);
-            const Value& operand_2 = GetValue(operand_words[1]);
-
-            if (type.kind == Type::Kind::Vector)
-            {
-                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
-                            std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
-                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::smax");
-
-                const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
-                assertmc(elem_type.kind == Type::Kind::Int,
-                        "SPIRV simulator: SMax vector elements must be integers");
-
-                Value result        = std::make_shared<VectorV>();
-                auto  result_vec    = std::get<std::shared_ptr<VectorV>>(result);
-                auto  operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
-                auto  operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
-
-                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
-                {
-                    const int64_t lhs = SignExtendToInt64(GetIntegerBits(operand_1_val->elems[i]),
-                                                          elem_type.scalar.width);
-                    const int64_t rhs = SignExtendToInt64(GetIntegerBits(operand_2_val->elems[i]),
-                                                          elem_type.scalar.width);
-                    const int64_t elem_result = std::max(lhs, rhs);
-                    if (elem_type.scalar.is_signed)
-                    {
-                        result_vec->elems.push_back(elem_result);
-                    }
-                    else
-                    {
-                        result_vec->elems.push_back(
-                            MaskToWidth(bit_cast<uint64_t>(elem_result), elem_type.scalar.width));
-                    }
-                }
-
-                SetValue(result_id, result_vec);
-            }
-            else if (type.kind == Type::Kind::Int)
-            {
-                const int64_t lhs = SignExtendToInt64(GetIntegerBits(operand_1), type.scalar.width);
-                const int64_t rhs = SignExtendToInt64(GetIntegerBits(operand_2), type.scalar.width);
-                const int64_t result = std::max(lhs, rhs);
-                if (type.scalar.is_signed)
-                {
-                    SetValue(result_id, result);
-                }
-                else
-                {
-                    SetValue(result_id, MaskToWidth(bit_cast<uint64_t>(result), type.scalar.width));
-                }
-            }
-            else
-            {
-                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for SMax");
-            }
-
-            TransferFlags(result_id, operand_words[0]);
-            TransferFlags(result_id, operand_words[1]);
-            break;
-        }
     case 41:
         { // UMax
             const Value& operand_1 = GetValue(operand_words[0]);
@@ -5917,42 +5854,58 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
 
-            const Type& integer_type =
-                type.kind == Type::Kind::Vector ? GetTypeByTypeId(type.vector.elem_type_id) : type;
-            assertmc(integer_type.kind == Type::Kind::Int,
-                    "SPIRV simulator: Result component type is not integer in GLSLExtHandler::smax");
-
-            uint64_t width = integer_type.scalar.width;
             if (type.kind == Type::Kind::Vector)
             {
                 assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand_1) &&
                             std::holds_alternative<std::shared_ptr<VectorV>>(operand_2),
                         "SPIRV simulator: Operands not of vector type in GLSLExtHandler::smax");
 
-                Value result     = std::make_shared<VectorV>();
-                auto  result_vec = std::get<std::shared_ptr<VectorV>>(result);
+                const Type& elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+                assertmc(elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: SMax vector elements must be integers");
 
-                auto operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
-                auto operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
+                Value result        = std::make_shared<VectorV>();
+                auto  result_vec    = std::get<std::shared_ptr<VectorV>>(result);
+                auto  operand_1_val = std::get<std::shared_ptr<VectorV>>(operand_1);
+                auto  operand_2_val = std::get<std::shared_ptr<VectorV>>(operand_2);
 
                 for (uint32_t i = 0; i < type.vector.elem_count; ++i)
                 {
-                    uint64_t op1_signed_val = SignExtendToInt64(GetIntegerBits(operand_1_val->elems[i]), width);
-                    uint64_t op2_signed_val = SignExtendToInt64(GetIntegerBits(operand_2_val->elems[i]), width);
-                    result_vec->elems.push_back(std::max(op1_signed_val, op2_signed_val));
+                    const int64_t lhs = SignExtendToInt64(GetIntegerBits(operand_1_val->elems[i]),
+                                                          elem_type.scalar.width);
+                    const int64_t rhs = SignExtendToInt64(GetIntegerBits(operand_2_val->elems[i]),
+                                                          elem_type.scalar.width);
+                    const int64_t elem_result = std::max(lhs, rhs);
+                    if (elem_type.scalar.is_signed)
+                    {
+                        result_vec->elems.push_back(elem_result);
+                    }
+                    else
+                    {
+                        result_vec->elems.push_back(
+                            MaskToWidth(bit_cast<uint64_t>(elem_result), elem_type.scalar.width));
+                    }
                 }
 
                 SetValue(result_id, result_vec);
             }
             else if (type.kind == Type::Kind::Int)
             {
-                uint64_t op1_signed_val = SignExtendToInt64(GetIntegerBits(operand_1), width);
-                uint64_t op2_signed_val = SignExtendToInt64(GetIntegerBits(operand_2), width);
-                SetValue(result_id, std::max(op1_signed_val, op2_signed_val));
+                const int64_t lhs = SignExtendToInt64(GetIntegerBits(operand_1), type.scalar.width);
+                const int64_t rhs = SignExtendToInt64(GetIntegerBits(operand_2), type.scalar.width);
+                const int64_t result = std::max(lhs, rhs);
+                if (type.scalar.is_signed)
+                {
+                    SetValue(result_id, result);
+                }
+                else
+                {
+                    SetValue(result_id, MaskToWidth(bit_cast<uint64_t>(result), type.scalar.width));
+                }
             }
             else
             {
-                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler::smax");
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for SMax");
             }
 
             TransferFlags(result_id, operand_words[0]);
