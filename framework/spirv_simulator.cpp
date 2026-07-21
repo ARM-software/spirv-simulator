@@ -1360,6 +1360,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_GroupNonUniformShuffleXor)
         case spv::Op::OpGroupNonUniformUMax:
             R(Op_GroupNonUniformUMax)
+        case spv::Op::OpGroupNonUniformUMin:
+            R(Op_GroupNonUniformUMin)
         case spv::Op::OpGroupNonUniformBitwiseAnd:
             R(Op_GroupNonUniformBitwiseAnd)
         case spv::Op::OpGroupNonUniformQuadSwap:
@@ -17301,6 +17303,18 @@ void SPIRVSimulator::Op_GroupNonUniformUMax(const Instruction& instruction)
     SetIsArbitrary(result_id);
 }
 
+
+void SPIRVSimulator::Op_GroupNonUniformUMin(const Instruction& instruction)
+{
+    assert(instruction.opcode == spv::Op::OpGroupNonUniformUMin);
+
+    const uint32_t result_id = instruction.words[2];
+    const uint32_t value_id  = instruction.words[5];
+
+    SetValue(result_id, GetValue(value_id));
+    TransferFlags(result_id, value_id);
+    SetIsArbitrary(result_id);
+}
 void SPIRVSimulator::Op_GroupNonUniformBitwiseAnd(const Instruction& instruction)
 {
     /*
