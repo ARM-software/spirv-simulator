@@ -10,6 +10,7 @@
 #include <cstring>
 #include <concepts>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <span>
 #include <string>
@@ -282,6 +283,20 @@ struct InternalPersistentData
 {
     // Used for internal optimization between dispatches, should never be touched by the user.
     // Any shader whose SimulationData shader ID is found here can be safely skipped
+    bool IsUninteresting(uint64_t shader_id) const
+    {
+        std::lock_guard<std::mutex> lock(uninteresting_shaders_mutex);
+        return uninteresting_shaders.contains(shader_id);
+    }
+
+    void MarkUninteresting(uint64_t shader_id)
+    {
+        std::lock_guard<std::mutex> lock(uninteresting_shaders_mutex);
+        uninteresting_shaders.insert(shader_id);
+    }
+
+private:
+    mutable std::mutex uninteresting_shaders_mutex;
     std::set<uint64_t> uninteresting_shaders;
 };
 
