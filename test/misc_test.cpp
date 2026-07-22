@@ -7,6 +7,144 @@
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
 
+class AccessChainForkTests : public SPIRVSimulatorMockBase, public ::testing::Test
+{
+  public:
+    void BeginFork()
+    {
+        is_execution_fork = true;
+        call_stack_.push_back({ 0, 0, 0 });
+    }
+
+    void ExecuteAccessChain(const ::SPIRVSimulator::Instruction& instruction) { Op_AccessChain(instruction); }
+    std::optional<::SPIRVSimulator::Value> ReadPointerForTest(const ::SPIRVSimulator::PointerV& pointer)
+    {
+        return ReadPointer(pointer);
+    }
+    void ExecuteStore(const ::SPIRVSimulator::Instruction& instruction) { Op_Store(instruction); }
+    void ExecuteAtomicIAdd(const ::SPIRVSimulator::Instruction& instruction) { Op_AtomicIAdd(instruction); }
+    void EnableVerbose() { verbose_ = true; }
+    bool ForkStopped() const { return call_stack_.empty(); }
+};
+
+TEST_F(AccessChainForkTests, NegativeLogicalIndexStopsForkOnlyWhenDereferenced)
+{
+    constexpr uint32_t result_type_id = 500;
+    constexpr uint32_t result_id      = 501;
+    constexpr uint32_t base_id        = 502;
+    constexpr uint32_t index_id       = 503;
+
+    const ::SPIRVSimulator::Type base_type =
+        ::SPIRVSimulator::Type::Pointer(spv::StorageClass::StorageClassUniform, CommonTypes::u32);
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Pointer(spv::StorageClass::StorageClassUniform, CommonTypes::u32);
+    ::SPIRVSimulator::Value base =
+        ::SPIRVSimulator::PointerV{ 1, 0, result_type_id, base_id, spv::StorageClass::StorageClassUniform, {} };
+    // Access-chain indices are interpreted as signed, regardless of their declared signedness.
+    ::SPIRVSimulator::Value index = uint64_t{ 0xfffffffc };
+    ::SPIRVSimulator::Value result;
+
+    EXPECT_CALL(*this, GetValue(base_id)).WillOnce(ReturnRef(base));
+    EXPECT_CALL(*this, GetTypeByResultId(base_id)).WillOnce(ReturnRef(base_type));
+    EXPECT_CALL(*this, GetIntegerWidthByResultId(index_id)).WillOnce(Return(32));
+    EXPECT_CALL(*this, GetValue(index_id)).WillOnce(ReturnRef(index));
+    EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(base_id)));
+
+    const std::vector<uint32_t> words{
+        (5u << 16) | static_cast<uint32_t>(spv::Op::OpAccessChain), result_type_id, result_id, base_id, index_id,
+    };
+    const ::SPIRVSimulator::Instruction instruction{ .opcode     = spv::Op::OpAccessChain,
+                                                     .word_count = 5,
+                                                     .words      = words };
+
+    BeginFork();
+    value_meta_.resize(index_id + 1);
+    ExecuteAccessChain(instruction);
+    EXPECT_FALSE(ForkStopped());
+
+    ASSERT_TRUE(std::holds_alternative<::SPIRVSimulator::PointerV>(result));
+    const auto& pointer = std::get<::SPIRVSimulator::PointerV>(result);
+    EXPECT_NE(pointer.pointee_flags & SPS_FLAG_HAS_NEGATIVE_INDEX, 0u);
+
+    const std::optional<::SPIRVSimulator::Value> value = ReadPointerForTest(pointer);
+    EXPECT_TRUE(ForkStopped());
+    EXPECT_FALSE(value.has_value());
+}
+
+TEST_F(AccessChainForkTests, PreexistingNegativeIndexStopsSpeculativeRead)
+{
+    const ::SPIRVSimulator::PointerV pointer{
+        1, SPS_FLAG_HAS_NEGATIVE_INDEX, 0, 0, spv::StorageClass::StorageClassUniform, { 0, 0xfffffffc },
+    };
+
+    BeginFork();
+    const std::optional<::SPIRVSimulator::Value> value = ReadPointerForTest(pointer);
+    EXPECT_TRUE(ForkStopped());
+    EXPECT_FALSE(value.has_value());
+}
+
+TEST_F(AccessChainForkTests, StoreStopsAfterAbortedPointerWrite)
+{
+    constexpr uint32_t pointer_id = 600;
+    constexpr uint32_t object_id  = 601;
+
+    ::SPIRVSimulator::Value pointer_value = ::SPIRVSimulator::PointerV{
+        1, SPS_FLAG_HAS_NEGATIVE_INDEX, 0, 0, spv::StorageClass::StorageClassUniform, { 0, 0xfffffffc },
+    };
+    ::SPIRVSimulator::Value object_value = uint64_t{ 1 };
+
+    EXPECT_CALL(*this, GetValue(pointer_id)).WillOnce(ReturnRef(pointer_value));
+    EXPECT_CALL(*this, GetValue(object_id)).WillOnce(ReturnRef(object_value));
+    EXPECT_CALL(*this, SetValue(_, _, _)).Times(0);
+
+    const std::vector<uint32_t> words{
+        (3u << 16) | static_cast<uint32_t>(spv::Op::OpStore),
+        pointer_id,
+        object_id,
+    };
+    const ::SPIRVSimulator::Instruction instruction{
+        .opcode = spv::Op::OpStore, .word_count = 3, .words = words
+    };
+
+    BeginFork();
+    EnableVerbose();
+    ExecuteStore(instruction);
+    EXPECT_TRUE(ForkStopped());
+}
+
+TEST_F(AccessChainForkTests, AtomicStopsAfterAbortedPointerRead)
+{
+    constexpr uint32_t result_id  = 610;
+    constexpr uint32_t pointer_id = 611;
+    constexpr uint32_t value_id   = 612;
+
+    ::SPIRVSimulator::Value pointer_value = ::SPIRVSimulator::PointerV{
+        1, SPS_FLAG_HAS_NEGATIVE_INDEX, 0, 0, spv::StorageClass::StorageClassUniform, { 0, 0xfffffffc },
+    };
+
+    EXPECT_CALL(*this, GetValue(pointer_id)).WillOnce(ReturnRef(pointer_value));
+    EXPECT_CALL(*this, SetValue(_, _, _)).Times(0);
+
+    const std::vector<uint32_t> words{
+        (7u << 16) | static_cast<uint32_t>(spv::Op::OpAtomicIAdd),
+        CommonTypes::u32,
+        result_id,
+        pointer_id,
+        0,
+        0,
+        value_id,
+    };
+    const ::SPIRVSimulator::Instruction instruction{
+        .opcode = spv::Op::OpAtomicIAdd, .word_count = 7, .words = words
+    };
+
+    BeginFork();
+    ExecuteAtomicIAdd(instruction);
+    EXPECT_TRUE(ForkStopped());
+}
+
 using namespace testing;
 
 class GLSLExtInstructionTests : public SPIRVSimulatorMockBase, public ::testing::Test

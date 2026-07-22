@@ -2123,6 +2123,16 @@ const Type& SPIRVSimulator::GetTypeByResultId(uint32_t result_id) const
     }
 }
 
+uint32_t SPIRVSimulator::GetIntegerWidthByResultId(uint32_t result_id) const
+{
+    const Type& type = GetTypeByResultId(result_id);
+
+    assertmc(type.kind == Type::Kind::Int && type.scalar.width >= 8 && type.scalar.width <= 64,
+             "SPIRV simulator: Invalid integer type in Op_AccessChain");
+
+    return type.scalar.width;
+}
+
 const Type& SPIRVSimulator::GetTypeByTypeId(uint32_t type_id) const
 {
     /*
@@ -4359,14 +4369,20 @@ const std::byte* SPIRVSimulator::RemapPhysicalToHostPointer(uint64_t physical_po
     return nullptr;
 }
 
-void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
+bool SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
 {
+    if (is_execution_fork && (ptr.pointee_flags & SPS_FLAG_HAS_NEGATIVE_INDEX))
+    {
+        call_stack_.clear();
+        return false;
+    }
+
     const Type& type = GetTypeByTypeId(ptr.base_type_id);
 
     // To make inputs optional
     if (ptr.pointer_handle == 0)
     {
-        return;
+        return true;
     }
 
     // These are not backed by buffers (yet, input/output is debatable and we will likely need to handle them), write to
@@ -4452,7 +4468,7 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
 
         if (resolved_ptr.first == 0)
         {
-            return;
+            return true;
         }
 
         std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
@@ -4482,7 +4498,7 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
             std::pair<std::byte*, uint64_t> resolved_ptr = ResolvePointerV(ptr);
             if (resolved_ptr.first == 0)
             {
-                return;
+                return true;
             }
 
             std::byte* external_pointer = resolved_ptr.first + resolved_ptr.second;
@@ -4504,10 +4520,18 @@ void SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
     {
         assertxc("SPIRV simulator: Unhandled storage class in WritePointer, add support to continue");
     }
+
+    return true;
 }
 
-Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
+std::optional<Value> SPIRVSimulator::ReadPointer(const PointerV& ptr)
 {
+    if (is_execution_fork && (ptr.pointee_flags & SPS_FLAG_HAS_NEGATIVE_INDEX))
+    {
+        call_stack_.clear();
+        return std::nullopt;
+    }
+
     const Type& type = GetTypeByTypeId(ptr.base_type_id);
 
     // To make inputs optional
@@ -4567,7 +4591,7 @@ Value SPIRVSimulator::ReadPointer(const PointerV& ptr)
                         {
                             std::cout << "SPIRV simulator: Corrupt struct access in execution fork, assuming the problem is due to uninitialized data during a debug run and terminating the fork." << std::endl;
                             call_stack_.clear();
-                            return Value();
+                            return std::nullopt;
                         }
                         #endif
                     }
@@ -7978,7 +8002,12 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         // This pointer points to a physical storage buffer pointer
         // This is the easy case where we can extract the location of the physical
         // pointer from this pointer's offsets and storage class
-        PointerV ppointer = std::get<PointerV>(ReadPointer(new_pointer));
+        const std::optional<Value> ppointer_value = ReadPointer(new_pointer);
+        if (!ppointer_value)
+        {
+            return;
+        }
+        PointerV ppointer = std::get<PointerV>(*ppointer_value);
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
         pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
     }
@@ -8080,7 +8109,12 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     if (!TrySetComputeBuiltinValueAndRange(result_id, pointer, type_id))
     {
         // TODO: Compare pointer with candidates here and track
-        SetValue(result_id, ReadPointer(pointer));
+        const std::optional<Value> pointee_value = ReadPointer(pointer);
+        if (!pointee_value)
+        {
+            return;
+        }
+        SetValue(result_id, *pointee_value);
     }
 
     if (memory_flag_tracker_ &&
@@ -8272,7 +8306,10 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         }
     }
 
-    WritePointer(pointer, GetValue(result_id));
+    if (!WritePointer(pointer, GetValue(result_id)))
+    {
+        return;
+    }
     OverrideFlagsPointee(pointer_id, result_id);
 
     // Handle memory flag tracking
@@ -8444,6 +8481,8 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
 
     PointerV new_pointer = std::get<PointerV>(base_value);
     new_pointer.idx_path.reserve(new_pointer.idx_path.size() + instruction.word_count - 4);
+    const bool is_logical_pointer =
+        base_type.pointer.storage_class != spv::StorageClass::StorageClassPhysicalStorageBuffer;
 
     if (values_stored_.find(base_id) != values_stored_.end())
     {
@@ -8457,11 +8496,27 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
 
         if (std::holds_alternative<uint64_t>(index_value))
         {
-            new_pointer.idx_path.push_back((uint32_t)std::get<uint64_t>(index_value));
+            const uint64_t index = std::get<uint64_t>(index_value);
+            // Vulkan integer types are at least 8 bits wide, so common small
+            // indices cannot be negative at any supported width.
+            if (is_logical_pointer && index >= 0x80)
+            {
+                const uint64_t sign_bit = uint64_t{ 1 } << (GetIntegerWidthByResultId(instruction.words[i]) - 1);
+                if ((index & sign_bit) != 0)
+                {
+                    new_pointer.pointee_flags |= SPS_FLAG_HAS_NEGATIVE_INDEX;
+                }
+            }
+            new_pointer.idx_path.push_back(static_cast<uint32_t>(index));
         }
         else if (std::holds_alternative<int64_t>(index_value))
         {
-            new_pointer.idx_path.push_back((uint32_t)std::get<int64_t>(index_value));
+            const int64_t signed_index = std::get<int64_t>(index_value);
+            if (is_logical_pointer && signed_index < 0)
+            {
+                new_pointer.pointee_flags |= SPS_FLAG_HAS_NEGATIVE_INDEX;
+            }
+            new_pointer.idx_path.push_back(static_cast<uint32_t>(signed_index));
         }
         else
         {
@@ -8485,7 +8540,12 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
         // is itself stored in a physical storage buffer (hence we need the containing buffer to find its actual
         // address)
         new_pointer.pointee_flags |= SPS_FLAG_IS_PBUFFER_PTR;
-        PointerV ppointer = std::get<PointerV>(ReadPointer(new_pointer));
+        const std::optional<Value> ppointer_value = ReadPointer(new_pointer);
+        if (!ppointer_value)
+        {
+            return;
+        }
+        PointerV ppointer = std::get<PointerV>(*ppointer_value);
         pointers_to_physical_address_pointers_.push_back(std::pair<PointerV, PointerV>{ new_pointer, ppointer });
     }
 
@@ -12688,8 +12748,13 @@ void SPIRVSimulator::Op_AtomicIAdd(const Instruction& instruction)
     uint32_t pointer_id = instruction.words[3];
     uint32_t value_id   = instruction.words[6];
 
-    PointerV     pointer      = std::get<PointerV>(GetValue(pointer_id));
-    const Value& pointee_val  = ReadPointer(pointer);
+    PointerV pointer = std::get<PointerV>(GetValue(pointer_id));
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val  = *pointee_value;
     const Value& source_value = GetValue(value_id);
 
     Value result;
@@ -12706,7 +12771,10 @@ void SPIRVSimulator::Op_AtomicIAdd(const Instruction& instruction)
         assertxc("SPIRV simulator: Invalid type match in Op_AtomicIAdd, must be same type scalar integers");
     }
 
-    WritePointer(pointer, result);
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
     SetValue(result_id, pointee_val);
 
     TransferFlagsFromPointee(result_id, pointer);
@@ -12738,8 +12806,13 @@ void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
     uint32_t pointer_id = instruction.words[3];
     uint32_t value_id   = instruction.words[6];
 
-    PointerV     pointer      = std::get<PointerV>(GetValue(pointer_id));
-    const Value& pointee_val  = ReadPointer(pointer);
+    PointerV pointer = std::get<PointerV>(GetValue(pointer_id));
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val  = *pointee_value;
     const Value& source_value = GetValue(value_id);
 
     uint64_t t_flags = SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED;
@@ -12775,7 +12848,10 @@ void SPIRVSimulator::Op_AtomicISub(const Instruction& instruction)
         assertxc("SPIRV simulator: Invalid type match in Op_AtomicISub, must be same type scalar integers");
     }
 
-    WritePointer(pointer, result);
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
     SetValue(result_id, pointee_val);
 
     TransferFlagsFromPointee(result_id, pointer);
@@ -12819,14 +12895,22 @@ void SPIRVSimulator::Op_AtomicExchange(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicExchange");
     assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicExchange");
 
-    const PointerV& pointer     = std::get<PointerV>(pointer_val);
-    const Value&    pointee_val = ReadPointer(pointer);
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
 
     assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val) || std::holds_alternative<double>(pointee_val),
             "SPIRV simulator: Operand type is not int or float in Op_AtomicExchange");
 
+    if (!WritePointer(pointer, value))
+    {
+        return;
+    }
     SetValue(result_id, pointee_val);
-    WritePointer(pointer, value);
 
     TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer_id, value_id);
@@ -16797,26 +16881,34 @@ void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicOr");
     assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicOr");
 
-    const PointerV&    pointer     = std::get<PointerV>(pointer_val);
-    const Value& pointee_val = ReadPointer(pointer);
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
 
     assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicOr");
 
-    SetValue(result_id, pointee_val);
-    TransferFlagsFromPointee(result_id, pointer);
-
+    Value result;
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
-        Value result = (uint64_t)(std::get<uint64_t>(pointee_val) | std::get<uint64_t>(value));
-        WritePointer(pointer, result);
+        result = (uint64_t)(std::get<uint64_t>(pointee_val) | std::get<uint64_t>(value));
     }
     else
     {
-        Value result = (int64_t)(std::get<int64_t>(pointee_val) | std::get<int64_t>(value));
-        WritePointer(pointer, result);
+        result = (int64_t)(std::get<int64_t>(pointee_val) | std::get<int64_t>(value));
     }
 
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
+
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer_id, value_id);
 }
 
@@ -16844,26 +16936,34 @@ void SPIRVSimulator::Op_AtomicXor(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicXor");
     assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicXor");
 
-    const PointerV& pointer     = std::get<PointerV>(pointer_val);
-    const Value&    pointee_val = ReadPointer(pointer);
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
 
     assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicXor");
 
-    SetValue(result_id, pointee_val);
-    TransferFlagsFromPointee(result_id, pointer);
-
+    Value result;
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
-        Value result = (uint64_t)(std::get<uint64_t>(pointee_val) ^ std::get<uint64_t>(value));
-        WritePointer(pointer, result);
+        result = (uint64_t)(std::get<uint64_t>(pointee_val) ^ std::get<uint64_t>(value));
     }
     else
     {
-        Value result = (int64_t)(std::get<int64_t>(pointee_val) ^ std::get<int64_t>(value));
-        WritePointer(pointer, result);
+        result = (int64_t)(std::get<int64_t>(pointee_val) ^ std::get<int64_t>(value));
     }
 
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
+
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer_id, value_id);
 }
 
@@ -16903,26 +17003,34 @@ void SPIRVSimulator::Op_AtomicUMax(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMax");
     assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMax");
 
-    const PointerV&    pointer     = std::get<PointerV>(pointer_val);
-    const Value& pointee_val = ReadPointer(pointer);
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
 
     assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicUMax");
 
-    SetValue(result_id, pointee_val);
-    TransferFlagsFromPointee(result_id, pointer);
-
+    Value result;
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
-        Value result = (uint64_t)std::max(std::get<uint64_t>(pointee_val), std::get<uint64_t>(value));
-        WritePointer(pointer, result);
+        result = (uint64_t)std::max(std::get<uint64_t>(pointee_val), std::get<uint64_t>(value));
     }
     else
     {
-        Value result = (int64_t)std::max(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
-        WritePointer(pointer, result);
+        result = (int64_t)std::max(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
     }
 
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
+
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer_id, value_id);
 }
 
@@ -16949,20 +17057,27 @@ void SPIRVSimulator::Op_AtomicSMax(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicSMax");
     assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicSMax");
 
-    const PointerV& pointer     = std::get<PointerV>(pointer_val);
-    const Value&    pointee_val = ReadPointer(pointer);
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
 
     assertmc((std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val)) &&
                 (std::holds_alternative<uint64_t>(value) || std::holds_alternative<int64_t>(value)),
             "SPIRV simulator: Operand type is not int in Op_AtomicSMax");
 
-    SetValue(result_id, pointee_val);
-    TransferFlagsFromPointee(result_id, pointer);
-
     int64_t signed_pointee = SignExtendToInt64(GetIntegerBits(pointee_val), type.scalar.width);
     int64_t signed_value   = SignExtendToInt64(GetIntegerBits(value), type.scalar.width);
-    WritePointer(pointer, signed_pointee < signed_value ? value : pointee_val);
+    if (!WritePointer(pointer, signed_pointee < signed_value ? value : pointee_val))
+    {
+        return;
+    }
 
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer_id, value_id);
 }
 
@@ -17003,26 +17118,34 @@ void SPIRVSimulator::Op_AtomicUMin(const Instruction& instruction)
             "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicUMin");
     assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicUMin");
 
-    const PointerV&    pointer     = std::get<PointerV>(pointer_val);
-    const Value& pointee_val = ReadPointer(pointer);
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
 
     assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
             "SPIRV simulator: Operand type is not int in Op_AtomicUMin");
 
-    SetValue(result_id, pointee_val);
-    TransferFlagsFromPointee(result_id, pointer);
-
+    Value result;
     if (std::holds_alternative<uint64_t>(pointee_val))
     {
-        Value result = (uint64_t)std::min(std::get<uint64_t>(pointee_val), std::get<uint64_t>(value));
-        WritePointer(pointer, result);
+        result = (uint64_t)std::min(std::get<uint64_t>(pointee_val), std::get<uint64_t>(value));
     }
     else
     {
-        Value result = (int64_t)std::min(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
-        WritePointer(pointer, result);
+        result = (int64_t)std::min(std::get<int64_t>(pointee_val), std::get<int64_t>(value));
     }
 
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
+
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
     TransferFlagsToPointee(pointer_id, value_id);
 }
 
@@ -18629,7 +18752,10 @@ void SPIRVSimulator::Op_CooperativeMatrixStoreKHR(const Instruction& instruction
     }
 
     Value pointer = GetValue(pointer_id);
-    WritePointer(std::get<PointerV>(pointer), GetValue(object_id));
+    if (!WritePointer(std::get<PointerV>(pointer), GetValue(object_id)))
+    {
+        return;
+    }
     TransferFlagsToPointee(pointer_id, object_id);
 
     if (ValueIsArbitrary(object_id))
