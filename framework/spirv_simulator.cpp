@@ -3468,6 +3468,11 @@ void SPIRVSimulator::PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id
         return;
     }
 
+    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
+    {
+        return;
+    }
+
     uint64_t a_min = a.range_valid ? a.range_min : GetUIntScalarValue(lhs_id);
     uint64_t a_max = a.range_valid ? a.range_max : a_min;
     uint64_t b_min = b.range_valid ? b.range_min : GetUIntScalarValue(rhs_id);
@@ -3488,6 +3493,11 @@ void SPIRVSimulator::PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id
     const ValueMetadata& a = value_meta_[lhs_id];
     const ValueMetadata& b = value_meta_[rhs_id];
     if (!a.range_valid && !b.range_valid)
+    {
+        return;
+    }
+
+    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
     {
         return;
     }
@@ -3517,6 +3527,11 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
     const ValueMetadata& a = value_meta_[lhs_id];
     const ValueMetadata& b = value_meta_[rhs_id];
     if (!a.range_valid && !b.range_valid)
+    {
+        return;
+    }
+
+    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
     {
         return;
     }
@@ -3557,6 +3572,10 @@ void SPIRVSimulator::PropagateBinaryRangeDiv(uint32_t result_id, uint32_t lhs_id
     {
         return;
     }
+    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
+    {
+        return;
+    }
     uint64_t divisor = GetUIntScalarValue(rhs_id);
     if (divisor == 0)
     {
@@ -3577,6 +3596,10 @@ void SPIRVSimulator::PropagateBinaryRangeMod(uint32_t result_id, uint32_t lhs_id
     const ValueMetadata& a = value_meta_[lhs_id];
     const ValueMetadata& b = value_meta_[rhs_id];
     if (!a.range_valid || b.range_valid)
+    {
+        return;
+    }
+    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
     {
         return;
     }
