@@ -45,7 +45,6 @@ class TensorCrashTests : public SPIRVSimulatorMockBase, public ::testing::Test
         coords_result_type_     = ::SPIRVSimulator::Type::Array(CommonTypes::i32, kCoordCountId);
         object_result_type_     = ::SPIRVSimulator::Type::Float(32);
         query_result_type_      = ::SPIRVSimulator::Type::Int(32, false);
-        query_tensor_type_      = MakeTensorType(CommonTypes::f32, kRankId);
         dimension_result_type_  = ::SPIRVSimulator::Type::Int(32, false);
 
         EXPECT_CALL(*this, GetValue(kRankId)).WillRepeatedly(ReturnRef(rank_value_));
@@ -54,11 +53,10 @@ class TensorCrashTests : public SPIRVSimulatorMockBase, public ::testing::Test
         EXPECT_CALL(*this, GetTypeByResultId(kTensorId)).WillRepeatedly(ReturnRef(tensor_result_type_));
         EXPECT_CALL(*this, GetTypeByResultId(kCoordsId)).WillRepeatedly(ReturnRef(coords_result_type_));
         EXPECT_CALL(*this, GetTypeByResultId(kObjectId)).WillRepeatedly(ReturnRef(object_result_type_));
+        EXPECT_CALL(*this, GetTypeByResultId(kDimensionId)).WillRepeatedly(ReturnRef(dimension_result_type_));
 
         EXPECT_CALL(*this, GetTypeByTypeId(kReadResultTypeId)).WillRepeatedly(ReturnRef(read_result_type_));
         EXPECT_CALL(*this, GetTypeByTypeId(kQueryResultTypeId)).WillRepeatedly(ReturnRef(query_result_type_));
-        EXPECT_CALL(*this, GetTypeByTypeId(kTensorId)).WillRepeatedly(ReturnRef(query_tensor_type_));
-        EXPECT_CALL(*this, GetTypeByTypeId(kDimensionId)).WillRepeatedly(ReturnRef(dimension_result_type_));
     }
 
     static ::SPIRVSimulator::Type MakeTensorType(uint32_t element_type_id, std::optional<uint32_t> rank_id)
@@ -76,7 +74,6 @@ class TensorCrashTests : public SPIRVSimulatorMockBase, public ::testing::Test
     ::SPIRVSimulator::Type  coords_result_type_;
     ::SPIRVSimulator::Type  object_result_type_;
     ::SPIRVSimulator::Type  query_result_type_;
-    ::SPIRVSimulator::Type  query_tensor_type_;
     ::SPIRVSimulator::Type  dimension_result_type_;
 };
 
@@ -259,7 +256,7 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerResultType)
 
 TEST_F(TensorCrashTests, TensorQuerySizeRejectsUnrankedTensor)
 {
-    query_tensor_type_ = MakeTensorType(CommonTypes::f32, std::nullopt);
+    tensor_result_type_ = MakeTensorType(CommonTypes::f32, std::nullopt);
 
     const std::vector<uint32_t> instruction_words = {
         static_cast<uint32_t>(spv::Op::OpTensorQuerySizeARM), kQueryResultTypeId, kQueryResultId, kTensorId, kDimensionId
@@ -283,4 +280,22 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerDimension)
                                                             .words      = instruction_words };
 
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize dimension must be given as integer scalar");
+}
+
+TEST_F(TensorCrashTests, TensorQuerySizeProducesArbitraryResultOfDeclaredType)
+{
+    const std::vector<uint32_t> instruction_words = {
+        static_cast<uint32_t>(spv::Op::OpTensorQuerySizeARM), kQueryResultTypeId, kQueryResultId, kTensorId, kDimensionId
+    };
+    const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorQuerySizeARM,
+                                                            .word_count = static_cast<uint16_t>(instruction_words.size()),
+                                                            .words      = instruction_words };
+
+    ::SPIRVSimulator::Value result;
+    EXPECT_CALL(*this, SetValue(kQueryResultId, _, true)).WillOnce(SaveArg<1>(&result));
+
+    this->ExecuteInstruction(instruction);
+
+    EXPECT_EQ(result, ::SPIRVSimulator::Value{ uint64_t{ 0 } });
+    EXPECT_TRUE(this->ValueIsArbitrary(kQueryResultId));
 }
