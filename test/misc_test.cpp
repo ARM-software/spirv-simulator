@@ -177,6 +177,45 @@ TEST_F(GLSLExtInstructionTests, FindUMsbInterpretsSignedOperandAsUnsigned)
     EXPECT_EQ(std::get<uint64_t>(result->elems[2]), 31u);
 }
 
+class PointerResolutionTests : public SPIRVSimulatorMockBase, public ::testing::Test
+{
+  public:
+    uint64_t ResolvePointerOffsetForTest(const ::SPIRVSimulator::PointerV& pointer)
+    {
+        return ResolvePointerV(pointer).second;
+    }
+    uint64_t GetPointerOffsetForTest(const ::SPIRVSimulator::PointerV& pointer) { return GetPointerOffset(pointer); }
+    void AddType(uint32_t type_id, const ::SPIRVSimulator::Type& type) { types_[type_id] = type; }
+};
+
+TEST_F(PointerResolutionTests, UndecoratedFunctionMatrixUsesPackedColumnStride)
+{
+    constexpr uint32_t scalar_type_id  = 500;
+    constexpr uint32_t column_type_id  = 501;
+    constexpr uint32_t matrix_type_id  = 502;
+    constexpr uint32_t pointer_type_id = 503;
+
+    AddType(scalar_type_id, ::SPIRVSimulator::Type::Float(16));
+    AddType(column_type_id, ::SPIRVSimulator::Type::Vector(scalar_type_id, 4));
+    AddType(matrix_type_id, ::SPIRVSimulator::Type::Matrix(column_type_id, 4));
+    AddType(pointer_type_id,
+            ::SPIRVSimulator::Type::Pointer(spv::StorageClass::StorageClassFunction, matrix_type_id));
+
+    EXPECT_CALL(*this, GetTypeByTypeId(_)).WillRepeatedly(Invoke([this](uint32_t type_id) -> const auto& {
+        return types_.at(type_id);
+    }));
+
+    const ::SPIRVSimulator::PointerV pointer{ 1,
+                                              0,
+                                              pointer_type_id,
+                                              0,
+                                              spv::StorageClass::StorageClassFunction,
+                                              { 2 } };
+
+    EXPECT_EQ(ResolvePointerOffsetForTest(pointer), 16u);
+    EXPECT_EQ(GetPointerOffsetForTest(pointer), 16u);
+}
+
 class MemoryBarrierTests : public SPIRVSimulatorMockBase, public ::testing::Test
 {};
 
