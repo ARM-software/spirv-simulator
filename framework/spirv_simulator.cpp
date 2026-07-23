@@ -18548,13 +18548,13 @@ void SPIRVSimulator::Op_TensorQuerySizeARM(const Instruction& instruction)
     assertm(GetTypeByTypeId(type_id).kind == Type::Kind::Int,
             "SPIRV simulator: TensorQuerySize result type must be integer scalar");
 
-    assertm(GetTypeByTypeId(tensor_id).tensor.rank_id.has_value(),
+    assertm(GetTypeByResultId(tensor_id).tensor.rank_id.has_value(),
             "SPIRV simulator: TensorQuerySize tensor must be ranked");
 
-    assertm(GetTypeByTypeId(dimension_id).kind == Type::Kind::Int,
+    assertm(GetTypeByResultId(dimension_id).kind == Type::Kind::Int,
             "SPIRV simulator: TensorQuerySize dimension must be given as integer scalar");
 #endif
-    SetValue(result_id, MakeDefault(dimension_id));
+    SetValue(result_id, MakeDefault(type_id));
     SetIsArbitrary(result_id);
 }
 
