@@ -21,6 +21,50 @@ class GLSLExtInstructionTests : public SPIRVSimulatorMockBase, public ::testing:
     }
 };
 
+TEST_F(GLSLExtInstructionTests, DeterminantHandlesSquareFloatMatrices)
+{
+    constexpr uint32_t result_id  = 90;
+    constexpr uint32_t operand_id = 91;
+
+    std::vector<std::pair<uint32_t, ::SPIRVSimulator::Value>> matrices{
+        { CommonTypes::mat2,
+          std::make_shared<::SPIRVSimulator::MatrixV>(std::initializer_list<double>{ 1.0, 2.0, 3.0, 4.0 }, 2) },
+        { CommonTypes::mat3,
+          std::make_shared<::SPIRVSimulator::MatrixV>(
+              std::initializer_list<double>{ 1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 1.0, 0.0, 6.0 }, 3) },
+        { CommonTypes::mat4,
+          std::make_shared<::SPIRVSimulator::MatrixV>(
+              std::initializer_list<double>{
+                  1.0, 2.0, 3.0, 4.0, 0.0, 2.0, 5.0, 6.0, 0.0, 0.0, 3.0, 7.0, 0.0, 0.0, 0.0, 4.0 },
+              4) },
+    };
+    const std::vector<double> expected{ -2.0, 22.0, 24.0 };
+
+    for (size_t i = 0; i < matrices.size(); ++i)
+    {
+        const uint32_t          matrix_type_id = matrices[i].first;
+        const auto&             matrix_type    = types_.at(matrix_type_id);
+        const uint32_t          column_type_id = matrix_type.matrix.col_type_id;
+        ::SPIRVSimulator::Value captured_result;
+
+        EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::f64))
+            .Times(2)
+            .WillRepeatedly(ReturnRef(types_.at(CommonTypes::f64)));
+        EXPECT_CALL(*this, GetTypeByTypeId(column_type_id)).WillOnce(ReturnRef(types_.at(column_type_id)));
+        EXPECT_CALL(*this, GetValue(operand_id)).WillOnce(ReturnRef(matrices[i].second));
+        EXPECT_CALL(*this, GetTypeByResultId(operand_id)).WillOnce(ReturnRef(matrix_type));
+        EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+        EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_id)));
+
+        const std::vector<uint32_t> operands{ operand_id };
+        ExecuteGLSLExtInstruction(CommonTypes::f64, result_id, 33, operands);
+
+        ASSERT_TRUE(std::holds_alternative<double>(captured_result));
+        EXPECT_DOUBLE_EQ(std::get<double>(captured_result), expected[i]);
+        Mock::VerifyAndClearExpectations(this);
+    }
+}
+
 TEST_F(GLSLExtInstructionTests, FMinAcceptsFloatVectorElements)
 {
     constexpr uint32_t result_id    = 100;

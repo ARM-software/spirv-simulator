@@ -5529,7 +5529,126 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 	            TransferFlags(result_id, operand_words[0]);
 	            break;
 	        }
-	    case 37:
+                case 33:
+                { // Determinant
+                    const Value& operand      = GetValue(operand_words[0]);
+                    const Type&  operand_type = GetTypeByResultId(operand_words[0]);
+
+                    assertmc(type.kind == Type::Kind::Float,
+                             "SPIRV simulator: Result type for Determinant must be a float");
+                    assertmc(operand_type.kind == Type::Kind::Matrix,
+                             "SPIRV simulator: Operand for Determinant must be a matrix");
+                    assertmc(std::holds_alternative<std::shared_ptr<MatrixV>>(operand),
+                             "SPIRV simulator: Operand does not contain a matrix in GLSLExtHandler::determinant");
+
+                    const Type& column_type = GetTypeByTypeId(operand_type.matrix.col_type_id);
+                    assertmc(column_type.kind == Type::Kind::Vector,
+                             "SPIRV simulator: Determinant matrix column type must be a vector");
+                    const Type& component_type = GetTypeByTypeId(column_type.vector.elem_type_id);
+                    assertmc(component_type.kind == Type::Kind::Float &&
+                                 component_type.scalar.width == type.scalar.width,
+                             "SPIRV simulator: Determinant matrix components must match the result type");
+                    assertmc(operand_type.matrix.col_count == column_type.vector.elem_count,
+                             "SPIRV simulator: Operand for Determinant must be a square matrix");
+                    assertmc(operand_type.matrix.col_count >= 2 && operand_type.matrix.col_count <= 4,
+                             "SPIRV simulator: Unsupported matrix size for Determinant");
+
+                    const auto&    matrix = std::get<std::shared_ptr<MatrixV>>(operand);
+                    const uint32_t size   = operand_type.matrix.col_count;
+                    assertmc(matrix->cols.size() == size,
+                             "SPIRV simulator: Determinant matrix value does not match its type");
+
+                    double values[4][4] = {};
+                    for (uint32_t column = 0; column < size; ++column)
+                    {
+                        assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(matrix->cols[column]),
+                                 "SPIRV simulator: Determinant matrix column does not contain a vector");
+                        const auto& column_value = std::get<std::shared_ptr<VectorV>>(matrix->cols[column]);
+                        assertmc(column_value->elems.size() == size,
+                                 "SPIRV simulator: Determinant matrix column value does not match its type");
+                        for (uint32_t row = 0; row < size; ++row)
+                        {
+                            assertmc(std::holds_alternative<double>(column_value->elems[row]),
+                                     "SPIRV simulator: Determinant matrix element is not a float");
+                            values[row][column] = std::get<double>(column_value->elems[row]);
+                        }
+                    }
+
+                    const auto determinant3 = [](double a00,
+                                                 double a01,
+                                                 double a02,
+                                                 double a10,
+                                                 double a11,
+                                                 double a12,
+                                                 double a20,
+                                                 double a21,
+                                                 double a22) {
+                        return a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) +
+                               a02 * (a10 * a21 - a11 * a20);
+                    };
+
+                    double result = 0.0;
+                    if (size == 2)
+                    {
+                        result = values[0][0] * values[1][1] - values[0][1] * values[1][0];
+                    }
+                    else if (size == 3)
+                    {
+                        result = determinant3(values[0][0],
+                                              values[0][1],
+                                              values[0][2],
+                                              values[1][0],
+                                              values[1][1],
+                                              values[1][2],
+                                              values[2][0],
+                                              values[2][1],
+                                              values[2][2]);
+                    }
+                    else
+                    {
+                        result = values[0][0] * determinant3(values[1][1],
+                                                             values[1][2],
+                                                             values[1][3],
+                                                             values[2][1],
+                                                             values[2][2],
+                                                             values[2][3],
+                                                             values[3][1],
+                                                             values[3][2],
+                                                             values[3][3]) -
+                                 values[0][1] * determinant3(values[1][0],
+                                                             values[1][2],
+                                                             values[1][3],
+                                                             values[2][0],
+                                                             values[2][2],
+                                                             values[2][3],
+                                                             values[3][0],
+                                                             values[3][2],
+                                                             values[3][3]) +
+                                 values[0][2] * determinant3(values[1][0],
+                                                             values[1][1],
+                                                             values[1][3],
+                                                             values[2][0],
+                                                             values[2][1],
+                                                             values[2][3],
+                                                             values[3][0],
+                                                             values[3][1],
+                                                             values[3][3]) -
+                                 values[0][3] * determinant3(values[1][0],
+                                                             values[1][1],
+                                                             values[1][2],
+                                                             values[2][0],
+                                                             values[2][1],
+                                                             values[2][2],
+                                                             values[3][0],
+                                                             values[3][1],
+                                                             values[3][2]);
+                    }
+
+                    SetValue(result_id, result);
+                    TransferFlags(result_id, operand_words[0]);
+                    break;
+                }
+            case 37:
 	        { // FMin
 	            const Value& operand_1 = GetValue(operand_words[0]);
             const Value& operand_2 = GetValue(operand_words[1]);
