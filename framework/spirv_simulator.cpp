@@ -1984,9 +1984,10 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator)
     /*
     Checks if a result_id has been decorated with the given decoration.
     */
-    if (decorators_.find(result_id) != decorators_.end())
+    if (auto decorator_it  = decorators_.find(result_id);
+             decorator_it != decorators_.end())
     {
-        for (const auto& decorator_data : decorators_.at(result_id))
+        for (const auto& decorator_data : decorator_it->second)
         {
             if (decorator == decorator_data.kind)
             {
@@ -1994,7 +1995,8 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator)
             }
         }
     }
-    else if (struct_decorators_.find(result_id) != struct_decorators_.end())
+    else if (auto struct_deco_it = struct_decorators_.find(result_id);
+                  struct_deco_it != struct_decorators_.end())
     {
         assertxc("SPIRV simulator: Unimplemented branch in HasDecorator");
     }
@@ -2007,11 +2009,13 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, uint32_t member_id, spv::D
     /*
     Checks if a given member in a result_id has been decorated with the given decoration.
     */
-    if (struct_decorators_.find(result_id) != struct_decorators_.end())
+    if (auto struct_deco_it = struct_decorators_.find(result_id);
+             struct_deco_it != struct_decorators_.end())
     {
-        if (struct_decorators_.at(result_id).find(member_id) != struct_decorators_.at(result_id).end())
+        if (auto decorator_it = struct_deco_it->second.find(member_id);
+                 decorator_it != struct_deco_it->second.end())
         {
-            for (const auto& decorator_data : struct_decorators_.at(result_id).at(member_id))
+            for (const auto& decorator_data : decorator_it->second)
             {
                 if (decorator == decorator_data.kind)
                 {
@@ -2024,7 +2028,8 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, uint32_t member_id, spv::D
             return false;
         }
     }
-    else if (decorators_.find(result_id) != decorators_.end())
+    else if (auto decorator_it = decorators_.find(result_id);
+                  decorator_it != decorators_.end())
     {
         assertxc("SPIRV simulator: Unimplemented branch in HasDecorator (member version)");
     }
@@ -2038,9 +2043,10 @@ uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t result_id, spv::Decoration
     This will abort if the target id does not have the given decorator
     Check with HasDecorator first
     */
-    if (decorators_.find(result_id) != decorators_.end())
+    if (auto decorator_it = decorators_.find(result_id);
+             decorator_it != decorators_.end())
     {
-        for (const auto& decorator_data : decorators_.at(result_id))
+        for (const auto& decorator_data : decorator_it->second)
         {
             if (decorator_data.kind == decorator)
             {
@@ -2068,11 +2074,13 @@ uint32_t SPIRVSimulator::GetDecoratorLiteral(uint32_t        result_id,
     This will abort if the target id does not have the given decorator
     Check with HasDecorator first
     */
-    if (struct_decorators_.find(result_id) != struct_decorators_.end())
+    if (auto struct_deco_it = struct_decorators_.find(result_id);
+             struct_deco_it != struct_decorators_.end())
     {
-        if (struct_decorators_.at(result_id).find(member_id) != struct_decorators_.at(result_id).end())
+        if (auto decorator_it = struct_deco_it->second.find(member_id); 
+                 decorator_it != struct_deco_it->second.end())
         {
-            for (const auto& decorator_data : struct_decorators_.at(result_id).at(member_id))
+            for (const auto& decorator_data : decorator_it->second) 
             {
                 if (decorator_data.kind == decorator)
                 {
