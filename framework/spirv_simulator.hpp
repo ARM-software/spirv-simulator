@@ -1522,6 +1522,7 @@ class SPIRVSimulator
     virtual size_t   GetBitsizeOfTargetType(const PointerV& pointer) const;
     virtual void     GetBaseTypeIDs(uint32_t type_id, std::vector<uint32_t>& output) const;
     virtual bool     IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, uint32_t& member_literal) const;
+    virtual uint32_t GetMatrixColumnStride(uint32_t matrix_type_id) const;
 
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultID(uint32_t result_id, uint32_t* property_flags = nullptr);
     virtual std::vector<DataSourceBits> FindDataSourcesFromResultIDImpl(uint32_t result_id, uint32_t* property_flags, UnorderedSet<uint32_t>& visiting, bool* trace_depends_on_memory = nullptr, DataTraceRole trace_role = DataTraceRole::RawValue);

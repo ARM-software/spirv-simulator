@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <bit>
+#include <climits>
 #include <cstdint>
 #include <iomanip>
 #include <memory>
@@ -2449,6 +2450,24 @@ bool SPIRVSimulator::IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, u
     return false;
 }
 
+uint32_t SPIRVSimulator::GetMatrixColumnStride(uint32_t matrix_type_id) const
+{
+    const Type& matrix_type = GetTypeByTypeId(matrix_type_id);
+    assertmc(matrix_type.kind == Type::Kind::Matrix, "SPIRV simulator: Expected a matrix type");
+
+    uint32_t struct_id      = 0;
+    uint32_t member_literal = 0;
+    if (IsMemberOfStruct(matrix_type_id, struct_id, member_literal))
+    {
+        return GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
+    }
+
+    // MatrixStride is a structure-member layout decoration. Standalone logical matrices use the simulator's
+    // tightly packed column representation and therefore advance by one complete column.
+    const size_t column_bit_size = GetBitsizeOfType(matrix_type.matrix.col_type_id);
+    return static_cast<uint32_t>((column_bit_size + CHAR_BIT - 1) / CHAR_BIT);
+}
+
 void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data) const
 {
     /*
@@ -2839,19 +2858,7 @@ std::pair<std::byte*, uint64_t> SPIRVSimulator::ResolvePointerV(const PointerV& 
         }
         else if (type->kind == Type::Kind::Matrix)
         {
-            uint32_t struct_id      = 0;
-            uint32_t member_literal = 0;
-            uint32_t matrix_stride    = 0;
-
-            bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
-            if (isMember)
-            {
-                matrix_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
-            }
-            else
-            {
-                matrix_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
-            }
+            const uint32_t matrix_stride = GetMatrixColumnStride(type_id);
 
             offset += indirection_index * matrix_stride;
             type_id = type->matrix.col_type_id;
@@ -2948,19 +2955,7 @@ uint64_t SPIRVSimulator::GetPointerOffset(const PointerV& pointer_value) const
         }
         else if (type->kind == Type::Kind::Matrix)
         {
-            uint32_t struct_id      = 0;
-            uint32_t member_literal = 0;
-            uint32_t matrix_stride  = 0;
-
-            bool isMember = IsMemberOfStruct(type_id, struct_id, member_literal);
-            if (isMember)
-            {
-                matrix_stride = GetDecoratorLiteral(struct_id, member_literal, spv::Decoration::DecorationMatrixStride);
-            }
-            else
-            {
-                matrix_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
-            }
+            const uint32_t matrix_stride = GetMatrixColumnStride(type_id);
 
             offset += indirection_index * matrix_stride;
             type_id = type->matrix.col_type_id;
