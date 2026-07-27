@@ -1,6 +1,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <initializer_list>
 #include <memory>
 #include <cstdint>
@@ -312,6 +313,72 @@ TEST_F(AtomicArithmeticTests, AtomicSMaxInterpretsUnsignedTypeAsSigned)
     };
 
     EXPECT_TRUE(this->ExecuteInstruction(instruction));
+}
+
+class RangePropagationTests : public SPIRVSimulatorMockBase, public Test
+{
+  public:
+    void SetRange(uint32_t result_id, uint64_t min, uint64_t max)
+    {
+        value_meta_.resize(std::max<size_t>(value_meta_.size(), result_id + 1));
+        ::SPIRVSimulator::ValueMetadata& meta = value_meta_[result_id];
+        meta.range_valid                      = true;
+        meta.dense_range                      = true;
+        meta.range_min                        = min;
+        meta.range_max                        = max;
+        meta.range_stride                     = 1;
+    }
+
+    void PropagateMul(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id)
+    {
+        const size_t required_size = std::max({ result_id, lhs_id, rhs_id }) + 1;
+        value_meta_.resize(std::max(value_meta_.size(), required_size));
+        PropagateBinaryRangeMul(result_id, lhs_id, rhs_id);
+    }
+
+    const ::SPIRVSimulator::ValueMetadata& GetMetadata(uint32_t result_id) const
+    {
+        return value_meta_[result_id];
+    }
+};
+
+TEST_F(RangePropagationTests, VectorMultiplySkipsScalarRangePropagation)
+{
+    constexpr uint32_t result_id = 200;
+    constexpr uint32_t lhs_id    = 201;
+    constexpr uint32_t rhs_id    = 202;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Vector(CommonTypes::u32, 3);
+
+    SetRange(lhs_id, 0, 63);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateMul(result_id, lhs_id, rhs_id);
+
+    EXPECT_FALSE(GetMetadata(result_id).range_valid);
+}
+
+TEST_F(RangePropagationTests, ScalarMultiplyPropagatesRange)
+{
+    constexpr uint32_t result_id = 210;
+    constexpr uint32_t lhs_id    = 211;
+    constexpr uint32_t rhs_id    = 212;
+
+    const ::SPIRVSimulator::Type result_type = ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value      rhs_value   = uint64_t{ 4 };
+
+    SetRange(lhs_id, 0, 15);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+
+    PropagateMul(result_id, lhs_id, rhs_id);
+
+    const ::SPIRVSimulator::ValueMetadata& result_meta = GetMetadata(result_id);
+    EXPECT_TRUE(result_meta.range_valid);
+    EXPECT_EQ(result_meta.range_min, 0u);
+    EXPECT_EQ(result_meta.range_max, 60u);
+    EXPECT_EQ(result_meta.range_stride, 4u);
 }
 
 class CoopMatrixMath : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
