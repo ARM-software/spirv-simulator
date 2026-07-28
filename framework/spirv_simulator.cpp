@@ -1412,6 +1412,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
 	    R(Op_RayQueryConfirmIntersectionKHR)
         case spv::Op::OpTraceRayKHR:
             R(Op_TraceRayKHR)
+        case spv::Op::OpExecuteCallableKHR:
+            R(Op_ExecuteCallableKHR)
         case spv::Op::OpDecorateString:
             R(Op_DecorateString)
         case spv::Op::OpReportIntersectionKHR:
@@ -19751,6 +19753,38 @@ void SPIRVSimulator::Op_TraceRayKHR(const Instruction& instruction)
     {
         SetFlagsPointee(payload_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY | SPS_FLAG_THREAD_SPECIFIC);
     }
+}
+
+void SPIRVSimulator::Op_ExecuteCallableKHR(const Instruction& instruction)
+{
+    /*
+    OpExecuteCallableKHR
+
+    Invoke a callable shader
+
+    SBT Index is the index into the SBT table to select callable shader to execute
+
+    Callable Data is a pointer to the callable data to pass into the called shader.
+    Callable Data must be the result of an OpVariable with a storage class of CallableDataKHR or IncomingCallableDataKHR.
+    SBT Index must be a 32-bit unsigned integer type scalar.
+    This instruction is allowed only in RayGenerationKHR, ClosestHitKHR, MissKHR and CallableKHR execution models.
+    This instruction is a shader call in
+    */
+
+    assert(instruction.opcode == spv::Op::OpExecuteCallableKHR);
+
+    uint32_t sbt_idx_id = instruction.words[1];
+    uint32_t callable_data_id = instruction.words[2];
+
+    // TODO:
+    // Actually call the shader from the SBT & execute it
+    if (GetFlags(callable_data_id) & (SPS_FLAG_IS_DESCRIPTOR_CANDIDATE | SPS_FLAG_IS_DESCRIPTOR_BUFFER) != 0)
+    {
+        assertx("SPIRV Simulator: ABORT - OpExecuteCallableKHR unhandled");
+    }
+
+    SetFlags(callable_data_id,
+             SPS_FLAG_IS_ARBITRARY | SPS_FLAG_THREAD_SPECIFIC );
 }
 
 void SPIRVSimulator::Op_DecorateString(const Instruction& instruction)

@@ -2064,6 +2064,7 @@ class SPIRVSimulator
     void Op_RayQueryInitializeKHR(const Instruction&);
     void Op_RayQueryProceedKHR(const Instruction&);
     void Op_TraceRayKHR(const Instruction&);
+    void Op_ExecuteCallableKHR(const Instruction&);
     void Op_DecorateString(const Instruction&);
     void Op_ReportIntersectionKHR(const Instruction&);
     void Op_IgnoreIntersectionKHR(const Instruction&);
