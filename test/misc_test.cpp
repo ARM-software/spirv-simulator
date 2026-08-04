@@ -95,6 +95,36 @@ TEST_F(GLSLExtInstructionTests, FMinAcceptsFloatVectorElements)
     EXPECT_EQ(std::get<double>(result->elems[2]), 7.0);
 }
 
+TEST_F(GLSLExtInstructionTests, DistanceHandlesFloatVectors)
+{
+    constexpr uint32_t result_id    = 150;
+    constexpr uint32_t operand_1_id = 151;
+    constexpr uint32_t operand_2_id = 152;
+
+    ::SPIRVSimulator::Value operand_1 =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 2.0, 3.0 });
+    ::SPIRVSimulator::Value operand_2 =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<double>{ 4.0, 6.0, 3.0 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::f64))
+        .Times(3)
+        .WillRepeatedly(ReturnRef(types_.at(CommonTypes::f64)));
+    EXPECT_CALL(*this, GetTypeByResultId(operand_1_id)).WillOnce(ReturnRef(types_.at(CommonTypes::vec3)));
+    EXPECT_CALL(*this, GetTypeByResultId(operand_2_id)).WillOnce(ReturnRef(types_.at(CommonTypes::vec3)));
+    EXPECT_CALL(*this, GetValue(operand_1_id)).WillOnce(ReturnRef(operand_1));
+    EXPECT_CALL(*this, GetValue(operand_2_id)).WillOnce(ReturnRef(operand_2));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_1_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_2_id)));
+
+    const std::vector<uint32_t> operands{ operand_1_id, operand_2_id };
+    ExecuteGLSLExtInstruction(CommonTypes::f64, result_id, 67, operands);
+
+    ASSERT_TRUE(std::holds_alternative<double>(captured_result));
+    EXPECT_DOUBLE_EQ(std::get<double>(captured_result), 5.0);
+}
+
 TEST_F(GLSLExtInstructionTests, SMaxHandlesSignedIntegerVectors)
 {
     constexpr uint32_t result_id    = 200;

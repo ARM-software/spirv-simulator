@@ -6662,6 +6662,53 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             TransferFlags(result_id, operand_words[0]);
             break;
         }
+    case 67:
+        { // Distance
+            const Value& operand1      = GetValue(operand_words[0]);
+            const Value& operand2      = GetValue(operand_words[1]);
+            const Type&  operand_type1 = GetTypeByResultId(operand_words[0]);
+            const Type&  operand_type2 = GetTypeByResultId(operand_words[1]);
+
+            assertmc(operand_type1.kind == operand_type2.kind,
+                    "SPIRV simulator: Operand types do not match in GLSLExtHandler::distance");
+
+            double distance_squared = 0.0;
+            if (operand_type1.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand1) &&
+                            std::holds_alternative<std::shared_ptr<VectorV>>(operand2),
+                        "SPIRV simulator: Operands not of vector type in GLSLExtHandler::distance");
+                assertmc(operand_type1.vector.elem_count == operand_type2.vector.elem_count,
+                        "SPIRV simulator: Operand vector sizes do not match in GLSLExtHandler::distance");
+
+                const Type& elem_type1 = GetTypeByTypeId(operand_type1.vector.elem_type_id);
+                const Type& elem_type2 = GetTypeByTypeId(operand_type2.vector.elem_type_id);
+                assertmc(elem_type1.kind == Type::Kind::Float && elem_type2.kind == Type::Kind::Float,
+                        "SPIRV simulator: Distance vector operands must contain floats");
+
+                auto vec1 = std::get<std::shared_ptr<VectorV>>(operand1);
+                auto vec2 = std::get<std::shared_ptr<VectorV>>(operand2);
+                for (uint32_t i = 0; i < operand_type1.vector.elem_count; ++i)
+                {
+                    const double difference = std::get<double>(vec1->elems[i]) - std::get<double>(vec2->elems[i]);
+                    distance_squared += difference * difference;
+                }
+            }
+            else if (operand_type1.kind == Type::Kind::Float)
+            {
+                const double difference = std::get<double>(operand1) - std::get<double>(operand2);
+                distance_squared = difference * difference;
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler::distance");
+            }
+
+            SetValue(result_id, std::sqrt(distance_squared));
+            TransferFlags(result_id, operand_words[0]);
+            TransferFlags(result_id, operand_words[1]);
+            break;
+        }
     case 68:
         { // Cross
             const Value& operand1 = GetValue(operand_words[0]);
