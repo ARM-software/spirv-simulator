@@ -361,6 +361,46 @@ struct DataSourceBits
 
     // Bit offset into the final pointer where this data ended up
     uint64_t val_bit_offset;
+
+    bool operator==(const DataSourceBits& other) const
+    {
+        return location == other.location && storage_class == other.storage_class && source_ptr == other.source_ptr &&
+               idx == other.idx && set_id == other.set_id && binding_id == other.binding_id &&
+               byte_offset == other.byte_offset && bit_offset == other.bit_offset && bitcount == other.bitcount &&
+               val_bit_offset == other.val_bit_offset;
+    }
+};
+
+struct DataSourceBitsHash
+{
+    using is_avalanching = void;
+
+    static uint64_t Mix(uint64_t value) noexcept
+    {
+        value += 0x9e3779b97f4a7c15ull;
+        value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
+        value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
+        return value ^ (value >> 31u);
+    }
+
+    size_t operator()(const DataSourceBits& bits) const noexcept
+    {
+        uint64_t hash = Mix(static_cast<uint64_t>(bits.location));
+        auto combine = [&hash](uint64_t value) {
+            hash ^= Mix(value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u));
+        };
+
+        combine(static_cast<uint64_t>(bits.storage_class));
+        combine(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(bits.source_ptr)));
+        combine(bits.idx);
+        combine(bits.set_id);
+        combine(bits.binding_id);
+        combine(bits.byte_offset);
+        combine(bits.bit_offset);
+        combine(bits.bitcount);
+        combine(bits.val_bit_offset);
+        return static_cast<size_t>(hash);
+    }
 };
 
 // We return a vector of these.
@@ -744,6 +784,8 @@ struct PointerLocationKey
 
 struct PointerLocationKeyHash
 {
+    using is_avalanching = void;
+
     static uint64_t Mix(uint64_t value) noexcept
     {
         value += 0x9e3779b97f4a7c15ull;
@@ -1401,7 +1443,28 @@ class SPIRVSimulator
         std::vector<DataSourceBits> data_sources;
     };
 
-    UnorderedMap<uint32_t, SourceTraceCacheEntry> source_trace_cache_;
+    struct SourceTraceCacheKey
+    {
+        uint32_t result_id  = 0;
+        uint8_t  trace_role = 0;
+
+        bool operator==(const SourceTraceCacheKey& other) const
+        {
+            return result_id == other.result_id && trace_role == other.trace_role;
+        }
+    };
+
+    struct SourceTraceCacheKeyHash
+    {
+        size_t operator()(const SourceTraceCacheKey& key) const noexcept
+        {
+            uint64_t hash = static_cast<uint64_t>(key.result_id);
+            hash ^= static_cast<uint64_t>(key.trace_role) + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+            return static_cast<size_t>(hash);
+        }
+    };
+
+    UnorderedMap<SourceTraceCacheKey, SourceTraceCacheEntry, SourceTraceCacheKeyHash> source_trace_cache_;
     size_t source_trace_cache_trim_cursor_ = 0;
 
     // Stores the last computed trace for each executed OpStore instruction.

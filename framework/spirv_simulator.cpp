@@ -3283,7 +3283,7 @@ Value SPIRVSimulator::MakeNullValue(uint32_t result_id, uint32_t type_id)
         case Type::Kind::Pointer:
         {
             // storage class must not be physicalStorageBuffer
-            assertmc(type.pointer.storage_class != spv::StorageClassPhysicalStorageBuffer ||
+            assertmc(type.pointer.storage_class != spv::StorageClassPhysicalStorageBuffer &&
                 type.pointer.storage_class != spv::StorageClassPhysicalStorageBufferEXT,
                 "SPIRV Simulator: OpConstantNull - PyhsicalStorageBuffer not allowed");
             result = PointerV( 0, 0, type_id, result_id, type.pointer.storage_class, {} );
@@ -3324,15 +3324,53 @@ Value SPIRVSimulator::MakeNullValue(uint32_t result_id, uint32_t type_id)
     return result;
 }
 
-static void AppendDataSources(std::vector<DataSourceBits>& dst, const std::vector<DataSourceBits>& src)
+static constexpr size_t kMaxTraceDataSources = 65536;
+
+static bool AddDataSource(std::vector<DataSourceBits>&                      dst,
+                          UnorderedSet<DataSourceBits, DataSourceBitsHash>& seen,
+                          const DataSourceBits&                             source_bits,
+                          bool                                              verbose)
+{
+    auto [it, inserted] = seen.emplace(source_bits);
+    if (!inserted)
+    {
+        return true;
+    }
+
+    if (dst.size() >= kMaxTraceDataSources)
+    {
+        if (verbose)
+        {
+            std::cout << execIndent
+                      << "Trace source budget exhausted while collecting provenance; truncating further growth"
+                      << std::endl;
+        }
+        seen.erase(it);
+        return false;
+    }
+
+    dst.push_back(source_bits);
+    return true;
+}
+
+static bool AppendDataSources(std::vector<DataSourceBits>&                      dst,
+                              UnorderedSet<DataSourceBits, DataSourceBitsHash>& seen,
+                              const std::vector<DataSourceBits>&                src,
+                              bool                                              verbose)
 {
     if (src.empty())
     {
-        return;
+        return true;
     }
 
-    dst.reserve(dst.size() + src.size());
-    dst.insert(dst.end(), src.begin(), src.end());
+    for (const DataSourceBits& source_bits : src)
+    {
+        if (!AddDataSource(dst, seen, source_bits, verbose))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 static PointerLocationKey MakePointerLocationKey(const PointerV& pointer, uint64_t byte_offset)
@@ -4533,7 +4571,8 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     // must handle that case.
     if (visiting.find(result_id) == visiting.end())
     {
-        auto cache_it = source_trace_cache_.find(result_id);
+        SourceTraceCacheKey cache_key = { result_id, static_cast<uint8_t>(trace_role) };
+        auto                cache_it  = source_trace_cache_.find(cache_key);
         if (cache_it != source_trace_cache_.end() &&
             (!cache_it->second.depends_on_memory || cache_it->second.memory_epoch == memory_trace_epoch_))
         {
@@ -4561,6 +4600,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     }
 
     std::vector<DataSourceBits> results;
+    UnorderedSet<DataSourceBits, DataSourceBitsHash> seen_sources;
 
     uint32_t           instruction_index = GetInstructionIndexForResultId(result_id);
     const Instruction& instruction       = instructions_[instruction_index];
@@ -4631,7 +4671,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         }
 
         local_depends_on_memory |= child_depends_on_memory;
-        AppendDataSources(results, sub);
+        AppendDataSources(results, seen_sources, sub, verbose_);
     };
 
     auto trace_id = [&](uint32_t id) {
@@ -4662,19 +4702,34 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
         case spv::Op::OpCompositeConstruct:
         {
             const uint32_t first_component = 3;
+            uint64_t next_component_bit_offset = 0;
             for (uint32_t component_id = first_component; component_id < instruction.word_count; ++component_id)
             {
-                trace_id(instruction.words[component_id]);
-            }
-
-            DataSourceBits* prev_source = nullptr;
-            for (auto& component_data : results)
-            {
-                if (prev_source)
+                const uint32_t source_id = instruction.words[component_id];
+                if (source_id == 0 || !HasInstructionForResultId(source_id))
                 {
-                    component_data.val_bit_offset += prev_source->val_bit_offset + prev_source->bitcount;
+                    continue;
                 }
-                prev_source = &component_data;
+
+                uint32_t child_property_flags = 0;
+                bool child_depends_on_memory = false;
+                auto component_sources = FindDataSourcesFromResultIDImpl(
+                    source_id,
+                    &child_property_flags,
+                    visiting,
+                    &child_depends_on_memory,
+                    DataTraceRole::RawValue);
+
+                local_property_flags |= child_property_flags;
+                local_depends_on_memory |= child_depends_on_memory;
+
+                for (auto& component_source : component_sources)
+                {
+                    component_source.val_bit_offset += next_component_bit_offset;
+                    AddDataSource(results, seen_sources, component_source, verbose_);
+                }
+
+                next_component_bit_offset += GetBitsizeOfType(GetTypeID(source_id));
             }
             break;
         }
@@ -4815,7 +4870,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             data_source.bit_offset     = 0;
             data_source.bitcount       = GetBitsizeOfType(type_id);
             data_source.val_bit_offset = 0;
-            results.push_back(data_source);
+            AddDataSource(results, seen_sources, data_source, verbose_);
             break;
         }
         case spv::Op::OpConstant:
@@ -4834,7 +4889,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             data_source.bit_offset     = 0;
             data_source.bitcount       = GetBitsizeOfType(type_id);
             data_source.val_bit_offset = 0;
-            results.push_back(data_source);
+            AddDataSource(results, seen_sources, data_source, verbose_);
             break;
         }
 
@@ -4951,7 +5006,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
                 data_source.bit_offset     = 0;
                 data_source.bitcount       = GetBitsizeOfTargetType(pointer);
                 data_source.val_bit_offset = 0;
-                results.push_back(data_source);
+                AddDataSource(results, seen_sources, data_source, verbose_);
             }
             break;
         }
@@ -4992,7 +5047,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
             if (cached != call_return_source_cache_.end())
             {
                 local_property_flags |= cached->second.property_flags;
-                AppendDataSources(results, cached->second.data_sources);
+                AppendDataSources(results, seen_sources, cached->second.data_sources, verbose_);
             }
             else
             {
@@ -5021,7 +5076,7 @@ std::vector<DataSourceBits> SPIRVSimulator::FindDataSourcesFromResultIDImpl(
     cache_entry.property_flags = local_property_flags;
     cache_entry.depends_on_memory = local_depends_on_memory;
     cache_entry.data_sources = results;
-    source_trace_cache_[result_id] = std::move(cache_entry);
+    source_trace_cache_[SourceTraceCacheKey{ result_id, static_cast<uint8_t>(trace_role) }] = std::move(cache_entry);
 
     if (trace_depends_on_memory)
     {
