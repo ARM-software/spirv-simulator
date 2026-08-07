@@ -635,13 +635,7 @@ void SPIRVSimulator::Validate() const
 
         if (t.kind == Type::Kind::BoolT || t.kind == Type::Kind::Int || t.kind == Type::Kind::Float)
         {
-            if (t.scalar.width == 8 || t.scalar.width == 16)
-            {
-                std::cout << execIndent << "Scalar width is: " << t.scalar.width
-                          << ", this is untested but should work (if errors, suspect this and investigate)"
-                          << std::endl;
-            }
-
+            // if (t.scalar.width == 8 || t.scalar.width == 16) - this case is untested, investigate in case of errors
             assertm(t.scalar.width % 8 == 0,
                     "SPIRV simulator: Scalar bit width is not a multiple of eight, we dont support this at present");
             assertm(t.scalar.width == 8 || t.scalar.width == 16 || t.scalar.width == 32 || t.scalar.width == 64,
@@ -1586,7 +1580,6 @@ void SPIRVSimulator::on_loop_iteration(uint32_t header)
         // Just jump to the merge block of the current loop
         const LoopInfo& current_loop = loops_[header];
         call_stack_.back().pc = GetInstructionIndexForResultId(current_loop.merge);
-        std::cout << "SPIRV simulator: WARNING: Loop reached the max number of debug iterations, jumping to merge block and exiting loop" << std::endl;
         simulation_results_->aborted_long_loop = true;
     }
 }
@@ -15508,9 +15501,6 @@ void SPIRVSimulator::Op_IsNan(const Instruction& instruction)
     uint32_t result_id = instruction.words[2];
     uint32_t x_id      = instruction.words[3];
 
-    std::cout << "SPIRV simulator: WARNING: OpIsNan executed, keep this in mind if you see broken behaviour here"
-              << std::endl;
-
     const Type&  type  = GetTypeByTypeId(type_id);
     const Value& x_val = GetValue(x_id);
 
@@ -15555,15 +15545,14 @@ void SPIRVSimulator::Op_IsInf(const Instruction& instruction)
     OpIsInf
 
     Result is true if x is an infinity for the floating-point encoding used by the type of x, otherwise result is false.
+
+    WARNING: Implementation may be broken
     */
     assert(instruction.opcode == spv::Op::OpIsInf);
 
     uint32_t type_id   = instruction.words[1];
     uint32_t result_id = instruction.words[2];
     uint32_t x_id      = instruction.words[3];
-
-    std::cout << "SPIRV simulator: WARNING: OpIsInf executed, keep this in mind if you see broken behaviour here"
-              << std::endl;
 
     const Type&  type  = GetTypeByTypeId(type_id);
     const Value& x_val = GetValue(x_id);
