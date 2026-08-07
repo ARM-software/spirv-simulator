@@ -3261,6 +3261,54 @@ Value SPIRVSimulator::MakeDefault(uint32_t type_id, const uint32_t** initial_dat
     }
 }
 
+Value SPIRVSimulator::MakeNullValue(uint32_t result_id, uint32_t type_id)
+{
+    const Type& type = GetTypeByTypeId(type_id);
+    Value result;
+    switch (type.kind) {
+        case Type::Kind::Pointer:
+        {
+            // storage class must not be physicalStorageBuffer
+            assertmc(type.pointer.storage_class != spv::StorageClassPhysicalStorageBuffer ||
+                type.pointer.storage_class != spv::StorageClassPhysicalStorageBufferEXT,
+                "SPIRV Simulator: OpConstantNull - PyhsicalStorageBuffer not allowed");
+            result = PointerV( 0, 0, type_id, result_id, type.pointer.storage_class, {} );
+            break;
+        }
+        case Type::Kind::Array:
+        case Type::Kind::RuntimeArray:
+        {
+            const uint64_t array_len = GetArrayLength(type.array.length_id);
+
+            std::shared_ptr<AggregateV> array = std::make_shared<AggregateV>();
+            for( size_t i = 0; i < array_len; ++i)
+            {
+                array->elems.push_back(MakeNullValue(result_id, type.array.elem_type_id));
+            }
+            result = array;
+            break;
+        }
+        case Type::Kind::Struct:
+        {
+            std::shared_ptr<AggregateV> new_struct = std::make_shared<AggregateV>();
+            const auto& members = struct_members_.at(type_id);
+            // Walk the fields of the structure
+            // and call MakeDefault without initial data
+            for (const uint32_t& member_type_id : members)
+            {
+                new_struct->elems.push_back(MakeNullValue(result_id, member_type_id));
+            }
+            result = new_struct;
+            break;
+        }
+        default:
+        {
+            result = MakeDefault(type_id, nullptr);
+            break;
+        }
+    }
+    return result;
+}
 
 static void AppendDataSources(std::vector<DataSourceBits>& dst, const std::vector<DataSourceBits>& src)
 {
@@ -12648,11 +12696,8 @@ void SPIRVSimulator::Op_ConstantNull(const Instruction& instruction)
     uint32_t    result_id = instruction.words[2];
     const Type& type      = GetTypeByTypeId(type_id);
 
-    // TODO: This will crash for most pointers, we have to handle that case without MakeDefault
-    assertmc(type.kind != Type::Kind::Pointer,
-            "SPIRV simulator: Op_ConstantNull for pointer types is currently not supported");
 
-    SetValue(result_id, MakeDefault(type_id));
+    SetValue(result_id, MakeNullValue(result_id, type_id));
 }
 
 void SPIRVSimulator::Op_AtomicIAdd(const Instruction& instruction)
