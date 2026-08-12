@@ -1,0 +1,22 @@
+#version 450
+
+layout(local_size_x = 1) in;
+
+int increment(int value)
+{
+	return value + 1;
+}
+
+void main()
+{
+	int value = 0;
+	for (int i = 0; i < 2; ++i)
+	{
+		value = increment(value);
+		bool outside = value < 0 || value > 100;
+		if (outside)
+		{
+			value = 0;
+		}
+	}
+}

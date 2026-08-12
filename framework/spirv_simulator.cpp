@@ -846,7 +846,7 @@ bool SPIRVSimulator::Run()
     FunctionInfo& function_info = funcs_[entry_point_function_id];
 
     // We can set the return value to whatever, ignored if the call stack is empty on return
-    call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_ });
+    call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_, 0 });
     ExecuteInstructions();
 
     if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && (simulation_data_->shader_id != UINT64_MAX) && persistent_data_)
@@ -8581,7 +8581,7 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
     uint32_t function_id = instruction.words[3];
 
     FunctionInfo& function_info = funcs_[function_id];
-    call_stack_.push_back({ function_info.first_inst_index, result_id, current_heap_index_ });
+    call_stack_.push_back({ function_info.first_inst_index, result_id, current_heap_index_, current_block_id_ });
 
     bool changed_trace_state = false;
     uint32_t parameter_index = 0;
@@ -8772,6 +8772,7 @@ void SPIRVSimulator::Op_Return(const Instruction& instruction)
 #endif
 
     current_heap_index_ = call_stack_.back().func_heap_index;
+    current_block_id_   = call_stack_.back().caller_block_id;
 
     call_stack_.pop_back();
 }
@@ -8827,6 +8828,7 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
 #endif
 
     current_heap_index_ = call_stack_.back().func_heap_index;
+    current_block_id_   = call_stack_.back().caller_block_id;
 
     call_stack_.pop_back();
 

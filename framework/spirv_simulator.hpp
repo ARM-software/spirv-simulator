@@ -1392,6 +1392,7 @@ class SPIRVSimulator
         size_t   pc;
         uint32_t result_id;
         uint32_t func_heap_index;
+        uint32_t caller_block_id;
     };
 
     std::vector<Frame> call_stack_;
