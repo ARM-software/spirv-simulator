@@ -8971,6 +8971,14 @@ void SPIRVSimulator::Op_ExtInst(const Instruction& instruction)
     {
         GLSLExtHandler(type_id, result_id, instruction_literal, operand_words);
     }
+    else if (set_literal.starts_with("NonSemantic."))
+    {
+        // Non-semantic instructions do not affect shader execution and their
+        // result IDs may only be consumed by other non-semantic instructions.
+        // In particular, DebugPrintf has a void result type, for which there is
+        // no value to synthesize.
+        return;
+    }
     else
     {
         if (verbose_)
