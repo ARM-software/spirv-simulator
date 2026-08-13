@@ -293,6 +293,7 @@ constexpr const char* StorageClassName(spv::StorageClass sc)
         case spv::StorageClassUniform: return "Uniform";
         case spv::StorageClassOutput: return "Output";
         case spv::StorageClassWorkgroup: return "Workgroup";
+        case spv::StorageClassTaskPayloadWorkgroupEXT: return "TaskPayloadWorkgroupEXT";
         case spv::StorageClassCrossWorkgroup: return "CrossWorkgroup";
         case spv::StorageClassPrivate: return "Private";
         case spv::StorageClassFunction: return "Function";
@@ -578,6 +579,7 @@ void SPIRVSimulator::BuildCFGFromWords()
             case spv::Op::OpUnreachable:
             case spv::Op::OpKill:
             case spv::Op::OpTerminateInvocation:
+            case spv::Op::OpEmitMeshTasksEXT:
                 break;
 
             default: break;
@@ -1300,6 +1302,10 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_EmitVertex)
         case spv::Op::OpEndPrimitive:
             R(Op_EndPrimitive)
+        case spv::Op::OpEmitMeshTasksEXT:
+            R(Op_EmitMeshTasksEXT)
+        case spv::Op::OpSetMeshOutputsEXT:
+            R(Op_SetMeshOutputsEXT)
         case spv::Op::OpUConvert:
             R(Op_UConvert)
         case spv::Op::OpSConvert:
@@ -5211,6 +5217,7 @@ bool SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
     // the internal heaps
     if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
         type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT ||
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
         type.pointer.storage_class == spv::StorageClass::StorageClassOutput ||
@@ -5366,6 +5373,7 @@ std::optional<Value> SPIRVSimulator::ReadPointer(const PointerV& ptr)
     // These are stored on the internal heaps
     if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
         type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
+        type.pointer.storage_class == spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT ||
         type.pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         type.pointer.storage_class == spv::StorageClass::StorageClassInput ||
         type.pointer.storage_class == spv::StorageClass::StorageClassOutput ||
@@ -8801,6 +8809,7 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
     }
     else if (type.pointer.storage_class == spv::StorageClass::StorageClassFunction ||
              type.pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
+             type.pointer.storage_class == spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT ||
              type.pointer.storage_class == spv::StorageClass::StorageClassPrivate)
     {
         // TODO: Check init data if it is a candidate? Probably not needed/relevant
@@ -8980,7 +8989,8 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     // projecting aggregate metadata when this load selects a stored subobject.
     if (pointer.storage_class == spv::StorageClass::StorageClassFunction ||
         pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
-        pointer.storage_class == spv::StorageClass::StorageClassWorkgroup)
+        pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
+        pointer.storage_class == spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT)
     {
         StoredValueRecord store_record;
         if (TryFindReachingStoreForPointer(pointer, pointer_id, store_record))
@@ -9302,6 +9312,7 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         pointer.storage_class != spv::StorageClass::StorageClassFunction &&
         pointer.storage_class != spv::StorageClass::StorageClassPrivate &&
         pointer.storage_class != spv::StorageClass::StorageClassWorkgroup &&
+        pointer.storage_class != spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT &&
         pointer.storage_class != spv::StorageClass::StorageClassImage;
     if (memory_flag_tracker_ && should_track_dense_store_fallback &&
         ((value_meta_[result_id].flags | value_meta_[pointer_id].flags) & SPS_FLAG_THREAD_SPECIFIC))
@@ -17377,6 +17388,32 @@ void SPIRVSimulator::Op_EndPrimitive(const Instruction& instruction)
     */
     assert(instruction.opcode == spv::Op::OpEndPrimitive);
     std::cout << "SPIRV simulator: WARNING: Geometry shaders not implemented, instructions are ignored" << std::endl;
+}
+
+void SPIRVSimulator::Op_EmitMeshTasksEXT(const Instruction& instruction)
+{
+    /*
+    OpEmitMeshTasksEXT
+
+    Emit mesh task workgroups and terminate the current task shader invocation group. The simulator executes one
+    shader module in isolation, so downstream mesh shader workgroups are not launched here.
+    */
+    assert(instruction.opcode == spv::Op::OpEmitMeshTasksEXT);
+
+    // Unlike OpReturn, this terminates the entire task shader invocation group. It can be executed from a helper
+    // function, so unwinding only the current frame would incorrectly resume execution in its caller.
+    call_stack_.clear();
+}
+
+void SPIRVSimulator::Op_SetMeshOutputsEXT(const Instruction& instruction)
+{
+    /*
+    OpSetMeshOutputsEXT
+
+    Set the number of vertices and primitives produced by the mesh shader. Output primitive assembly is outside the
+    simulator's memory and pointer analysis, so no additional state is needed here.
+    */
+    assert(instruction.opcode == spv::Op::OpSetMeshOutputsEXT);
 }
 
 void SPIRVSimulator::Op_UConvert(const Instruction& instruction)

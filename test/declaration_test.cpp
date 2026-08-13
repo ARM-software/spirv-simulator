@@ -129,6 +129,15 @@ std::vector<TestParameters> test_cases{
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpVariable)
+        .set_operand_at(0,
+                        static_cast<uint64_t>(0),
+                        ::SPIRVSimulator::Type::Pointer(spv::StorageClassTaskPayloadWorkgroupEXT, CommonTypes::u32))
+        .set_operand_at(1,
+                        static_cast<uint64_t>(spv::StorageClassTaskPayloadWorkgroupEXT),
+                        CommonTypes::storage_class)
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpVariable)
         .add_push_constant(static_cast<uint32_t>(1))
         .set_operand_at(0,
                         static_cast<uint64_t>(1),

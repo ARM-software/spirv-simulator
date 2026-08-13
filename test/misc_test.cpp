@@ -149,6 +149,39 @@ TEST_F(AccessChainForkTests, AtomicStopsAfterAbortedPointerRead)
 
 using namespace testing;
 
+class MeshShaderInstructionTests : public SPIRVSimulatorMockBase, public ::testing::Test
+{
+  public:
+    void AddCallFrame()
+    {
+        call_stack_.push_back({ 0, 0, current_heap_index_, 0 });
+    }
+
+    size_t CallStackSize() const
+    {
+        return call_stack_.size();
+    }
+};
+
+TEST_F(MeshShaderInstructionTests, EmitMeshTasksTerminatesCalledFunctionAndCaller)
+{
+    AddCallFrame();
+    AddCallFrame();
+
+    const std::vector<uint32_t> words{
+        static_cast<uint32_t>((4u << 16) | static_cast<uint32_t>(spv::Op::OpEmitMeshTasksEXT)),
+        1,
+        2,
+        3,
+    };
+    const ::SPIRVSimulator::Instruction instruction{
+        .opcode = spv::Op::OpEmitMeshTasksEXT, .word_count = 4, .words = words
+    };
+
+    ASSERT_TRUE(ExecuteInstruction(instruction));
+    EXPECT_EQ(CallStackSize(), 0u);
+}
+
 class GLSLExtInstructionTests : public SPIRVSimulatorMockBase, public ::testing::Test
 {
   public:

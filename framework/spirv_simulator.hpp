@@ -2009,6 +2009,8 @@ class SPIRVSimulator
     void Op_FunctionParameter(const Instruction&);
     void Op_EmitVertex(const Instruction&);
     void Op_EndPrimitive(const Instruction&);
+    void Op_EmitMeshTasksEXT(const Instruction&);
+    void Op_SetMeshOutputsEXT(const Instruction&);
     void Op_UConvert(const Instruction&);
     void Op_SConvert(const Instruction&);
     void Op_FConvert(const Instruction&);
