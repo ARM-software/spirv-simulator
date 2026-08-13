@@ -1989,12 +1989,6 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, spv::Decoration decorator)
             }
         }
     }
-    else if (auto struct_deco_it = struct_decorators_.find(result_id);
-                  struct_deco_it != struct_decorators_.end())
-    {
-        assertxc("SPIRV simulator: Unimplemented branch in HasDecorator");
-    }
-
     return false;
 }
 
@@ -2022,12 +2016,6 @@ bool SPIRVSimulator::HasDecorator(uint32_t result_id, uint32_t member_id, spv::D
             return false;
         }
     }
-    else if (auto decorator_it = decorators_.find(result_id);
-                  decorator_it != decorators_.end())
-    {
-        assertxc("SPIRV simulator: Unimplemented branch in HasDecorator (member version)");
-    }
-
     return false;
 }
 
@@ -7938,9 +7926,10 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
         }
         else if (type.pointer.pointee_type_id != 0 && GetTypeByTypeId(type.pointer.pointee_type_id).kind == Type::Kind::Struct)
         {
-            for (uint32_t member_id : struct_members_[type.pointer.pointee_type_id])
+            const auto& members = struct_members_.at(type.pointer.pointee_type_id);
+            for (uint32_t member_index = 0; member_index < members.size(); ++member_index)
             {
-                if (HasDecorator(result_id, member_id, spv::Decoration::DecorationBuiltIn))
+                if (HasDecorator(type.pointer.pointee_type_id, member_index, spv::Decoration::DecorationBuiltIn))
                 {
                     pointee_flags |= SPS_FLAG_THREAD_SPECIFIC;
                     break;
