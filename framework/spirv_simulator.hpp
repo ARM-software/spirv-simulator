@@ -1407,7 +1407,7 @@ class SPIRVSimulator
 
     void BuildAllLoops()
     {
-        for (auto [bid, bi] : cfg_.blocks) {
+        for (const auto& [bid, bi] : cfg_.blocks) {
             if (bi.loop_merge) {
                 loops_.emplace(bid, BuildLoopRegion(cfg_, bid));
             }
