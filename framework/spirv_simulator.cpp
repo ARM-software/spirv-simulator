@@ -5363,6 +5363,12 @@ std::optional<Value> SPIRVSimulator::ReadPointer(const PointerV& ptr)
 
     const Type& type = GetTypeByTypeId(ptr.base_type_id);
 
+    if ((flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE) && ptr.pointer_handle == 0 &&
+        type.pointer.storage_class == spv::StorageClass::StorageClassPushConstant)
+    {
+        assertxc("SPIRV simulator: Tried to read from the push constant buffer but the buffer was not initialized");
+    }
+
     // To make inputs optional
     if (ptr.pointer_handle == 0)
     {
@@ -8746,10 +8752,11 @@ void SPIRVSimulator::Op_Variable(const Instruction& instruction)
 
         // If the pointer itself is uninitialized, mark it and the pointee
         if (!external_pointer) {
-            if (flags_ & ERROR_RAISE_ON_BUFFERS_INCOMPLETE)
+            // An uninitialized push constant is legal if the shader never accesses it.
+            // Defer reporting until a load, as for uninitialized descriptor bindings.
+            if (verbose_)
             {
-                std::cout << "SPIRV simulator: WARNING: Access to uninitialized push constant while the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set." << std::endl;
-                assertxc("SPIRV simulator: OpVariable tried to access the push constant buffer when the ERROR_RAISE_ON_BUFFERS_INCOMPLETE flag was set, but the buffer was not initialized");
+                std::cout << "SPIRV simulator: WARNING: Push constant buffer is not set. This may be valid behaviour if it is not accessed." << std::endl;
             }
             pointee_flags |= SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY;
             pointer_flags |= SPS_FLAG_UNINITIALIZED;
