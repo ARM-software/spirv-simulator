@@ -873,6 +873,8 @@ bool SPIRVSimulator::Run()
             speculation_context_->forced_loop_exit_count;
     }
 
+    simulation_results_->had_relevant_side_effect |= has_buffer_writes_;
+
     if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && (simulation_data_->shader_id != UINT64_MAX) && persistent_data_)
     {
         persistent_data_->MarkUninteresting(simulation_data_->shader_id);
@@ -1534,6 +1536,10 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
     call_stack_.back().pc = control_instruction_index;
 
     ExecuteInstructions();
+    if (simulation_results_)
+    {
+        simulation_results_->had_relevant_side_effect = simulation_results_->had_relevant_side_effect || has_buffer_writes_;
+    }
 }
 
 void SPIRVSimulator::ExecuteSpeculativeFork(size_t   control_instruction_index,
@@ -1640,6 +1646,8 @@ void SPIRVSimulator::MergeSimulationResults(const SimulationResults& fork_result
         fork_results.read_side_pointer_coverage_incomplete;
     simulation_results_->aborted_long_loop |= fork_results.aborted_long_loop;
     simulation_results_->had_arbitrary_write |= fork_results.had_arbitrary_write;
+    simulation_results_->had_relevant_side_effect |=
+        fork_results.had_relevant_side_effect;
 }
 
 bool SPIRVSimulator::ConsumeForcedControlTarget(size_t control_instruction_index,
@@ -5527,6 +5535,32 @@ const std::byte* SPIRVSimulator::RemapPhysicalToHostPointer(uint64_t physical_po
     return nullptr;
 }
 
+void SPIRVSimulator::MarkRelevantWrite(const PointerV& ptr)
+{
+    const auto storage_class = static_cast<spv::StorageClass>(ptr.storage_class);
+
+    if (storage_class == spv::StorageClass::StorageClassOutput)
+    {
+        // Interpolated outputs cannot preserve pointer or descriptor metadata.
+        if (HasDecorator(ptr.base_result_id, spv::Decoration::DecorationFlat))
+        {
+            has_buffer_writes_ = true;
+        }
+        return;
+    }
+
+    if (storage_class == spv::StorageClass::StorageClassFunction ||
+        storage_class == spv::StorageClass::StorageClassWorkgroup ||
+        storage_class == spv::StorageClass::StorageClassPrivate ||
+        storage_class == spv::StorageClass::StorageClassInput ||
+        storage_class == spv::StorageClass::StorageClassImage)
+    {
+        return;
+    }
+
+    has_buffer_writes_ = true;
+}
+
 bool SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
 {
     if (is_execution_fork && (ptr.pointee_flags & SPS_FLAG_HAS_NEGATIVE_INDEX))
@@ -5534,6 +5568,8 @@ bool SPIRVSimulator::WritePointer(const PointerV& ptr, const Value& out_value)
         call_stack_.clear();
         return false;
     }
+
+    MarkRelevantWrite(ptr);
 
     const Type& type = GetTypeByTypeId(ptr.base_type_id);
 
@@ -9735,23 +9771,6 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         simulation_results_->had_arbitrary_write = true;
     }
 
-    // If this is a non-interpolated output value, the shader may be important for pbuffer pointer detection
-    if (pointer.storage_class == spv::StorageClass::StorageClassOutput)
-    {
-        // TODO: Double check types, if this is a value that cant be interpolated, it may be flat even if not decorated
-        // as such
-        if (HasDecorator(pointer.base_result_id, spv::Decoration::DecorationFlat))
-        {
-            has_buffer_writes_ = true;
-        }
-    }
-    else if ((pointer.storage_class != spv::StorageClass::StorageClassFunction) &&
-             (pointer.storage_class != spv::StorageClass::StorageClassImage))
-    {
-        // If we are writing to any storage class that is not function or image, the shader may be important for pbuffer pointer detection
-        has_buffer_writes_ = true;
-    }
-
     StoredValueMetadataSnapshot stored_meta = MakeStoredValueMetadataSnapshot(result_id);
 
     // Prevent later loads from restoring stale metadata from an overlapping
@@ -10168,7 +10187,6 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
                 fork_targets.push_back(candidate_target);
             }
         }
-
         // Mark every outgoing edge before starting a child execution. A nested
         // fork that reaches this same branch therefore cannot recursively
         // reproduce the same path tree.
@@ -20551,15 +20569,16 @@ void SPIRVSimulator::Op_CooperativeMatrixStoreKHR(const Instruction& instruction
 
     const Value& pointer_value = GetValue(pointer_id);
     const PointerV& pointer = std::get<PointerV>(pointer_value);
-    WritePointer(pointer, GetValue(object_id));
+    if (!WritePointer(pointer, GetValue(object_id)))
+    {
+        return;
+    }
     TransferFlagsToPointee(pointer_id, object_id);
 
     if (ValueIsArbitrary(object_id))
     {
         simulation_results_->had_arbitrary_write = true;
     }
-    has_buffer_writes_ = true;
-
     StoredValueMetadataSnapshot stored_meta = MakeStoredValueMetadataSnapshot(object_id);
     InvalidateOverlappingStoredValues(pointer);
     values_stored_[pointer_id] = StoredValueRecord{ object_id, pointer, stored_meta };

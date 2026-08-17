@@ -6,6 +6,7 @@
 
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
+#include "util.hpp"
 
 class AccessChainForkTests : public SPIRVSimulatorMockBase, public ::testing::Test
 {
@@ -180,6 +181,37 @@ TEST_F(MeshShaderInstructionTests, EmitMeshTasksTerminatesCalledFunctionAndCalle
 
     ASSERT_TRUE(ExecuteInstruction(instruction));
     EXPECT_EQ(CallStackSize(), 0u);
+}
+
+namespace
+{
+::SPIRVSimulator::SimulationResults SimulateShader(const char* shader_name)
+{
+    ::SPIRVSimulator::MemoryFlagTracker memory_tracker;
+    ::SPIRVSimulator::SimulationData    simulation_data;
+    ::SPIRVSimulator::SimulationResults simulation_results;
+    const std::string shader_path = std::string(TEST_SHADER_DIR) + "/" + shader_name;
+
+    ::SPIRVSimulator::SPIRVSimulator simulator(
+        util::ReadFile(shader_path.c_str()), &memory_tracker, &simulation_data, &simulation_results);
+    simulator.Run();
+
+    return simulation_results;
+}
+}
+
+TEST(SideEffectReportingTests, ReportsAtomicStorageBufferWrite)
+{
+    const auto results = SimulateShader("side_effect_atomic.spv");
+
+    EXPECT_TRUE(results.had_relevant_side_effect);
+}
+
+TEST(SideEffectReportingTests, IgnoresPrivateAndWorkgroupWrites)
+{
+    const auto results = SimulateShader("side_effect_internal.spv");
+
+    EXPECT_FALSE(results.had_relevant_side_effect);
 }
 
 class GLSLExtInstructionTests : public SPIRVSimulatorMockBase, public ::testing::Test
