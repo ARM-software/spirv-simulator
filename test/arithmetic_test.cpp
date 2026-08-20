@@ -276,8 +276,11 @@ INSTANTIATE_TEST_SUITE_P(Arithmetics, ArithmeticsTests, ValuesIn(test_cases));
 class AtomicArithmeticTests : public SPIRVSimulatorMockBase, public Test
 {
   public:
-    MOCK_METHOD(::SPIRVSimulator::Value, ReadPointer, (const ::SPIRVSimulator::PointerV&), (override));
-    MOCK_METHOD(void,
+    MOCK_METHOD(std::optional<::SPIRVSimulator::Value>,
+                ReadPointer,
+                (const ::SPIRVSimulator::PointerV&),
+                (override));
+    MOCK_METHOD(bool,
                 WritePointer,
                 (const ::SPIRVSimulator::PointerV&, const ::SPIRVSimulator::Value&),
                 (override));
@@ -304,7 +307,7 @@ TEST_F(AtomicArithmeticTests, AtomicSMaxInterpretsUnsignedTypeAsSigned)
     EXPECT_CALL(*this, ReadPointer(pointer)).WillOnce(Return(pointee_value));
     EXPECT_CALL(*this, SetValue(result_id, pointee_value, true));
     EXPECT_CALL(*this, TransferFlagsFromPointee(result_id, pointer));
-    EXPECT_CALL(*this, WritePointer(pointer, value));
+    EXPECT_CALL(*this, WritePointer(pointer, value)).WillOnce(Return(true));
     EXPECT_CALL(*this, TransferFlagsToPointee(pointer_id, value_id));
 
     std::vector<uint32_t> words = { 0, CommonTypes::u32, result_id, pointer_id, 0, 0, value_id };

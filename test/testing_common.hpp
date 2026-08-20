@@ -221,6 +221,7 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
     MOCK_METHOD(void, SetFlags, (uint32_t target, uint64_t flags), (override));
     MOCK_METHOD(const ::SPIRVSimulator::Type&, GetTypeByTypeId, (uint32_t id), (const override));
     MOCK_METHOD(const ::SPIRVSimulator::Type&, GetTypeByResultId, (uint32_t id), (const override));
+    MOCK_METHOD(uint32_t, GetIntegerWidthByResultId, (uint32_t id), (const override));
     MOCK_METHOD(void, SetFlagsPointee, (uint32_t pointer_id, uint64_t flags), (override));
     MOCK_METHOD(void, SetFlagsPointee, (::SPIRVSimulator::PointerV& pointer, uint64_t flags), (override));
 
@@ -347,8 +348,9 @@ class SPIRVSimulatorMockBase : public SPIRVSimulator::SPIRVSimulator
         }
         else if (const ::SPIRVSimulator::PointerV* pointer = std::get_if<::SPIRVSimulator::PointerV>(&b); pointer)
         {
-            ::SPIRVSimulator::Value v = ReadPointer(*pointer);
-            EXPECT_EQ(a, v);
+            const std::optional<::SPIRVSimulator::Value> v = ReadPointer(*pointer);
+            ASSERT_TRUE(v.has_value());
+            EXPECT_EQ(a, *v);
         }
     }
 

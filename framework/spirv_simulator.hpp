@@ -11,6 +11,7 @@
 #include <concepts>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -81,6 +82,8 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
 // Value/address belongs to a dense uniform-derived memory class. If one element
 // is later proven, the persistent memory tracker may promote the whole class.
 #define SPS_FLAG_UNIFORM_DERIVED_RANGE    256
+// Used to mark pointers containing a signed-negative access-chain index
+#define SPS_FLAG_HAS_NEGATIVE_INDEX       512
 
 // Used to track metadata about value source chains
 #define SPS_FLAG_IS_FLOAT_SOURCE        1
@@ -1503,13 +1506,14 @@ class SPIRVSimulator
     virtual Value        MakeDefault(uint32_t type_id, const uint32_t** initial_data = nullptr);
     virtual uint64_t     RemapHostToPhysicalPointer(uint64_t host_pointer) const;
     virtual const std::byte* RemapPhysicalToHostPointer(uint64_t physical_pointer) const;
-    virtual void         WritePointer(const PointerV& ptr, const Value& value);
-    virtual Value        ReadPointer(const PointerV& ptr);
+    [[nodiscard]] virtual bool                 WritePointer(const PointerV& ptr, const Value& value);
+    [[nodiscard]] virtual std::optional<Value> ReadPointer(const PointerV& ptr);
     virtual const Value& GetValue(uint32_t result_id) const;
     virtual uint64_t     GetArrayLength(uint32_t length_id) const;
     virtual void         SetValue(uint32_t result_id, const Value& value, bool clear_meta=true);
     virtual const Type&  GetTypeByTypeId(uint32_t type_id) const;
     virtual const Type&  GetTypeByResultId(uint32_t result_id) const;
+    virtual uint32_t         GetIntegerWidthByResultId(uint32_t result_id) const;
     virtual uint32_t     GetTypeID(uint32_t result_id) const;
     virtual void         WriteValue(std::byte* external_pointer, uint32_t type_id, const Value& value) const;
     virtual void         ReadWords(const std::byte* external_pointer, uint32_t type_id, std::vector<uint32_t>& buffer_data) const;
