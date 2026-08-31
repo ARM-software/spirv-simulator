@@ -14,6 +14,40 @@ using namespace testing;
 class DeclarationTests : public SPIRVSimulatorMockBase, public TestWithParam<TestParameters>
 {};
 
+class OpConstantNullDeclarationTests : public SPIRVSimulatorMockBase, public Test
+{
+  protected:
+    static constexpr uint32_t kPointerTypeId       = 1001;
+    static constexpr uint32_t kStructTypeId        = 1002;
+    static constexpr uint32_t kArrayTypeId         = 1003;
+    static constexpr uint32_t kArrayLengthId       = 1004;
+    static constexpr uint32_t kDirectResultId      = 2001;
+    static constexpr uint32_t kStructResultId      = 2002;
+    static constexpr uint32_t kArrayResultId       = 2003;
+    static constexpr uint32_t kPhysicalResultId    = 2004;
+    static constexpr uint64_t kArrayLength         = 3;
+    static constexpr const char* kPhysicalNullError =
+        "SPIRV Simulator: OpConstantNull - PyhsicalStorageBuffer not allowed";
+
+    void RegisterType(uint32_t type_id, const ::SPIRVSimulator::Type& type)
+    {
+        types_[type_id] = type;
+        EXPECT_CALL(*this, GetTypeByTypeId(type_id)).WillRepeatedly(ReturnRef(types_[type_id]));
+    }
+
+    void RegisterStructType(uint32_t type_id, const std::vector<uint32_t>& members)
+    {
+        RegisterType(type_id, ::SPIRVSimulator::Type::Struct(type_id));
+        struct_members_[type_id] = members;
+    }
+
+    void RegisterArrayType(uint32_t type_id, uint32_t element_type_id, uint32_t length_id, uint64_t length)
+    {
+        RegisterType(type_id, ::SPIRVSimulator::Type::Array(element_type_id, length_id));
+        EXPECT_CALL(*this, GetValue(length_id)).WillRepeatedly(ReturnRefOfCopy(::SPIRVSimulator::Value(length)));
+    }
+};
+
 TEST_P(DeclarationTests, ParametrizedDeclarationOperation)
 {
     const auto& parameters = GetParam();
@@ -190,3 +224,108 @@ std::vector<TestParameters> test_cases{
 };
 
 INSTANTIATE_TEST_SUITE_P(Declaration, DeclarationTests, ValuesIn(test_cases));
+
+TEST_F(OpConstantNullDeclarationTests, LogicalPointer)
+{
+    RegisterType(kPointerTypeId, ::SPIRVSimulator::Type::Pointer(spv::StorageClassGeneric, CommonTypes::u32));
+
+    ::SPIRVSimulator::Value captured_value;
+    EXPECT_CALL(*this, SetValue(kDirectResultId, _, true)).WillOnce(SaveArg<1>(&captured_value));
+
+    std::vector<uint32_t> instruction_words = { static_cast<uint32_t>(spv::Op::OpConstantNull), kPointerTypeId, kDirectResultId };
+
+    ::SPIRVSimulator::Instruction instr = { .opcode     = spv::Op::OpConstantNull,
+                                            .word_count = 3,
+                                            .words      = instruction_words };
+    this->ExecuteInstruction(instr);
+
+    EXPECT_EQ(captured_value,
+              ::SPIRVSimulator::Value(::SPIRVSimulator::PointerV{
+                  0, 0, kPointerTypeId, kDirectResultId, spv::StorageClassGeneric, {} }));
+}
+
+TEST_F(OpConstantNullDeclarationTests, StructContainingLogicalPointer)
+{
+    RegisterType(kPointerTypeId, ::SPIRVSimulator::Type::Pointer(spv::StorageClassGeneric, CommonTypes::u32));
+    RegisterStructType(kStructTypeId, { kPointerTypeId });
+
+    ::SPIRVSimulator::Value captured_value;
+    EXPECT_CALL(*this, SetValue(kStructResultId, _, true)).WillOnce(SaveArg<1>(&captured_value));
+
+    std::vector<uint32_t> instruction_words = { static_cast<uint32_t>(spv::Op::OpConstantNull), kStructTypeId, kStructResultId };
+
+    ::SPIRVSimulator::Instruction instr = { .opcode     = spv::Op::OpConstantNull,
+                                            .word_count = 3,
+                                            .words      = instruction_words };
+    this->ExecuteInstruction(instr);
+
+    EXPECT_EQ(captured_value,
+              ::SPIRVSimulator::Value(std::make_shared<::SPIRVSimulator::AggregateV>(
+                  std::initializer_list<::SPIRVSimulator::Value>{ ::SPIRVSimulator::PointerV{
+                      0, 0, kPointerTypeId, kStructResultId, spv::StorageClassGeneric, {} } })));
+}
+
+TEST_F(OpConstantNullDeclarationTests, ArrayOfStructsContainingLogicalPointer)
+{
+    RegisterType(kPointerTypeId, ::SPIRVSimulator::Type::Pointer(spv::StorageClassGeneric, CommonTypes::u32));
+    RegisterStructType(kStructTypeId, { kPointerTypeId });
+    RegisterArrayType(kArrayTypeId, kStructTypeId, kArrayLengthId, kArrayLength);
+
+    ::SPIRVSimulator::Value captured_value;
+    EXPECT_CALL(*this, SetValue(kArrayResultId, _, true)).WillOnce(SaveArg<1>(&captured_value));
+
+    std::vector<uint32_t> instruction_words = { static_cast<uint32_t>(spv::Op::OpConstantNull), kArrayTypeId, kArrayResultId };
+
+    ::SPIRVSimulator::Instruction instr = { .opcode     = spv::Op::OpConstantNull,
+                                            .word_count = 3,
+                                            .words      = instruction_words };
+    this->ExecuteInstruction(instr);
+
+    const auto* array = std::get_if<std::shared_ptr<::SPIRVSimulator::AggregateV>>(&captured_value);
+    ASSERT_NE(array, nullptr);
+    ASSERT_TRUE(*array);
+    ASSERT_EQ((*array)->elems.size(), kArrayLength);
+
+    for (const auto& element : (*array)->elems)
+    {
+        const auto* nested_struct = std::get_if<std::shared_ptr<::SPIRVSimulator::AggregateV>>(&element);
+        ASSERT_NE(nested_struct, nullptr);
+        ASSERT_TRUE(*nested_struct);
+        ASSERT_EQ((*nested_struct)->elems.size(), 1u);
+
+        const auto* pointer = std::get_if<::SPIRVSimulator::PointerV>(&(*nested_struct)->elems[0]);
+        ASSERT_NE(pointer, nullptr);
+        EXPECT_EQ(pointer->pointer_handle, 0u);
+        EXPECT_EQ(pointer->pointee_flags, 0u);
+        EXPECT_EQ(pointer->base_type_id, kPointerTypeId);
+        EXPECT_EQ(pointer->base_result_id, kArrayResultId);
+        EXPECT_EQ(pointer->storage_class, spv::StorageClassGeneric);
+        EXPECT_TRUE(pointer->idx_path.empty());
+    }
+}
+
+TEST_F(OpConstantNullDeclarationTests, CrashPhysicalStorageBufferPointers)
+{
+    RegisterType(kPointerTypeId,
+                 ::SPIRVSimulator::Type::Pointer(spv::StorageClassPhysicalStorageBuffer, CommonTypes::u64));
+
+    std::vector<uint32_t> instruction_words = { static_cast<uint32_t>(spv::Op::OpConstantNull), kPointerTypeId, kPhysicalResultId };
+
+    ::SPIRVSimulator::Instruction instr = { .opcode     = spv::Op::OpConstantNull,
+                                            .word_count = 3,
+                                            .words      = instruction_words };
+#ifndef NDEBUG
+    EXPECT_DEATH({ this->ExecuteInstruction(instr); },
+                 kPhysicalNullError);
+#else
+    try
+    {
+        this->ExecuteInstruction(instr);
+        FAIL() << "Expected OpConstantNull to reject PhysicalStorageBuffer pointers";
+    }
+    catch (const std::runtime_error& e)
+    {
+        EXPECT_THAT(e.what(), HasSubstr(kPhysicalNullError));
+    }
+#endif
+}
