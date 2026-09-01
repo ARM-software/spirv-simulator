@@ -1264,6 +1264,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_BitCount)
         case spv::Op::OpKill:
             R(Op_Kill)
+        case spv::Op::OpTerminateInvocation:
+            R(Op_TerminateInvocation)
         case spv::Op::OpUnreachable:
             R(Op_Unreachable)
         case spv::Op::OpUndef:
@@ -15662,6 +15664,25 @@ void SPIRVSimulator::Op_Kill(const Instruction& instruction)
     if (verbose_)
     {
         std::cout << execIndent << "Thread killed by OpKill, ceasing all further processing" << std::endl;
+    }
+
+    call_stack_.clear();
+}
+
+void SPIRVSimulator::Op_TerminateInvocation(const Instruction& instruction)
+{
+    /*
+    OpTerminateInvocation
+
+    Terminate the current fragment shader invocation. Only instructions executed before this instruction have
+    observable side effects.
+    */
+    assert(instruction.opcode == spv::Op::OpTerminateInvocation);
+
+    if (verbose_)
+    {
+        std::cout << execIndent << "Thread terminated by OpTerminateInvocation, ceasing all further processing"
+                  << std::endl;
     }
 
     call_stack_.clear();

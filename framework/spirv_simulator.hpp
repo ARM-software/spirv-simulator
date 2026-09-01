@@ -1990,6 +1990,7 @@ class SPIRVSimulator
     void Op_Any(const Instruction&);
     void Op_BitCount(const Instruction&);
     void Op_Kill(const Instruction&);
+    void Op_TerminateInvocation(const Instruction&);
     void Op_Unreachable(const Instruction&);
     void Op_Undef(const Instruction&);
     void Op_VectorTimesMatrix(const Instruction&);
