@@ -2019,6 +2019,7 @@ class SPIRVSimulator
     void Op_ConvertFToU(const Instruction&);
     void Op_FRem(const Instruction&);
     void Op_FMod(const Instruction&);
+    void Op_AtomicAnd(const Instruction&);
     void Op_AtomicOr(const Instruction&);
     void Op_AtomicXor(const Instruction&);
     void Op_AtomicUMax(const Instruction&);

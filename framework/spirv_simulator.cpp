@@ -1322,6 +1322,8 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
             R(Op_FRem)
         case spv::Op::OpFMod:
             R(Op_FMod)
+        case spv::Op::OpAtomicAnd:
+            R(Op_AtomicAnd)
         case spv::Op::OpAtomicOr:
             R(Op_AtomicOr)
         case spv::Op::OpAtomicXor:
@@ -17972,6 +17974,61 @@ void SPIRVSimulator::Op_FMod(const Instruction& instruction)
 
     TransferFlags(result_id, operand_1_id);
     TransferFlags(result_id, operand_2_id);
+}
+
+void SPIRVSimulator::Op_AtomicAnd(const Instruction& instruction)
+{
+    /*
+    OpAtomicAnd
+
+    Atomically write the bitwise AND of the original pointee value and Value, returning the original value.
+    */
+    assert(instruction.opcode == spv::Op::OpAtomicAnd);
+
+    uint32_t type_id    = instruction.words[1];
+    uint32_t result_id  = instruction.words[2];
+    uint32_t pointer_id = instruction.words[3];
+    uint32_t scope_id   = instruction.words[4];
+    uint32_t sem_id     = instruction.words[5];
+    uint32_t value_id   = instruction.words[6];
+
+    const Type&  type        = GetTypeByTypeId(type_id);
+    const Value& pointer_val = GetValue(pointer_id);
+    const Value& value       = GetValue(value_id);
+
+    assertmc(std::holds_alternative<PointerV>(pointer_val),
+            "SPIRV simulator: Pointer operand is not a pointer in Op_AtomicAnd");
+    assertmc(type.kind == Type::Kind::Int, "SPIRV simulator: Result type is not int in Op_AtomicAnd");
+
+    const PointerV& pointer = std::get<PointerV>(pointer_val);
+    const std::optional<Value> pointee_value = ReadPointer(pointer);
+    if (!pointee_value)
+    {
+        return;
+    }
+    const Value& pointee_val = *pointee_value;
+
+    assertmc(std::holds_alternative<uint64_t>(pointee_val) || std::holds_alternative<int64_t>(pointee_val),
+            "SPIRV simulator: Operand type is not int in Op_AtomicAnd");
+
+    Value result;
+    if (std::holds_alternative<uint64_t>(pointee_val))
+    {
+        result = (uint64_t)(std::get<uint64_t>(pointee_val) & std::get<uint64_t>(value));
+    }
+    else
+    {
+        result = (int64_t)(std::get<int64_t>(pointee_val) & std::get<int64_t>(value));
+    }
+
+    if (!WritePointer(pointer, result))
+    {
+        return;
+    }
+
+    SetValue(result_id, pointee_val);
+    TransferFlagsFromPointee(result_id, pointer);
+    TransferFlagsToPointee(pointer_id, value_id);
 }
 
 void SPIRVSimulator::Op_AtomicOr(const Instruction& instruction)

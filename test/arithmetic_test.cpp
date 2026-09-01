@@ -291,6 +291,34 @@ class AtomicArithmeticTests : public SPIRVSimulatorMockBase, public Test
     MOCK_METHOD(void, TransferFlagsToPointee, (uint32_t, uint32_t), (override));
 };
 
+TEST_F(AtomicArithmeticTests, AtomicAndReturnsOriginalAndStoresBitwiseResult)
+{
+    constexpr uint32_t result_id  = 100;
+    constexpr uint32_t pointer_id = 101;
+    constexpr uint32_t value_id   = 102;
+
+    ::SPIRVSimulator::PointerV pointer{};
+    ::SPIRVSimulator::Value    pointer_value = pointer;
+    ::SPIRVSimulator::Value    value         = uint64_t(0x0f0f);
+    ::SPIRVSimulator::Value    pointee_value = uint64_t(0xff00);
+    ::SPIRVSimulator::Value    stored_value  = uint64_t(0x0f00);
+
+    EXPECT_CALL(*this, GetValue(pointer_id)).WillRepeatedly(ReturnRef(pointer_value));
+    EXPECT_CALL(*this, GetValue(value_id)).WillRepeatedly(ReturnRef(value));
+    EXPECT_CALL(*this, ReadPointer(pointer)).WillOnce(Return(pointee_value));
+    EXPECT_CALL(*this, SetValue(result_id, pointee_value, true));
+    EXPECT_CALL(*this, TransferFlagsFromPointee(result_id, pointer));
+    EXPECT_CALL(*this, WritePointer(pointer, stored_value)).WillOnce(Return(true));
+    EXPECT_CALL(*this, TransferFlagsToPointee(pointer_id, value_id));
+
+    std::vector<uint32_t> words = { 0, CommonTypes::u32, result_id, pointer_id, 0, 0, value_id };
+    ::SPIRVSimulator::Instruction instruction{
+        .opcode = spv::Op::OpAtomicAnd, .word_count = static_cast<uint16_t>(words.size()), .words = words
+    };
+
+    EXPECT_TRUE(this->ExecuteInstruction(instruction));
+}
+
 TEST_F(AtomicArithmeticTests, AtomicSMaxInterpretsUnsignedTypeAsSigned)
 {
     constexpr uint32_t result_id  = 100;
