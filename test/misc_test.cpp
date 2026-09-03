@@ -393,6 +393,36 @@ TEST_F(GLSLExtInstructionTests, FindSMsbInterpretsUnsignedOperandAsSigned)
     EXPECT_EQ(std::get<int64_t>(result->elems[2]), 3);
 }
 
+TEST_F(GLSLExtInstructionTests, FindILsbHandlesZeroAndSignedOperands)
+{
+    constexpr uint32_t result_type_id = 350;
+    constexpr uint32_t result_id      = 351;
+    constexpr uint32_t operand_id     = 352;
+
+    const ::SPIRVSimulator::Type result_type  = ::SPIRVSimulator::Type::Vector(CommonTypes::i32, 3);
+    const ::SPIRVSimulator::Type operand_type = ::SPIRVSimulator::Type::Vector(CommonTypes::i32, 3);
+    ::SPIRVSimulator::Value operand = std::make_shared<::SPIRVSimulator::VectorV>(
+        std::initializer_list<int64_t>{ 0, 12, -8 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(operand_id)).WillOnce(ReturnRef(operand_type));
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::i32)).Times(2).WillRepeatedly(ReturnRef(types_.at(CommonTypes::i32)));
+    EXPECT_CALL(*this, GetValue(operand_id)).WillOnce(ReturnRef(operand));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_id)));
+
+    const std::vector<uint32_t> operands{ operand_id };
+    ExecuteGLSLExtInstruction(result_type_id, result_id, 73, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<int64_t>(result->elems[0]), -1);
+    EXPECT_EQ(std::get<int64_t>(result->elems[1]), 2);
+    EXPECT_EQ(std::get<int64_t>(result->elems[2]), 3);
+}
+
 TEST_F(GLSLExtInstructionTests, FindUMsbInterpretsSignedOperandAsUnsigned)
 {
     constexpr uint32_t result_type_id = 400;

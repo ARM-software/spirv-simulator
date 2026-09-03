@@ -7786,6 +7786,53 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
         TransferFlags(result_id, operand_words[1]);
         break;
     }
+    case 73:
+        { // FindILsb
+            const Value& operand = GetValue(operand_words[0]);
+            const Type& operand_type = GetTypeByResultId(operand_words[0]);
+
+            if (type.kind == Type::Kind::Vector)
+            {
+                assertmc(std::holds_alternative<std::shared_ptr<VectorV>>(operand),
+                        "SPIRV simulator: Operand not of vector type in GLSLExtHandler::FindILsb");
+                assertmc(operand_type.kind == Type::Kind::Vector,
+                        "SPIRV simulator: FindILsb operand type must be a vector");
+                const Type& operand_elem_type = GetTypeByTypeId(operand_type.vector.elem_type_id);
+                const Type& result_elem_type = GetTypeByTypeId(type.vector.elem_type_id);
+                assertmc(operand_elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindILsb input elements must be integers");
+                assertmc(result_elem_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindILsb result elements must be integers");
+
+                Value result = std::make_shared<VectorV>();
+                auto result_vec = std::get<std::shared_ptr<VectorV>>(result);
+                auto operand_vec = std::get<std::shared_ptr<VectorV>>(operand);
+                for (uint32_t i = 0; i < type.vector.elem_count; ++i)
+                {
+                    const uint64_t bits = MaskToWidth(GetIntegerBits(operand_vec->elems[i]), operand_elem_type.scalar.width);
+                    const int64_t index = bits == 0 ? int64_t{-1} : static_cast<int64_t>(std::countr_zero(bits));
+                    if (result_elem_type.scalar.is_signed) result_vec->elems.push_back(index);
+                    else result_vec->elems.push_back(MaskToWidth(bit_cast<uint64_t>(index), result_elem_type.scalar.width));
+                }
+                SetValue(result_id, result_vec);
+            }
+            else if (type.kind == Type::Kind::Int)
+            {
+                assertmc(operand_type.kind == Type::Kind::Int,
+                        "SPIRV simulator: FindILsb operand must be an integer");
+                const uint64_t bits = MaskToWidth(GetIntegerBits(operand), operand_type.scalar.width);
+                const int64_t index = bits == 0 ? int64_t{-1} : static_cast<int64_t>(std::countr_zero(bits));
+                if (type.scalar.is_signed) SetValue(result_id, index);
+                else SetValue(result_id, MaskToWidth(bit_cast<uint64_t>(index), type.scalar.width));
+            }
+            else
+            {
+                assertxc("SPIRV simulator: Invalid type encountered in GLSLExtHandler for FindILsb");
+            }
+
+            TransferFlags(result_id, operand_words[0]);
+            break;
+        }
     case 74:
         { // FindSMsb
             const Value& operand = GetValue(operand_words[0]);
