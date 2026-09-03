@@ -2443,7 +2443,11 @@ bool SPIRVSimulator::IsMemberOfStruct(uint32_t member_id, uint32_t& struct_id, u
         uint32_t literal = 0;
         for (const auto& member : it.second)
         {
-            if (member == member_id)
+            // A matrix type can be reused by both memory-layout and logical structures. Only a
+            // structure member with matrix layout decorations determines the representation of
+            // the matrix in external memory.
+            if (member == member_id &&
+                HasDecorator(it.first, literal, spv::Decoration::DecorationMatrixStride))
             {
                 struct_id      = it.first;
                 member_literal = literal;
@@ -2542,7 +2546,7 @@ void SPIRVSimulator::ReadWords(const std::byte* external_pointer, uint32_t type_
         }
         else
         {
-            component_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            component_stride = GetMatrixColumnStride(type_id);
             row_major        = HasDecorator(type_id, spv::Decoration::DecorationRowMajor);
         }
 
@@ -2673,7 +2677,7 @@ void SPIRVSimulator::WriteValue(std::byte* external_pointer, uint32_t type_id, c
         }
         else
         {
-            component_stride = GetDecoratorLiteral(type_id, spv::Decoration::DecorationMatrixStride);
+            component_stride = GetMatrixColumnStride(type_id);
             row_major        = HasDecorator(type_id, spv::Decoration::DecorationRowMajor);
         }
 

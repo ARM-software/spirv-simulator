@@ -229,6 +229,18 @@ std::vector<TestParameters> test_cases{
         .set_operand_at(1,
                         static_cast<uint64_t>(spv::StorageClassPushConstant),
                         CommonTypes::storage_class) // Storage class is always a raw uint
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpVariable)
+        .add_push_constants(std::vector{ 1.0, 4.0, 2.0, 5.0, 3.0, 6.0 })
+        .set_operand_at(
+            0,
+            std::make_shared<::SPIRVSimulator::MatrixV>(
+                std::initializer_list<double>{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 }, 3),
+            ::SPIRVSimulator::Type::Pointer(spv::StorageClassPushConstant, CommonTypes::mat2x3))
+        .set_operand_at(1,
+                        static_cast<uint64_t>(spv::StorageClassPushConstant),
+                        CommonTypes::storage_class) // Storage class is always a raw uint
         .build()
 };
 
