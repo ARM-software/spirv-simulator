@@ -25,6 +25,8 @@
 #include <queue>
 #include <sstream>
 #include <cassert>
+#include <tuple>
+#include <utility>
 
 #ifdef DEBUG_BUILD
 #define MAX_LOOP_COUNT 100
@@ -287,6 +289,13 @@ struct SimulationResults
 
     // Set to true if any arbitrary data was written to external memory
     bool had_arbitrary_write = false;
+
+    // Diagnostics for coverage-oriented arbitrary control-flow exploration.
+    // These make it easy to confirm that a pathological shader is being
+    // bounded by CFG coverage rather than by MAX_LOOP_COUNT.
+    uint64_t speculative_fork_count = 0;
+    uint64_t speculative_edges_covered = 0;
+    uint64_t forced_arbitrary_loop_exit_count = 0;
 };
 
 struct InternalPersistentData
@@ -1291,6 +1300,7 @@ inline spv_result_t OnParsedInst(void* user, const spv_parsed_instruction_t* ins
 struct BlockInfo {
     uint32_t label = 0;                   // %label (from OpLabel result-id)
     std::vector<uint32_t> succs;          // CFG successors (label ids)
+    uint32_t selection_merge = 0;         // %merge if this is a selection header
     uint32_t loop_merge = 0;              // %merge if this is a loop header (0 otherwise)
     uint32_t loop_continue = 0;           // %continue if this is a loop header
     std::vector<uint32_t> instruction_indices;
@@ -1476,8 +1486,8 @@ class SPIRVSimulator
     bool verbose_;
     uint64_t flags_;
 
-    // Counts how many times each branch instruction was taken, used to abort infinite loops
-    UnorderedMap<uint32_t, uint64_t> branch_counters_;
+    // Counts iterations per dynamic loop activation, used to abort infinite loops.
+    UnorderedMap<uint64_t, uint64_t> branch_counters_;
 
     // These hold information about any pointers that reference physical storage
     // buffers
@@ -1497,9 +1507,61 @@ class SPIRVSimulator
         std::vector<uint32_t> parameter_ids_;
         std::vector<uint32_t> parameter_type_ids_;
     };
-    struct ActiveLoop {
-        uint32_t header;
-        uint32_t merge;
+    struct ActiveLoop
+    {
+        uint32_t header = 0;
+        uint32_t merge = 0;
+        uint64_t activation_id = 0;
+    };
+
+    struct LoopExitTarget
+    {
+        uint32_t header = 0;
+        uint32_t target = 0;
+        uint64_t activation_id = 0;
+    };
+
+    // Arbitrary control flow is explored for coverage rather than by enumerating
+    // every possible path combination. All execution forks share this object, so
+    // a branch edge that was already covered by one path is not recursively
+    // forked again from every other path.
+    struct SpeculationEdgeKey
+    {
+        size_t instruction_index = 0;
+        uint32_t target_label = 0;
+        uint64_t function_invocation_id = 0;
+
+        // Each tuple is (loop header, dynamic activation ID, iteration).
+        // The iteration is canonicalized to zero for an arbitrary-controlled
+        // loop, while the activation ID still keeps separate invocations apart.
+        std::vector<std::tuple<uint32_t, uint64_t, uint64_t>> loop_iterations;
+
+        bool operator<(const SpeculationEdgeKey& other) const
+        {
+            if (instruction_index != other.instruction_index)
+            {
+                return instruction_index < other.instruction_index;
+            }
+            if (target_label != other.target_label)
+            {
+                return target_label < other.target_label;
+            }
+            if (function_invocation_id != other.function_invocation_id)
+            {
+                return function_invocation_id < other.function_invocation_id;
+            }
+            return loop_iterations < other.loop_iterations;
+        }
+    };
+
+    struct SpeculationContext
+    {
+        std::set<SpeculationEdgeKey> covered_edges;
+        std::set<uint64_t> collapsed_loop_activations;
+        uint64_t next_loop_activation_id = 1;
+        uint64_t next_function_invocation_id = 1;
+        uint64_t fork_count = 0;
+        uint64_t forced_loop_exit_count = 0;
     };
 
     uint32_t                                   prev_defined_func_id_;
@@ -1515,9 +1577,20 @@ class SPIRVSimulator
     uint32_t current_merge_block_id_    = 0;
     uint32_t current_continue_block_id_ = 0;
 
-    // Execution fork data, used to prevent infinte loops in SPIRV loop constructs and double forks
-    std::set<uint32_t>* visisted_fork_branches_ = nullptr;
-    std::set<uint32_t> forked_blocks_;
+    // Execution-fork control. A fork re-executes the control-flow instruction
+    // that created it, but takes forced_control_target_label_ without changing
+    // the arbitrary condition value itself. fork_exit_block_id_ is fixed for
+    // the lifetime of the fork, so nested OpSelectionMerge/OpLoopMerge
+    // instructions cannot accidentally terminate an outer fork early.
+    std::shared_ptr<SpeculationContext> speculation_context_;
+    size_t   forced_control_instruction_index_ = kInvalidInstructionIndex;
+    uint32_t forced_control_target_label_       = 0;
+    uint32_t fork_exit_block_id_                = 0;
+
+    // Forks inherit pointer-discovery history needed by the interpreter, but
+    // only entries appended after the fork was created should be emitted into
+    // that fork's SimulationResults.
+    size_t pointer_pair_output_begin_ = 0;
 
     // Heaps & frames
     struct Frame
@@ -1526,6 +1599,13 @@ class SPIRVSimulator
         uint32_t result_id;
         uint32_t func_heap_index;
         uint32_t caller_block_id;
+        uint64_t speculation_invocation_id = 0;
+        bool inherits_collapsed_control_flow = false;
+
+        // Loop state belongs to a function invocation. Keeping the caller's
+        // stack here prevents entry into a callee from looking like an exit
+        // from every loop surrounding the call site.
+        std::vector<ActiveLoop> caller_loop_stack;
     };
 
     std::vector<Frame> call_stack_;
@@ -1642,7 +1722,23 @@ class SPIRVSimulator
     };
     virtual bool ExecuteInstruction(const Instruction&, bool dummy_exec = false);
     virtual void ExecuteInstructions();
-    virtual void CreateExecutionFork(const SPIRVSimulator& source, uint32_t branching_value_id, std::set<uint32_t>* visited_set, SimulationData* fork_input_data = nullptr, SimulationResults* fork_simulation_results = nullptr);
+    virtual void CreateExecutionFork(const SPIRVSimulator& source,
+                                     size_t                control_instruction_index,
+                                     uint32_t              forced_target_label,
+                                     uint32_t              fork_exit_block_id,
+                                     SimulationResults*    fork_simulation_results);
+    virtual void ExecuteSpeculativeFork(size_t control_instruction_index,
+                                        uint32_t target_label,
+                                        uint32_t fork_exit_block_id);
+    virtual void MergeSimulationResults(const SimulationResults& fork_results);
+    virtual bool ConsumeForcedControlTarget(size_t control_instruction_index, uint32_t& target_label);
+    virtual bool IsUnderCollapsedControlFlow() const;
+    virtual uint32_t GetStructuredMergeBlock(uint32_t block_id) const;
+    virtual SpeculationEdgeKey MakeSpeculationEdgeKey(size_t control_instruction_index,
+                                                      uint32_t target_label) const;
+    virtual bool BlockDominatesLoopContinue(const LoopInfo& loop, uint32_t block_id) const;
+    virtual std::optional<LoopExitTarget>
+        GetInnermostLoopExitTarget(const std::vector<uint32_t>& targets) const;
     virtual void PrintExecutionContext() const;
 
     virtual std::string  GetValueString(const Value&) const;
