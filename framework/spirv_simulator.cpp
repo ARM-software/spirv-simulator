@@ -5748,14 +5748,12 @@ std::optional<Value> SPIRVSimulator::ReadPointer(const PointerV& ptr)
                     else
                     {
                         std::cout << "SPIRV simulator: ERROR: Struct index OOB" << std::endl;
-                        #ifdef DEBUG_BUILD
                         if (is_execution_fork)
                         {
-                            std::cout << "SPIRV simulator: Corrupt struct access in execution fork, assuming the problem is due to uninitialized data during a debug run and terminating the fork." << std::endl;
+                            std::cout << "SPIRV simulator: Corrupt struct access in execution fork, terminating the fork." << std::endl;
                             call_stack_.clear();
                             return std::nullopt;
                         }
-                        #endif
                     }
                 }
 
@@ -10079,7 +10077,10 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     // happens to carry the arbitrary flag. This reaches pointer operations
     // guarded by loop-index-dependent conditions without executing thousands
     // of concrete iterations.
-    if (ValueIsArbitrary(condition_id) || IsUnderCollapsedControlFlow())
+    const bool condition_is_arbitrary     = ValueIsArbitrary(condition_id);
+    const bool under_collapsed_control    = IsUnderCollapsedControlFlow();
+    const bool collapsed_control_only     = under_collapsed_control && !condition_is_arbitrary;
+    if (condition_is_arbitrary || under_collapsed_control)
     {
         if (!speculation_context_)
         {
@@ -10135,17 +10136,20 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
         // another trip around the loop cannot discover a new control-flow edge.
         // Prefer the exit rather than running until MAX_LOOP_COUNT. This is the
         // key bound for arbitrary nested loops.
-        if (!covered_new_edge && loop_exit)
+        if (loop_exit)
         {
             const uint32_t loop_exit_target = loop_exit->target;
-            if (target_label != loop_exit_target)
+            const bool should_force_exit_now =
+                target_label != loop_exit_target &&
+                ((!covered_new_edge) || (collapsed_control_only && !fork_targets.empty()));
+            if (should_force_exit_now)
             {
                 target_label = loop_exit_target;
                 speculation_context_->forced_loop_exit_count += 1;
 
                 if (verbose_)
                 {
-                    std::cout << "SPIRV simulator: Forced exit from already-covered arbitrary loop at block: "
+                    std::cout << "SPIRV simulator: Forced exit from collapsed loop at block: "
                               << current_block_id_ << std::endl;
                 }
             }
@@ -15267,7 +15271,10 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
         }
     }
 
-    if (ValueIsArbitrary(selector_id) || IsUnderCollapsedControlFlow())
+    const bool selector_is_arbitrary   = ValueIsArbitrary(selector_id);
+    const bool under_collapsed_control = IsUnderCollapsedControlFlow();
+    const bool collapsed_control_only  = under_collapsed_control && !selector_is_arbitrary;
+    if (selector_is_arbitrary || under_collapsed_control)
     {
         if (!speculation_context_)
         {
@@ -15303,17 +15310,20 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
             ExecuteSpeculativeFork(control_instruction_index, fork_target, merge_block_id);
         }
 
-        if (!covered_new_edge && loop_exit)
+        if (loop_exit)
         {
             const uint32_t loop_exit_target = loop_exit->target;
-            if (target_label != loop_exit_target)
+            const bool should_force_exit_now =
+                target_label != loop_exit_target &&
+                ((!covered_new_edge) || (collapsed_control_only && !fork_targets.empty()));
+            if (should_force_exit_now)
             {
                 target_label = loop_exit_target;
                 speculation_context_->forced_loop_exit_count += 1;
 
                 if (verbose_)
                 {
-                    std::cout << "SPIRV simulator: Forced exit from already-covered arbitrary switch loop at block: "
+                    std::cout << "SPIRV simulator: Forced exit from collapsed switch loop at block: "
                               << current_block_id_ << std::endl;
                 }
             }
