@@ -1,0 +1,12 @@
+#version 450
+
+layout(local_size_x = 1) in;
+
+shared uint workgroup_value;
+uint private_value;
+
+void main()
+{
+    workgroup_value = 1;
+    private_value = 2;
+}

@@ -296,6 +296,10 @@ struct SimulationResults
     uint64_t speculative_fork_count = 0;
     uint64_t speculative_edges_covered = 0;
     uint64_t forced_arbitrary_loop_exit_count = 0;
+
+    // Set to true if this shader wrote to an external target that can matter
+    // for pointer/descriptor metadata analysis.
+    bool had_relevant_side_effect = false;
 };
 
 struct InternalPersistentData
@@ -1752,6 +1756,7 @@ class SPIRVSimulator
     virtual Value        MakeNullValue(uint32_t result_id, uint32_t type_id);
     virtual uint64_t     RemapHostToPhysicalPointer(uint64_t host_pointer) const;
     virtual const std::byte* RemapPhysicalToHostPointer(uint64_t physical_pointer) const;
+    void                 MarkRelevantWrite(const PointerV& ptr);
     [[nodiscard]] virtual bool                 WritePointer(const PointerV& ptr, const Value& value);
     [[nodiscard]] virtual std::optional<Value> ReadPointer(const PointerV& ptr);
     virtual const Value& GetValue(uint32_t result_id) const;
