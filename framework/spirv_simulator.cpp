@@ -9500,7 +9500,8 @@ void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
     auto stored_it = values_stored_.find(object_id);
     if (stored_it != values_stored_.end())
     {
-        values_stored_[result_id] = stored_it->second;
+        StoredValueRecord stored_value = stored_it->second;
+        values_stored_[result_id] = std::move(stored_value);
         changed_trace_state = true;
     }
     else if (values_stored_.erase(result_id) != 0)
@@ -9541,7 +9542,8 @@ void SPIRVSimulator::Op_CopyLogical(const Instruction& instruction)
     auto stored_it = values_stored_.find(object_id);
     if (stored_it != values_stored_.end())
     {
-        values_stored_[result_id] = stored_it->second;
+        StoredValueRecord stored_value = stored_it->second;
+        values_stored_[result_id] = std::move(stored_value);
         changed_trace_state = true;
     }
     else if (values_stored_.erase(result_id) != 0)
@@ -9849,7 +9851,8 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
 
     if (values_stored_.find(base_id) != values_stored_.end())
     {
-        values_stored_[result_id] = values_stored_[base_id];
+        StoredValueRecord stored_value = values_stored_[base_id];
+        values_stored_[result_id] = std::move(stored_value);
         InvalidateDataSourceTraceCache();
     }
 
@@ -10031,7 +10034,8 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
         value_meta_[param_id] = value_meta_[arg_id];
         if (values_stored_.find(arg_id) != values_stored_.end())
         {
-            values_stored_[param_id] = values_stored_[arg_id];
+            StoredValueRecord stored_value = values_stored_[arg_id];
+            values_stored_[param_id] = std::move(stored_value);
             changed_trace_state = true;
         }
         else if (values_stored_.erase(param_id) != 0)
@@ -10287,7 +10291,8 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     auto it = values_stored_.find(value_id);
     if (it != values_stored_.end())
     {
-        values_stored_[result_id] = it->second;
+        StoredValueRecord stored_value = it->second;
+        values_stored_[result_id] = std::move(stored_value);
         InvalidateDataSourceTraceCache();
     }
     else if (values_stored_.erase(result_id) != 0)
@@ -11777,7 +11782,8 @@ void SPIRVSimulator::Op_Phi(const Instruction& instruction)
             auto stored_it = values_stored_.find(variable_id);
             if (stored_it != values_stored_.end())
             {
-                values_stored_[result_id] = stored_it->second;
+                StoredValueRecord stored_value = stored_it->second;
+                values_stored_[result_id] = std::move(stored_value);
                 changed_trace_state = true;
             }
             else if (values_stored_.erase(result_id) != 0)
@@ -14551,7 +14557,8 @@ void SPIRVSimulator::Op_Select(const Instruction& instruction)
         auto stored_it = values_stored_.find(selected_object_id);
         if (stored_it != values_stored_.end())
         {
-            values_stored_[result_id] = stored_it->second;
+            StoredValueRecord stored_value = stored_it->second;
+            values_stored_[result_id] = std::move(stored_value);
             changed_trace_state = true;
         }
         else if (values_stored_.erase(result_id) != 0)
