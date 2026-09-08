@@ -4114,7 +4114,9 @@ bool SPIRVSimulator::TryProjectAggregateSubobjectMetadata(uint32_t result_id,
             continue;
         }
 
-        std::vector<uint32_t> relative_path(entry.path.begin() + selected_path.size(), entry.path.end());
+        const size_t relative_path_size = entry.path.size() - selected_path.size();
+        std::vector<uint32_t> relative_path(relative_path_size);
+        std::copy_n(entry.path.end() - relative_path_size, relative_path_size, relative_path.begin());
 
         if (relative_path.empty())
         {

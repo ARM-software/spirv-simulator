@@ -798,10 +798,11 @@ TEST_P(ArithmeticsCrashTests, ParametrizedCrashTest)
     try
     {
         this->ExecuteInstruction(inst);
+        FAIL() << "Expected std::runtime_error";
     }
-    catch (std::runtime_error e)
+    catch (const std::runtime_error& e)
     {
-        EXPECT_THAT(e.what(), HasSubstr(parameters.death_message));
+        EXPECT_THAT(e.what(), ContainsRegex(parameters.death_message));
     }
 #endif
 }
