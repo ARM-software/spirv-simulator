@@ -83,8 +83,9 @@ TEST_F(TensorCrashTests, TypeTensorRejectsTooFewOperands)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTypeTensorARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV Simulator: OpTypeTensorARM requires at least 3 arguments");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorReadRejectsNonScalarResult)
@@ -98,7 +99,9 @@ TEST_F(TensorCrashTests, TensorReadRejectsNonScalarResult)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead result must be scalar or array of scalars");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorReadRejectsUnrankedTensor)
@@ -111,8 +114,9 @@ TEST_F(TensorCrashTests, TensorReadRejectsUnrankedTensor)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorReadARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead tensor must be ranked");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorReadRejectsCoordinateCountMismatch)
@@ -125,8 +129,9 @@ TEST_F(TensorCrashTests, TensorReadRejectsCoordinateCountMismatch)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorReadARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead number of coords must be equal to rank of tensor");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorReadRejectsNonIntegerCoordinates)
@@ -139,8 +144,9 @@ TEST_F(TensorCrashTests, TensorReadRejectsNonIntegerCoordinates)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorReadARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead coords must be integer type scalars");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorReadRejectsMakeElementAvailableOperand)
@@ -151,8 +157,9 @@ TEST_F(TensorCrashTests, TensorReadRejectsMakeElementAvailableOperand)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorReadARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: MakeElementAvailableARM illegal for TensorRead");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorWriteRejectsUnrankedTensor)
@@ -165,8 +172,9 @@ TEST_F(TensorCrashTests, TensorWriteRejectsUnrankedTensor)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorWriteARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite tensor must be ranked");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorWriteRejectsCoordinateCountMismatch)
@@ -179,9 +187,10 @@ TEST_F(TensorCrashTests, TensorWriteRejectsCoordinateCountMismatch)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorWriteARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);},
                            "SPIRV simulator: TensorWrite number of coords must be equal to rank of tensor");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorWriteRejectsNonIntegerCoordinates)
@@ -194,8 +203,9 @@ TEST_F(TensorCrashTests, TensorWriteRejectsNonIntegerCoordinates)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorWriteARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite coords must be integer type scalars");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorWriteRejectsNonScalarObject)
@@ -208,8 +218,9 @@ TEST_F(TensorCrashTests, TensorWriteRejectsNonScalarObject)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorWriteARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite result must be scalar or array of scalars");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorWriteRejectsScalarObjectWithWrongElementType)
@@ -222,8 +233,9 @@ TEST_F(TensorCrashTests, TensorWriteRejectsScalarObjectWithWrongElementType)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorWriteARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite object must be type contained in tensor");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorWriteRejectsArrayObjectWithWrongElementType)
@@ -236,8 +248,9 @@ TEST_F(TensorCrashTests, TensorWriteRejectsArrayObjectWithWrongElementType)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorWriteARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite object must be type contained in tensor");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerResultType)
@@ -250,8 +263,9 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerResultType)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorQuerySizeARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize result type must be integer scalar");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorQuerySizeRejectsUnrankedTensor)
@@ -264,8 +278,9 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsUnrankedTensor)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorQuerySizeARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize tensor must be ranked");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerDimension)
@@ -278,8 +293,9 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerDimension)
     const auto instruction = ::SPIRVSimulator::Instruction{ .opcode     = spv::Op::OpTensorQuerySizeARM,
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
-
+#ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize dimension must be given as integer scalar");
+#endif
 }
 
 TEST_F(TensorCrashTests, TensorQuerySizeProducesArbitraryResultOfDeclaredType)

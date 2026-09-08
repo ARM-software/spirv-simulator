@@ -475,6 +475,7 @@ SPIRVSimulator::SPIRVSimulator(const std::vector<uint32_t>& program_words,
     simulation_results_ = simulator_results;
     persistent_data_ = persistent_data;
     memory_flag_tracker_ = memory_flag_tracker;
+    speculation_context_ = std::make_shared<SpeculationContext>();
 
     shader_address = bit_cast<void*>(program_words.data());
 
@@ -546,6 +547,13 @@ void SPIRVSimulator::BuildCFGFromWords()
                 auto& bi = cfg_.blocks[current_block_id_];
                 bi.loop_merge    = program_words_[i + 1];
                 bi.loop_continue = program_words_[i + 2];
+                break;
+            }
+
+            case spv::Op::OpSelectionMerge: {
+                // operands: merge block id (words[i+1]), selection control
+                auto& bi = cfg_.blocks[current_block_id_];
+                bi.selection_merge = program_words_[i + 1];
                 break;
             }
 
@@ -846,8 +854,24 @@ bool SPIRVSimulator::Run()
     FunctionInfo& function_info = funcs_[entry_point_function_id];
 
     // We can set the return value to whatever, ignored if the call stack is empty on return
-    call_stack_.push_back({ function_info.first_inst_index, 0, current_heap_index_, 0 });
+    call_stack_.push_back({
+        function_info.first_inst_index,
+        0,
+        current_heap_index_,
+        0,
+        0,
+        false,
+        {}
+    });
     ExecuteInstructions();
+
+    if (speculation_context_)
+    {
+        simulation_results_->speculative_fork_count = speculation_context_->fork_count;
+        simulation_results_->speculative_edges_covered = speculation_context_->covered_edges.size();
+        simulation_results_->forced_arbitrary_loop_exit_count =
+            speculation_context_->forced_loop_exit_count;
+    }
 
     if ((!has_buffer_writes_) && (simulation_results_->physical_address_data.size() == 0) && (simulation_data_->shader_id != UINT64_MAX) && persistent_data_)
     {
@@ -880,8 +904,12 @@ void SPIRVSimulator::ExecuteInstructions()
         std::cout << "SPIRV simulator: Execution complete!\n" << std::endl;
     }
 
-    for (const std::pair<PointerV, PointerV>& pointer_pair : pointers_to_physical_address_pointers_)
+    for (size_t pointer_pair_index = pointer_pair_output_begin_;
+         pointer_pair_index < pointers_to_physical_address_pointers_.size();
+         ++pointer_pair_index)
     {
+        const std::pair<PointerV, PointerV>& pointer_pair =
+            pointers_to_physical_address_pointers_[pointer_pair_index];
         const PointerV& phys_ppointer = pointer_pair.first;
         const PointerV& phys_pointer  = pointer_pair.second;
         const auto      resolved_src  = ResolvePointerV(phys_ppointer);
@@ -967,6 +995,8 @@ void SPIRVSimulator::ExecuteInstructions()
         output_result.bit_components.push_back(source_data);
         simulation_results_->physical_address_data.push_back(output_result);
     }
+
+    pointer_pair_output_begin_ = pointers_to_physical_address_pointers_.size();
 }
 
 bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dummy_exec)
@@ -1456,32 +1486,25 @@ bool SPIRVSimulator::ExecuteInstruction(const Instruction& instruction, bool dum
 }
 
 void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
-                                         uint32_t              branching_value_id,
-                                         std::set<uint32_t>*   visited_set,
-                                         SimulationData*       fork_input_data,
+                                         size_t                control_instruction_index,
+                                         uint32_t              forced_target_label,
+                                         uint32_t              fork_exit_block_id,
                                          SimulationResults*    fork_simulation_results)
 {
-    // Do a shallow copy
+    assert(fork_simulation_results != nullptr);
+
+    // Copy the interpreter state. Immutable module data is still copied here,
+    // but the number of copies is bounded by covered CFG edges in each concrete
+    // execution context. Iterations of arbitrary-controlled loops are
+    // canonicalized to a single coverage context.
     *this = source;
-    if (fork_input_data != nullptr)
-    {
-        // Forks should inherit the current shader input snapshot so pointer remapping and
-        // descriptor/push-constant lookups behave the same as in the source execution.
-        if (source.simulation_data_ != nullptr)
-        {
-            *fork_input_data = *source.simulation_data_;
-        }
-        simulation_data_ = fork_input_data;
-    }
-    else
-    {
-        simulation_data_ = source.simulation_data_;
-    }
+    // SimulationData is read-only during execution. Reusing it avoids copying
+    // all binding, runtime-array and physical-address maps for every fork.
+    simulation_data_    = source.simulation_data_;
     simulation_results_ = fork_simulation_results;
 
-    visisted_fork_branches_ = visited_set;
-
-    // Then duplicate the values
+    // Duplicate Value payloads which use shared_ptr internally. Without this,
+    // aggregate writes in a fork would mutate the source execution state.
     for (auto& value : values_)
     {
         value = CopyValue(value);
@@ -1500,33 +1523,302 @@ void SPIRVSimulator::CreateExecutionFork(const SPIRVSimulator& source,
         }
     }
 
-    is_execution_fork = true;
-    current_fork_index_ += 1;
+    is_execution_fork                    = true;
+    current_fork_index_                  = source.current_fork_index_ + 1;
+    forced_control_instruction_index_    = control_instruction_index;
+    forced_control_target_label_         = forced_target_label;
+    fork_exit_block_id_                  = fork_exit_block_id;
+    pointer_pair_output_begin_           = source.pointers_to_physical_address_pointers_.size();
 
-    auto& stack_frame = call_stack_.back();
-    stack_frame.pc -= 1;
-
-    // For now, just invert the value, this allows us to continue execution in release builds for some more testing
-    // TODO: If it ever becomes necessary, we should backtrack from the candidate branching boolean and change the
-    // operands in the
-    //       instructions resulting in its current value such that the result of its source instruction
-    //       becomes the inverse of its current value
-
-    const Value& branch_val  = GetValue(branching_value_id);
-    uint64_t     branch_bool = std::get<uint64_t>(branch_val);
-
-    if (branch_bool)
-    {
-        SetValue(branching_value_id, (uint64_t)(0), false);
-    }
-    else
-    {
-        SetValue(branching_value_id, (uint64_t)(1), false);
-    }
-
-    ClearIsArbitrary(branching_value_id);
+    assert(!call_stack_.empty());
+    call_stack_.back().pc = control_instruction_index;
 
     ExecuteInstructions();
+}
+
+void SPIRVSimulator::ExecuteSpeculativeFork(size_t   control_instruction_index,
+                                            uint32_t target_label,
+                                            uint32_t fork_exit_block_id)
+{
+    if (!speculation_context_)
+    {
+        speculation_context_ = std::make_shared<SpeculationContext>();
+    }
+
+    speculation_context_->fork_count += 1;
+
+    if (verbose_)
+    {
+        std::cout << "SPIRV simulator: Executing coverage fork at level: "
+                  << current_fork_index_ << " to block: " << target_label << std::endl;
+    }
+
+    SimulationResults fork_simulation_results;
+    SPIRVSimulator     fork;
+    fork.CreateExecutionFork(*this,
+                             control_instruction_index,
+                             target_label,
+                             fork_exit_block_id,
+                             &fork_simulation_results);
+
+    unsupported_opcodes.insert(fork.unsupported_opcodes.begin(),
+                               fork.unsupported_opcodes.end());
+    unsupported_opextinsts.insert(fork.unsupported_opextinsts.begin(),
+                                  fork.unsupported_opextinsts.end());
+
+    // External memory and the MemoryFlagTracker are deliberately shared with
+    // forks. If the fork performed a store, invalidate load-dependent traces
+    // in the parent before it resumes on the representative path.
+    if (fork.memory_trace_epoch_ != memory_trace_epoch_)
+    {
+        InvalidateDataSourceTraceCache();
+    }
+
+    has_buffer_writes_ |= fork.has_buffer_writes_;
+    MergeSimulationResults(fork_simulation_results);
+
+    if (verbose_ && !fork_simulation_results.physical_address_data.empty())
+    {
+        std::cout << "SPIRV simulator: Coverage fork complete, got: "
+                  << fork_simulation_results.physical_address_data.size()
+                  << " physical-address results at execution level: "
+                  << current_fork_index_ << std::endl;
+    }
+}
+
+void SPIRVSimulator::MergeSimulationResults(const SimulationResults& fork_results)
+{
+    assert(simulation_results_ != nullptr);
+
+    for (const PhysicalAddressData& candidate : fork_results.physical_address_data)
+    {
+        const auto duplicate = std::find_if(
+            simulation_results_->physical_address_data.begin(),
+            simulation_results_->physical_address_data.end(),
+            [&candidate](const PhysicalAddressData& existing) {
+                return existing.raw_pointer_value == candidate.raw_pointer_value &&
+                       existing.range_valid == candidate.range_valid &&
+                       existing.range_start == candidate.range_start &&
+                       existing.range_end == candidate.range_end &&
+                       existing.range_element_size == candidate.range_element_size &&
+                       existing.bit_components == candidate.bit_components;
+            });
+
+        if (duplicate == simulation_results_->physical_address_data.end())
+        {
+            simulation_results_->physical_address_data.push_back(candidate);
+        }
+    }
+
+    for (const auto& [buffer, fork_candidates] : fork_results.output_candidates)
+    {
+        auto& output_candidates = simulation_results_->output_candidates[buffer];
+        for (const PhysicalAddressCandidate& candidate : fork_candidates)
+        {
+            auto existing = std::find_if(
+                output_candidates.begin(),
+                output_candidates.end(),
+                [&candidate](const PhysicalAddressCandidate& item) {
+                    return item.address == candidate.address &&
+                           item.offset == candidate.offset &&
+                           item.payload == candidate.payload;
+                });
+
+            if (existing == output_candidates.end())
+            {
+                output_candidates.push_back(candidate);
+            }
+            else
+            {
+                existing->verified |= candidate.verified;
+            }
+        }
+    }
+
+    simulation_results_->full_dispatch_needed |= fork_results.full_dispatch_needed;
+    simulation_results_->read_side_pointer_coverage_incomplete |=
+        fork_results.read_side_pointer_coverage_incomplete;
+    simulation_results_->aborted_long_loop |= fork_results.aborted_long_loop;
+    simulation_results_->had_arbitrary_write |= fork_results.had_arbitrary_write;
+}
+
+bool SPIRVSimulator::ConsumeForcedControlTarget(size_t control_instruction_index,
+                                                uint32_t& target_label)
+{
+    if (forced_control_instruction_index_ != control_instruction_index)
+    {
+        return false;
+    }
+
+    target_label = forced_control_target_label_;
+    forced_control_instruction_index_ = kInvalidInstructionIndex;
+    forced_control_target_label_      = 0;
+    return true;
+}
+
+bool SPIRVSimulator::IsUnderCollapsedControlFlow() const
+{
+    if (!call_stack_.empty() && call_stack_.back().inherits_collapsed_control_flow)
+    {
+        return true;
+    }
+
+    if (!speculation_context_)
+    {
+        return false;
+    }
+
+    return std::any_of(
+        loop_stack_.begin(),
+        loop_stack_.end(),
+        [this](const ActiveLoop& loop) {
+            return speculation_context_->collapsed_loop_activations.contains(
+                loop.activation_id);
+        });
+}
+
+uint32_t SPIRVSimulator::GetStructuredMergeBlock(uint32_t block_id) const
+{
+    auto block_it = cfg_.blocks.find(block_id);
+    if (block_it == cfg_.blocks.end())
+    {
+        return 0;
+    }
+
+    if (block_it->second.loop_merge != 0)
+    {
+        return block_it->second.loop_merge;
+    }
+
+    return block_it->second.selection_merge;
+}
+
+SPIRVSimulator::SpeculationEdgeKey
+SPIRVSimulator::MakeSpeculationEdgeKey(size_t control_instruction_index,
+                                       uint32_t target_label) const
+{
+    SpeculationEdgeKey key;
+    key.instruction_index = control_instruction_index;
+    key.target_label      = target_label;
+    if (!call_stack_.empty())
+    {
+        key.function_invocation_id = call_stack_.back().speculation_invocation_id;
+    }
+
+    key.loop_iterations.reserve(loop_stack_.size());
+    for (const ActiveLoop& active_loop : loop_stack_)
+    {
+        uint64_t iteration = 0;
+        auto counter_it = branch_counters_.find(active_loop.activation_id);
+        if (counter_it != branch_counters_.end())
+        {
+            iteration = counter_it->second;
+        }
+
+        if (speculation_context_ &&
+            speculation_context_->collapsed_loop_activations.contains(active_loop.activation_id))
+        {
+            iteration = 0;
+        }
+
+        key.loop_iterations.emplace_back(active_loop.header,
+                                         active_loop.activation_id,
+                                         iteration);
+    }
+
+    return key;
+}
+
+bool SPIRVSimulator::BlockDominatesLoopContinue(const LoopInfo& loop,
+                                                uint32_t        block_id) const
+{
+    if (block_id == loop.header || block_id == loop.cont)
+    {
+        return true;
+    }
+
+    // A loop's main recurrence test is unavoidable on every route from the
+    // header to the continue target. An arbitrary early break normally does
+    // not have this property, so it stays iteration-sensitive.
+    std::queue<uint32_t> pending;
+    UnorderedSet<uint32_t> visited;
+    pending.push(loop.header);
+    visited.insert(loop.header);
+
+    while (!pending.empty())
+    {
+        const uint32_t current = pending.front();
+        pending.pop();
+
+        auto block_it = cfg_.blocks.find(current);
+        if (block_it == cfg_.blocks.end())
+        {
+            continue;
+        }
+
+        for (uint32_t successor : block_it->second.succs)
+        {
+            if (successor == block_id || successor == loop.merge ||
+                loop.block_set.count(successor) == 0)
+            {
+                continue;
+            }
+
+            if (successor == loop.cont)
+            {
+                return false;
+            }
+
+            if (visited.insert(successor).second)
+            {
+                pending.push(successor);
+            }
+        }
+    }
+
+    return true;
+}
+
+std::optional<SPIRVSimulator::LoopExitTarget>
+SPIRVSimulator::GetInnermostLoopExitTarget(const std::vector<uint32_t>& targets) const
+{
+    for (auto active_loop = loop_stack_.rbegin(); active_loop != loop_stack_.rend(); ++active_loop)
+    {
+        auto loop_it = loops_.find(active_loop->header);
+        if (loop_it == loops_.end())
+        {
+            continue;
+        }
+
+        const LoopInfo& loop = loop_it->second;
+        bool            has_inside_target = false;
+        bool            has_merge_target  = false;
+
+        for (uint32_t target : targets)
+        {
+            const bool target_inside = target != loop.merge && loop.block_set.count(target) != 0;
+            if (target_inside)
+            {
+                has_inside_target = true;
+            }
+            else if (target == loop.merge)
+            {
+                has_merge_target = true;
+            }
+        }
+
+        if (has_inside_target && has_merge_target &&
+            BlockDominatesLoopContinue(loop, current_block_id_))
+        {
+            return LoopExitTarget{
+                active_loop->header,
+                loop.merge,
+                active_loop->activation_id
+            };
+        }
+    }
+
+    return std::nullopt;
 }
 
 void SPIRVSimulator::PrintExecutionContext() const
@@ -1578,18 +1870,37 @@ void SPIRVSimulator::PrintExecutionContext() const
 
 void SPIRVSimulator::on_loop_begin(uint32_t header)
 {
-    branch_counters_[header] = 0;
+    auto active_loop = std::find_if(
+        loop_stack_.rbegin(),
+        loop_stack_.rend(),
+        [header](const ActiveLoop& loop) { return loop.header == header; });
+    assert(active_loop != loop_stack_.rend());
+    branch_counters_[active_loop->activation_id] = 0;
 }
 
 void SPIRVSimulator::on_loop_exit(uint32_t header)
 {
-
+    auto active_loop = std::find_if(
+        loop_stack_.rbegin(),
+        loop_stack_.rend(),
+        [header](const ActiveLoop& loop) { return loop.header == header; });
+    if (active_loop != loop_stack_.rend())
+    {
+        branch_counters_.erase(active_loop->activation_id);
+    }
 }
 
 void SPIRVSimulator::on_loop_iteration(uint32_t header)
 {
-    branch_counters_[header] += 1;
-    if (branch_counters_[header] > MAX_LOOP_COUNT)
+    auto active_loop = std::find_if(
+        loop_stack_.rbegin(),
+        loop_stack_.rend(),
+        [header](const ActiveLoop& loop) { return loop.header == header; });
+    assert(active_loop != loop_stack_.rend());
+
+    uint64_t& iteration = branch_counters_[active_loop->activation_id];
+    iteration += 1;
+    if (iteration > MAX_LOOP_COUNT)
     {
         // Just jump to the merge block of the current loop
         const LoopInfo& current_loop = loops_[header];
@@ -1600,6 +1911,17 @@ void SPIRVSimulator::on_loop_iteration(uint32_t header)
 
 void SPIRVSimulator::OnEnterBlockHandleLoops()
 {
+    if (!speculation_context_)
+    {
+        speculation_context_ = std::make_shared<SpeculationContext>();
+    }
+
+    auto push_active_loop = [this](const LoopInfo& loop) {
+        const uint64_t activation_id = speculation_context_->next_loop_activation_id++;
+        loop_stack_.push_back({loop.header, loop.merge, activation_id});
+        on_loop_begin(loop.header);
+    };
+
     // Called when we enter a new structured control flow block
     while (!loop_stack_.empty()) {
         const auto& top = loop_stack_.back();
@@ -1616,8 +1938,8 @@ void SPIRVSimulator::OnEnterBlockHandleLoops()
     while (!loop_stack_.empty() && (current_block_id_ == loop_stack_.back().merge))
     {
         auto top = loop_stack_.back();
-        loop_stack_.pop_back();
         on_loop_exit(top.header);
+        loop_stack_.pop_back();
     }
 
     // Is curr a loop header?
@@ -1628,15 +1950,15 @@ void SPIRVSimulator::OnEnterBlockHandleLoops()
 
         if (!prev_inside) {
             // First entry from outside → one-off
-            loop_stack_.push_back({L.header, L.merge});
-            on_loop_begin(L.header);
+            push_active_loop(L);
         } else {
             // Back-edge / next iteration
             if (!loop_stack_.empty() && (loop_stack_.back().header == L.header)) {
                 on_loop_iteration(L.header);
             } else {
                 // (Rare) stack drift; fix it:
-                loop_stack_.push_back({L.header, L.merge});
+                push_active_loop(L);
+                on_loop_iteration(L.header);
             }
         }
     }
@@ -5430,14 +5752,12 @@ std::optional<Value> SPIRVSimulator::ReadPointer(const PointerV& ptr)
                     else
                     {
                         std::cout << "SPIRV simulator: ERROR: Struct index OOB" << std::endl;
-                        #ifdef DEBUG_BUILD
                         if (is_execution_fork)
                         {
-                            std::cout << "SPIRV simulator: Corrupt struct access in execution fork, assuming the problem is due to uninitialized data during a debug run and terminating the fork." << std::endl;
+                            std::cout << "SPIRV simulator: Corrupt struct access in execution fork, terminating the fork." << std::endl;
                             call_stack_.clear();
                             return std::nullopt;
                         }
-                        #endif
                     }
                 }
 
@@ -9659,7 +9979,24 @@ void SPIRVSimulator::Op_FunctionCall(const Instruction& instruction)
     uint32_t function_id = instruction.words[3];
 
     FunctionInfo& function_info = funcs_[function_id];
-    call_stack_.push_back({ function_info.first_inst_index, result_id, current_heap_index_, current_block_id_ });
+    if (!speculation_context_)
+    {
+        speculation_context_ = std::make_shared<SpeculationContext>();
+    }
+
+    const bool inherits_collapsed_control_flow = IsUnderCollapsedControlFlow();
+
+    Frame callee_frame{
+        function_info.first_inst_index,
+        result_id,
+        current_heap_index_,
+        current_block_id_,
+        speculation_context_->next_function_invocation_id++,
+        inherits_collapsed_control_flow,
+        std::move(loop_stack_)
+    };
+    loop_stack_.clear();
+    call_stack_.push_back(std::move(callee_frame));
 
     bool changed_trace_state = false;
     uint32_t parameter_index = 0;
@@ -9713,9 +10050,12 @@ void SPIRVSimulator::Op_Label(const Instruction& instruction)
     if (current_block_id_ != prev_block_id_)
     {
         OnEnterBlockHandleLoops();
+        current_merge_block_id_    = 0;
+        current_continue_block_id_ = 0;
     }
 
-    if ((current_block_id_ == current_merge_block_id_) && is_execution_fork)
+    if (is_execution_fork && fork_exit_block_id_ != 0 &&
+        current_block_id_ == fork_exit_block_id_)
     {
         // We are done, merge back and communicate fork info to the callee
         call_stack_.clear();
@@ -9760,75 +10100,111 @@ void SPIRVSimulator::Op_BranchConditional(const Instruction& instruction)
     This instruction must be the last instruction in a block.
     */
     assert(instruction.opcode == spv::Op::OpBranchConditional);
+    assert(!call_stack_.empty() && call_stack_.back().pc != 0);
 
-    uint32_t condition_id = instruction.words[1];
-    uint32_t label_1_id   = instruction.words[2];
-    uint32_t label_2_id   = instruction.words[3];
+    const size_t control_instruction_index = call_stack_.back().pc - 1;
+    uint32_t     condition_id              = instruction.words[1];
+    uint32_t     label_1_id                = instruction.words[2];
+    uint32_t     label_2_id                = instruction.words[3];
+
+    uint32_t forced_target = 0;
+    if (ConsumeForcedControlTarget(control_instruction_index, forced_target))
+    {
+        // Keep the concrete representative consistent with the forced edge,
+        // but retain the arbitrary flag so later uses of the condition remain
+        // conservatively unknown.
+        SetValue(condition_id,
+                 static_cast<uint64_t>(forced_target == label_1_id),
+                 false);
+        call_stack_.back().pc = GetInstructionIndexForResultId(forced_target);
+        return;
+    }
 
     uint64_t condition    = std::get<uint64_t>(GetValue(condition_id));
     uint32_t target_label = condition ? label_1_id : label_2_id;
 
-    // We may need to diverge and execute both branches here.
-    // Only do it if the conditional is arbitrary, and if we are looping, only do so if we are skipping the loop
-    // (eg. target id is not the continue)
-    if (ValueIsArbitrary(condition_id) && (target_label != current_continue_block_id_))
+    // Once an arbitrary-controlled loop is collapsed, explore all structured
+    // control-flow edges in its body, not only branches whose current scalar
+    // happens to carry the arbitrary flag. This reaches pointer operations
+    // guarded by loop-index-dependent conditions without executing thousands
+    // of concrete iterations.
+    const bool condition_is_arbitrary     = ValueIsArbitrary(condition_id);
+    const bool under_collapsed_control    = IsUnderCollapsedControlFlow();
+    const bool collapsed_control_only     = under_collapsed_control && !condition_is_arbitrary;
+    if (condition_is_arbitrary || under_collapsed_control)
     {
-        uint32_t fork_target_label = condition ? label_2_id : label_1_id;
-        if ((visisted_fork_branches_ != nullptr) && (visisted_fork_branches_->contains(fork_target_label)))
+        if (!speculation_context_)
         {
-            // Do not fork again, this may create an infite loop and is a waste. If this ever happens, we are done so just return
-            call_stack_.clear();
-            return;
+            speculation_context_ = std::make_shared<SpeculationContext>();
         }
 
-        if (verbose_)
+        std::vector<uint32_t> targets{ label_1_id };
+        if (label_2_id != label_1_id)
         {
-            std::cout << "SPIRV simulator: Executing fork at level: " << current_fork_index_ << std::endl;
+            targets.push_back(label_2_id);
         }
 
-        SimulationData fork_simulation_data;
-        SimulationResults fork_simulation_results;
-        SPIRVSimulator fork;
-        if (visisted_fork_branches_ == nullptr)
+        const auto loop_exit = GetInnermostLoopExitTarget(targets);
+        if (loop_exit)
         {
-            std::set<uint32_t> visited_set;
-            visited_set.insert(target_label);
-            fork.CreateExecutionFork(*this, condition_id, &visited_set, &fork_simulation_data, &fork_simulation_results);
-        }
-        else
-        {
-            visisted_fork_branches_->insert(target_label);
-            fork.CreateExecutionFork(*this, condition_id, visisted_fork_branches_, &fork_simulation_data, &fork_simulation_results);
+            // Canonicalize this loop's dynamic iteration in all branch-edge
+            // keys. Concrete enclosing loops remain in the key, so alternate
+            // pointer accesses are still explored once per known outer index.
+            speculation_context_->collapsed_loop_activations.insert(loop_exit->activation_id);
         }
 
-        // Preserve fallback requirements discovered in either execution path.
-        simulation_results_->full_dispatch_needed |= fork_simulation_results.full_dispatch_needed;
-        simulation_results_->read_side_pointer_coverage_incomplete |=
-            fork_simulation_results.read_side_pointer_coverage_incomplete;
-
-        const auto& fork_results = fork_simulation_results.physical_address_data;
-        if (fork_results.size())
+        bool                  covered_new_edge = false;
+        std::vector<uint32_t> fork_targets;
+        for (uint32_t candidate_target : targets)
         {
-            if (verbose_)
+            const bool inserted = speculation_context_->covered_edges
+                                      .insert(MakeSpeculationEdgeKey(control_instruction_index,
+                                                                     candidate_target))
+                                      .second;
+            covered_new_edge |= inserted;
+
+            if (inserted && candidate_target != target_label)
             {
-                std::cout << "SPIRV simulator: Execution fork complete, got: " << fork_results.size()
-                          << " fork results at execution level: " << current_fork_index_ << std::endl;
-                std::cout
-                    << "                 Note that advanced variable adaptation to the arbitrary branch investigation "
-                       "is not implemented, there is a chance that the pbuffer pointer metadata is incomplete."
-                    << std::endl;
+                fork_targets.push_back(candidate_target);
             }
-            simulation_results_->physical_address_data.insert(
-                simulation_results_->physical_address_data.end(), fork_results.begin(), fork_results.end());
         }
 
-        const auto& fork_candidate_results = fork_simulation_results.output_candidates;
-        // TODO: Continue here, merge into current outputs
-    }
+        // Mark every outgoing edge before starting a child execution. A nested
+        // fork that reaches this same branch therefore cannot recursively
+        // reproduce the same path tree.
+        // A while-style loop can place OpLoopMerge in the loop header and its
+        // actual conditional branch in a following condition block. In that
+        // case the current block has no merge instruction of its own, but the
+        // fork must still stop at the enclosing loop merge.
+        const uint32_t merge_block_id =
+            loop_exit ? loop_exit->target : GetStructuredMergeBlock(current_block_id_);
+        for (uint32_t fork_target : fork_targets)
+        {
+            ExecuteSpeculativeFork(control_instruction_index, fork_target, merge_block_id);
+        }
 
-    if (visisted_fork_branches_ != nullptr)
-    {
-        visisted_fork_branches_->insert(target_label);
+        // Once both outcomes of an arbitrary loop-exit test have been covered,
+        // another trip around the loop cannot discover a new control-flow edge.
+        // Prefer the exit rather than running until MAX_LOOP_COUNT. This is the
+        // key bound for arbitrary nested loops.
+        if (loop_exit)
+        {
+            const uint32_t loop_exit_target = loop_exit->target;
+            const bool should_force_exit_now =
+                target_label != loop_exit_target &&
+                ((!covered_new_edge) || (collapsed_control_only && !fork_targets.empty()));
+            if (should_force_exit_now)
+            {
+                target_label = loop_exit_target;
+                speculation_context_->forced_loop_exit_count += 1;
+
+                if (verbose_)
+                {
+                    std::cout << "SPIRV simulator: Forced exit from collapsed loop at block: "
+                              << current_block_id_ << std::endl;
+                }
+            }
+        }
     }
 
     call_stack_.back().pc = GetInstructionIndexForResultId(target_label);
@@ -9854,10 +10230,20 @@ void SPIRVSimulator::Op_Return(const Instruction& instruction)
     // TODO: Maybe clear locals as well
 #endif
 
+    while (!loop_stack_.empty())
+    {
+        const uint32_t loop_header = loop_stack_.back().header;
+        on_loop_exit(loop_header);
+        loop_stack_.pop_back();
+    }
+
     current_heap_index_ = call_stack_.back().func_heap_index;
     current_block_id_   = call_stack_.back().caller_block_id;
+    std::vector<ActiveLoop> caller_loop_stack =
+        std::move(call_stack_.back().caller_loop_stack);
 
     call_stack_.pop_back();
+    loop_stack_ = std::move(caller_loop_stack);
 }
 
 void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
@@ -9910,10 +10296,20 @@ void SPIRVSimulator::Op_ReturnValue(const Instruction& instruction)
     // TODO: Maybe clear locals as well
 #endif
 
+    while (!loop_stack_.empty())
+    {
+        const uint32_t loop_header = loop_stack_.back().header;
+        on_loop_exit(loop_header);
+        loop_stack_.pop_back();
+    }
+
     current_heap_index_ = call_stack_.back().func_heap_index;
     current_block_id_   = call_stack_.back().caller_block_id;
+    std::vector<ActiveLoop> caller_loop_stack =
+        std::move(call_stack_.back().caller_loop_stack);
 
     call_stack_.pop_back();
+    loop_stack_ = std::move(caller_loop_stack);
 
     if (call_stack_.size())
     {
@@ -10094,7 +10490,8 @@ void SPIRVSimulator::Op_SelectionMerge(const Instruction& instruction)
 
     uint32_t merge_block_id = instruction.words[1];
 
-    current_merge_block_id_ = merge_block_id;
+    current_merge_block_id_    = merge_block_id;
+    current_continue_block_id_ = 0;
 }
 
 void SPIRVSimulator::Op_LoopMerge(const Instruction& instruction)
@@ -14788,26 +15185,125 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
     If Selector equals a literal, control flow branches to the following label <id>.
     It is invalid for any two literal to be equal to each other.
     If Selector does not equal any literal, control flow branches to the Default label <id>.
-    Each literal is interpreted with the type of Selector: The bit width of Selector’s type is the width
-    of each literal’s type. If this width is not a multiple of 32-bits and the OpTypeInt Signedness is set to 1,
+    Each literal is interpreted with the type of Selector: The bit width of Selector's type is the width
+    of each literal's type. If this width is not a multiple of 32-bits and the OpTypeInt Signedness is set to 1,
     the literal values are interpreted as being sign extended.
 
     This instruction must be the last instruction in a block.
     */
     assert(instruction.opcode == spv::Op::OpSwitch);
+    assert(!call_stack_.empty() && call_stack_.back().pc != 0);
 
-    uint32_t selector_id = instruction.words[1];
-    uint32_t default_id  = instruction.words[2];
+    const size_t control_instruction_index = call_stack_.back().pc - 1;
+    uint32_t     selector_id               = instruction.words[1];
+    uint32_t     default_id                = instruction.words[2];
+
+    const Type& selector_type = GetTypeByResultId(selector_id);
+    assertmc(selector_type.kind == Type::Kind::Int,
+             "SPIRV simulator: OpSwitch selector must have integer type");
+    assertmc(selector_type.scalar.width > 0 && selector_type.scalar.width <= 32,
+             "SPIRV simulator: Selector ID uses more than 32 bits, this is not handled at present and should be "
+             "implemented");
+
+    const uint64_t selector_mask = selector_type.scalar.width == 32
+                                       ? std::numeric_limits<uint32_t>::max()
+                                       : ((uint64_t{1} << selector_type.scalar.width) - 1);
+    const uint64_t selector_domain_size = uint64_t{1} << selector_type.scalar.width;
+
+    UnorderedSet<uint64_t> case_values;
+    case_values.reserve((instruction.word_count - 3) / 2);
+
+    std::vector<uint32_t> targets;
+    for (uint32_t i = 3; i + 1 < instruction.word_count; i += 2)
+    {
+        case_values.insert(static_cast<uint64_t>(instruction.words[i]) & selector_mask);
+        uint32_t case_target = instruction.words[i + 1];
+        if (std::find(targets.begin(), targets.end(), case_target) == targets.end())
+        {
+            targets.push_back(case_target);
+        }
+    }
+
+    const bool default_reachable = case_values.size() < selector_domain_size;
+    if (default_reachable && std::find(targets.begin(), targets.end(), default_id) == targets.end())
+    {
+        targets.insert(targets.begin(), default_id);
+    }
+
+    auto set_selector_from_bits = [&](uint64_t selector_bits) {
+        selector_bits &= selector_mask;
+        if (selector_type.scalar.is_signed)
+        {
+            const uint64_t sign_bit = uint64_t{1} << (selector_type.scalar.width - 1);
+            if ((selector_bits & sign_bit) != 0)
+            {
+                selector_bits |= ~selector_mask;
+            }
+            SetValue(selector_id, static_cast<int64_t>(selector_bits), false);
+        }
+        else
+        {
+            SetValue(selector_id, selector_bits, false);
+        }
+    };
+
+    uint32_t forced_target = 0;
+    if (ConsumeForcedControlTarget(control_instruction_index, forced_target))
+    {
+        uint64_t forced_selector = 0;
+        bool     found_selector  = false;
+
+        // Prefer an explicit case literal that reaches the requested target.
+        for (uint32_t i = 3; i + 1 < instruction.word_count; i += 2)
+        {
+            if (instruction.words[i + 1] == forced_target)
+            {
+                forced_selector = instruction.words[i];
+                found_selector  = true;
+                break;
+            }
+        }
+
+        // For a default-only target, synthesize a literal that is not present
+        // in the switch table. The selector width is limited to 32 bits below,
+        // so at least one such value exists unless the module has an
+        // impractically large exhaustive table.
+        if (!found_selector && forced_target == default_id)
+        {
+            // The first missing value is at most case_values.size() when the
+            // default edge is reachable, so this search is bounded by the
+            // number of case literals rather than the selector's full domain.
+            for (uint64_t candidate = 0;
+                 candidate <= case_values.size() && candidate < selector_domain_size;
+                 ++candidate)
+            {
+                if (!case_values.contains(candidate))
+                {
+                    forced_selector = candidate;
+                    found_selector  = true;
+                    break;
+                }
+            }
+        }
+
+        assertmc(found_selector,
+                 "SPIRV simulator: Forced OpSwitch target is not one of the instruction targets");
+
+        set_selector_from_bits(forced_selector);
+
+        call_stack_.back().pc = GetInstructionIndexForResultId(forced_target);
+        return;
+    }
 
     const Value& selector_value = GetValue(selector_id);
-    uint64_t     selector;
+    uint64_t     selector_bits;
     if (std::holds_alternative<uint64_t>(selector_value))
     {
-        selector = std::get<uint64_t>(selector_value);
+        selector_bits = std::get<uint64_t>(selector_value) & selector_mask;
     }
     else if (std::holds_alternative<int64_t>(selector_value))
     {
-        selector = (uint64_t)std::get<int64_t>(selector_value);
+        selector_bits = static_cast<uint64_t>(std::get<int64_t>(selector_value)) & selector_mask;
     }
     else
     {
@@ -14815,33 +15311,77 @@ void SPIRVSimulator::Op_Switch(const Instruction& instruction)
         return;
     }
 
-    const Type& type = GetTypeByResultId(selector_id);
-    assertmc(type.scalar.width <= 32,
-            "SPIRV simulator: Selector ID uses more than 32 bits, this is not handled at present and should be "
-            "implemented");
-
-    uint32_t label_id = default_id;
-    for (uint32_t i = 3; i < instruction.word_count; i += 2)
+    uint32_t target_label = default_id;
+    for (uint32_t i = 3; i + 1 < instruction.word_count; i += 2)
     {
-        uint32_t literal = instruction.words[i];
-
-        if (selector == literal)
+        const uint64_t literal_bits = static_cast<uint64_t>(instruction.words[i]) & selector_mask;
+        if (selector_bits == literal_bits)
         {
-            label_id = instruction.words[i + 1];
+            target_label = instruction.words[i + 1];
             break;
         }
     }
 
-    if ((visisted_fork_branches_ != nullptr) && (visisted_fork_branches_->contains(label_id)))
+    const bool selector_is_arbitrary   = ValueIsArbitrary(selector_id);
+    const bool under_collapsed_control = IsUnderCollapsedControlFlow();
+    const bool collapsed_control_only  = under_collapsed_control && !selector_is_arbitrary;
+    if (selector_is_arbitrary || under_collapsed_control)
     {
-        // Do not fork again, we are entering an infite loop by creating a fork equal to the one that started this one. If this ever happens, we are done so just return
-        call_stack_.clear();
-        return;
+        if (!speculation_context_)
+        {
+            speculation_context_ = std::make_shared<SpeculationContext>();
+        }
+
+        const auto loop_exit = GetInnermostLoopExitTarget(targets);
+        if (loop_exit)
+        {
+            speculation_context_->collapsed_loop_activations.insert(loop_exit->activation_id);
+        }
+
+        bool                  covered_new_edge = false;
+        std::vector<uint32_t> fork_targets;
+        for (uint32_t candidate_target : targets)
+        {
+            const bool inserted = speculation_context_->covered_edges
+                                      .insert(MakeSpeculationEdgeKey(control_instruction_index,
+                                                                     candidate_target))
+                                      .second;
+            covered_new_edge |= inserted;
+
+            if (inserted && candidate_target != target_label)
+            {
+                fork_targets.push_back(candidate_target);
+            }
+        }
+
+        const uint32_t merge_block_id =
+            loop_exit ? loop_exit->target : GetStructuredMergeBlock(current_block_id_);
+        for (uint32_t fork_target : fork_targets)
+        {
+            ExecuteSpeculativeFork(control_instruction_index, fork_target, merge_block_id);
+        }
+
+        if (loop_exit)
+        {
+            const uint32_t loop_exit_target = loop_exit->target;
+            const bool should_force_exit_now =
+                target_label != loop_exit_target &&
+                ((!covered_new_edge) || (collapsed_control_only && !fork_targets.empty()));
+            if (should_force_exit_now)
+            {
+                target_label = loop_exit_target;
+                speculation_context_->forced_loop_exit_count += 1;
+
+                if (verbose_)
+                {
+                    std::cout << "SPIRV simulator: Forced exit from collapsed switch loop at block: "
+                              << current_block_id_ << std::endl;
+                }
+            }
+        }
     }
 
-    // TODO: Create a execution for if appropriate
-
-    call_stack_.back().pc = GetInstructionIndexForResultId(label_id);
+    call_stack_.back().pc = GetInstructionIndexForResultId(target_label);
 }
 
 void SPIRVSimulator::Op_MatrixTimesVector(const Instruction& instruction)
