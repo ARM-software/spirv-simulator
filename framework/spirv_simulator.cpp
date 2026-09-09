@@ -4305,6 +4305,14 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const
             set_scalar_range(0, total ? total - 1 : 0);
             return true;
         }
+        case spv::BuiltIn::BuiltInNumWorkgroups:
+            if (result_type.kind == Type::Kind::Vector)
+            {
+                // Same value for every invocation of a given dispatch.
+                SetValue(result_id, make_uvec3(nx, ny, nz));
+                return true;
+            }
+            break;
         default:
             break;
     }
@@ -7465,9 +7473,12 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
                 for (uint32_t i = 0; i < type.vector.elem_count; ++i)
                 {
-                    Value elem_result = (double)std::clamp(std::get<double>(vec->elems[i]),
-                                                           std::get<double>(min_vec->elems[i]),
-                                                           std::get<double>(max_vec->elems[i]));
+                    // GLSL defines clamp(x, min, max) = max(min, min(x, max)), which is well-defined
+                    // even when min > max (unlike std::clamp, which asserts in debug builds).
+                    const double v   = std::get<double>(vec->elems[i]);
+                    const double lo  = std::get<double>(min_vec->elems[i]);
+                    const double hi  = std::get<double>(max_vec->elems[i]);
+                    Value elem_result = std::max(lo, std::min(v, hi));
                     result_vec->elems.push_back(elem_result);
                 }
 
@@ -7475,8 +7486,12 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
             else if (type.kind == Type::Kind::Float)
             {
-                Value result =
-                    (double)std::clamp(std::get<double>(operand), std::get<double>(min_val), std::get<double>(max_val));
+                // GLSL defines clamp(x, min, max) = max(min, min(x, max)), which is well-defined
+                // even when min > max (unlike std::clamp, which asserts in debug builds).
+                const double v  = std::get<double>(operand);
+                const double lo = std::get<double>(min_val);
+                const double hi = std::get<double>(max_val);
+                Value result = std::max(lo, std::min(v, hi));
                 SetValue(result_id, result);
             }
             else
@@ -7511,9 +7526,12 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
                 for (uint32_t i = 0; i < type.vector.elem_count; ++i)
                 {
-                    Value elem_result = (uint64_t)std::clamp(std::get<uint64_t>(vec->elems[i]),
-                                                             std::get<uint64_t>(min_vec->elems[i]),
-                                                             std::get<uint64_t>(max_vec->elems[i]));
+                    // GLSL defines clamp(x, min, max) = max(min, min(x, max)), which is well-defined
+                    // even when min > max (unlike std::clamp, which asserts in debug builds).
+                    const uint64_t v  = std::get<uint64_t>(vec->elems[i]);
+                    const uint64_t lo = std::get<uint64_t>(min_vec->elems[i]);
+                    const uint64_t hi = std::get<uint64_t>(max_vec->elems[i]);
+                    Value elem_result = std::max(lo, std::min(v, hi));
                     result_vec->elems.push_back(elem_result);
                 }
 
@@ -7521,8 +7539,12 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
             else if (type.kind == Type::Kind::Int)
             {
-                Value result = (uint64_t)std::clamp(
-                    std::get<uint64_t>(operand), std::get<uint64_t>(min_val), std::get<uint64_t>(max_val));
+                // GLSL defines clamp(x, min, max) = max(min, min(x, max)), which is well-defined
+                // even when min > max (unlike std::clamp, which asserts in debug builds).
+                const uint64_t v  = std::get<uint64_t>(operand);
+                const uint64_t lo = std::get<uint64_t>(min_val);
+                const uint64_t hi = std::get<uint64_t>(max_val);
+                Value result = std::max(lo, std::min(v, hi));
                 SetValue(result_id, result);
             }
             else
@@ -7557,9 +7579,12 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
 
                 for (uint32_t i = 0; i < type.vector.elem_count; ++i)
                 {
-                    Value elem_result = (int64_t)std::clamp(std::get<int64_t>(vec->elems[i]),
-                                                            std::get<int64_t>(min_vec->elems[i]),
-                                                            std::get<int64_t>(max_vec->elems[i]));
+                    // GLSL defines clamp(x, min, max) = max(min, min(x, max)), which is well-defined
+                    // even when min > max (unlike std::clamp, which asserts in debug builds).
+                    const int64_t v  = std::get<int64_t>(vec->elems[i]);
+                    const int64_t lo = std::get<int64_t>(min_vec->elems[i]);
+                    const int64_t hi = std::get<int64_t>(max_vec->elems[i]);
+                    Value elem_result = std::max(lo, std::min(v, hi));
                     result_vec->elems.push_back(elem_result);
                 }
 
@@ -7567,8 +7592,12 @@ void SPIRVSimulator::GLSLExtHandler(uint32_t                         type_id,
             }
             else if (type.kind == Type::Kind::Int)
             {
-                Value result = (int64_t)std::clamp(
-                    std::get<int64_t>(operand), std::get<int64_t>(min_val), std::get<int64_t>(max_val));
+                // GLSL defines clamp(x, min, max) = max(min, min(x, max)), which is well-defined
+                // even when min > max (unlike std::clamp, which asserts in debug builds).
+                const int64_t v  = std::get<int64_t>(operand);
+                const int64_t lo = std::get<int64_t>(min_val);
+                const int64_t hi = std::get<int64_t>(max_val);
+                Value result = std::max(lo, std::min(v, hi));
                 SetValue(result_id, result);
             }
             else

@@ -525,6 +525,73 @@ TEST_F(PointerResolutionTests, UndecoratedFunctionMatrixUsesPackedColumnStride)
     EXPECT_EQ(GetPointerOffsetForTest(pointer), 16u);
 }
 
+TEST_F(GLSLExtInstructionTests, SClampAllowsMinGreaterThanMax)
+{
+    // Regression test: a shader can legally reach a clamp(x, min, max) state with min > max
+    // (eg clamping to [0, width - 1] where width is 0). GLSL defines the result as
+    // max(min, min(x, max)), so the simulator must not abort (std::clamp asserts on min > max).
+    constexpr uint32_t result_id    = 500;
+    constexpr uint32_t operand_id   = 501;
+    constexpr uint32_t min_id       = 502;
+    constexpr uint32_t max_id       = 503;
+
+    ::SPIRVSimulator::Value operand = int64_t{0};
+    ::SPIRVSimulator::Value min_val = int64_t{0};
+    ::SPIRVSimulator::Value max_val = int64_t{-1};
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::i32)).WillOnce(ReturnRef(types_.at(CommonTypes::i32)));
+    EXPECT_CALL(*this, GetValue(operand_id)).WillOnce(ReturnRef(operand));
+    EXPECT_CALL(*this, GetValue(min_id)).WillOnce(ReturnRef(min_val));
+    EXPECT_CALL(*this, GetValue(max_id)).WillOnce(ReturnRef(max_val));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(min_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(max_id)));
+
+    const std::vector<uint32_t> operands{ operand_id, min_id, max_id };
+    ExecuteGLSLExtInstruction(CommonTypes::i32, result_id, 45, operands);
+
+    ASSERT_TRUE(std::holds_alternative<int64_t>(captured_result));
+    EXPECT_EQ(std::get<int64_t>(captured_result), 0);
+}
+
+TEST_F(GLSLExtInstructionTests, SClampVectorClampsPerElement)
+{
+    // max(min, min(x, max)) per element, including a min > max component.
+    constexpr uint32_t result_id    = 510;
+    constexpr uint32_t operand_id   = 511;
+    constexpr uint32_t min_id       = 512;
+    constexpr uint32_t max_id       = 513;
+
+    ::SPIRVSimulator::Value operand =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 15, -5, 0 });
+    ::SPIRVSimulator::Value min_val =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 2, 2, 0 });
+    ::SPIRVSimulator::Value max_val =
+        std::make_shared<::SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 10, 10, -1 });
+    ::SPIRVSimulator::Value captured_result;
+
+    EXPECT_CALL(*this, GetTypeByTypeId(CommonTypes::ivec3)).WillOnce(ReturnRef(types_.at(CommonTypes::ivec3)));
+    EXPECT_CALL(*this, GetValue(operand_id)).WillOnce(ReturnRef(operand));
+    EXPECT_CALL(*this, GetValue(min_id)).WillOnce(ReturnRef(min_val));
+    EXPECT_CALL(*this, GetValue(max_id)).WillOnce(ReturnRef(max_val));
+    EXPECT_CALL(*this, SetValue(result_id, _, true)).WillOnce(SaveArg<1>(&captured_result));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(operand_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(min_id)));
+    EXPECT_CALL(*this, TransferFlags(result_id, TypedEq<uint32_t>(max_id)));
+
+    const std::vector<uint32_t> operands{ operand_id, min_id, max_id };
+    ExecuteGLSLExtInstruction(CommonTypes::ivec3, result_id, 45, operands);
+
+    ASSERT_TRUE(std::holds_alternative<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result));
+    const auto& result = std::get<std::shared_ptr<::SPIRVSimulator::VectorV>>(captured_result);
+    ASSERT_EQ(result->elems.size(), 3u);
+    EXPECT_EQ(std::get<int64_t>(result->elems[0]), 10);
+    EXPECT_EQ(std::get<int64_t>(result->elems[1]), 2);
+    EXPECT_EQ(std::get<int64_t>(result->elems[2]), 0);
+}
+
 class MemoryBarrierTests : public SPIRVSimulatorMockBase, public ::testing::Test
 {};
 
