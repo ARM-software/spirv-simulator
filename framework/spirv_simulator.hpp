@@ -318,9 +318,21 @@ struct InternalPersistentData
         uninteresting_shaders.insert(shader_id);
     }
 
+#ifdef DEBUG_BUILD
+    bool MarkInvocationDependenceFallbackOpcodeReported(spv::Op opcode)
+    {
+        std::lock_guard<std::mutex> lock(invocation_dependence_fallback_mutex);
+        return reported_invocation_dependence_fallback_opcodes.insert(opcode).second;
+    }
+#endif
+
 private:
     mutable std::mutex uninteresting_shaders_mutex;
     std::set<uint64_t> uninteresting_shaders;
+#ifdef DEBUG_BUILD
+    std::mutex invocation_dependence_fallback_mutex;
+    std::set<spv::Op> reported_invocation_dependence_fallback_opcodes;
+#endif
 };
 
 
@@ -695,6 +707,16 @@ using Value = std::variant<std::monostate,
 // Conservative integer/byte range metadata for values derived from compute
 // builtins. The simulator still executes one invocation, but this records
 // the dense range represented by the expression when that is known.
+inline constexpr uint8_t kInvocationComponentX = 1u << 0;
+inline constexpr uint8_t kInvocationComponentY = 1u << 1;
+inline constexpr uint8_t kInvocationComponentZ = 1u << 2;
+
+struct InvocationLinearizationInfo
+{
+    uint8_t workgroup_id_component_mask = 0;
+    uint8_t local_invocation_id_component_mask = 0;
+};
+
 struct DenseValueRangeInfo
 {
     bool     valid = false;
@@ -703,6 +725,23 @@ struct DenseValueRangeInfo
     uint64_t min = 0;
     uint64_t max = 0; // inclusive
     uint64_t stride = 1;
+
+    InvocationLinearizationInfo invocation_linearization;
+};
+
+enum class InvocationDependence : uint8_t
+{
+    // The current implementation has not proved whether the value varies
+    // across the invocation domain.
+    Unknown,
+
+    // Positively proved identical for every invocation represented by the
+    // current simulation domain.
+    Invariant,
+
+    // Known, or conservatively classified, as potentially different between
+    // invocations.
+    Varying
 };
 
 struct SubobjectScalarRangeEntry
@@ -714,6 +753,16 @@ struct SubobjectScalarRangeEntry
 
     // Scalar range for the leaf reached by path.
     DenseValueRangeInfo value_range;
+};
+
+struct SubobjectInvocationDependenceEntry
+{
+    // Logical subobject path relative to the current value root.
+    // Examples: {0} -> struct member 0,
+    //           {1,1} -> struct member 1 then vector component 1.
+    std::vector<uint32_t> path;
+
+    InvocationDependence dependence = InvocationDependence::Unknown;
 };
 
 struct ValueMetadata
@@ -734,6 +783,16 @@ struct ValueMetadata
     // This extends component_ranges to paths such as {member}, {member, component},
     // or deeper aggregate/member chains.
     std::vector<SubobjectScalarRangeEntry> subobject_scalar_ranges;
+
+    // Invocation dependence summary for the complete current SSA value.
+    InvocationDependence invocation_dependence = InvocationDependence::Unknown;
+
+    // Optional invocation dependence for direct logical components of a
+    // vector, matrix, array, or struct value.
+    std::vector<InvocationDependence> component_invocation_dependence;
+
+    // Optional invocation dependence for scalar leaves in nested aggregates.
+    std::vector<SubobjectInvocationDependenceEntry> subobject_invocation_dependence;
 
     // For pointer values, this optionally describes the byte addresses covered
     // by a dense thread-dependent access chain.
@@ -832,6 +891,13 @@ struct StoredValueMetadataSnapshot
     DenseValueRangeInfo value_range;
     std::vector<DenseValueRangeInfo> component_ranges;
     std::vector<SubobjectScalarRangeEntry> subobject_scalar_ranges;
+
+    // Store-time invocation-dependence proof. This is deliberately kept
+    // separate from flags and range metadata and restored only through the
+    // execution-time reaching-store path.
+    InvocationDependence invocation_dependence = InvocationDependence::Unknown;
+    std::vector<InvocationDependence> component_invocation_dependence;
+    std::vector<SubobjectInvocationDependenceEntry> subobject_invocation_dependence;
 
     bool     address_range_valid = false;
     uint64_t address_range_min = 0;
@@ -1378,6 +1444,7 @@ class SPIRVSimulator
     UnorderedMap<uint32_t, std::string>           entry_points_;
     UnorderedMap<uint32_t, spv::ExecutionModel>   entry_point_models_;
     UnorderedMap<uint32_t, ComputeLocalSize>       entry_point_local_sizes_;
+    UnorderedMap<uint32_t, std::vector<size_t>>    entry_point_local_size_mode_instruction_indices_;
     ComputeLocalSize                               active_compute_local_size_;
     uint32_t                                       spirv_version_ = 0;
     std::vector<uint32_t>                               program_words_;
@@ -1487,8 +1554,8 @@ class SPIRVSimulator
     UnorderedMap<size_t, std::vector<SourceTraceCacheEntry>> opstore_source_trace_cache_;
 
     // Debug only
-    bool verbose_;
-    uint64_t flags_;
+    bool     verbose_ = false;
+    uint64_t flags_   = 0;
 
     // Counts iterations per dynamic loop activation, used to abort infinite loops.
     UnorderedMap<uint64_t, uint64_t> branch_counters_;
@@ -1635,32 +1702,107 @@ class SPIRVSimulator
     std::shared_ptr<MatrixV> matrixMulAdd(uint32_t mat_A_id, uint32_t mat_B_id, uint32_t mat_C_id, uint32_t result_type_id, bool saturate_accumulate=false);
 
     uint64_t GetUIntScalarValue(uint32_t result_id) const;
+    const std::byte* FindSpecializationOverrideData(uint32_t spec_id) const;
+    std::optional<ComputeLocalSize> TryDeriveComputeLocalSizeFromWorkgroupSizeBuiltin(uint32_t entry_point_function_id) const;
     void DeriveActiveComputeLocalSize(uint32_t entry_point_function_id);
+    void SetConstantInvocationDependence(uint32_t result_id);
     void CopyNonFlagValueMetadata(uint32_t target_rid, uint32_t source_rid);
-    bool PathStartsWith(const std::vector<uint32_t>& path, const std::vector<uint32_t>& prefix) const;
+    void CopyInvocationDependenceMetadata(uint32_t target_rid, uint32_t source_rid);
+    void PropagateExternalLoadInvocationDependence(uint32_t result_id, uint32_t pointer_id);
+    void PropagateBitcastInvocationDependence(uint32_t    result_id,
+                                              uint32_t    operand_id,
+                                              const Type& result_type,
+                                              const Type& operand_type);
+    bool IsUnsignedDivisorNonZero(uint32_t divisor_id) const;
+    bool IsUnsignedDivisorComponentNonZero(uint32_t divisor_id, uint32_t component) const;
     void AppendSubobjectScalarRangesFromValue(std::vector<SubobjectScalarRangeEntry>& dst, const std::vector<uint32_t>& prefix, uint32_t source_id) const;
+    void AppendSubobjectInvocationDependenceFromValue(
+        std::vector<SubobjectInvocationDependenceEntry>& dst,
+        const std::vector<uint32_t>&                     prefix,
+        uint32_t                                         source_id) const;
+    void AppendUniformSubobjectInvocationDependenceForType(
+        std::vector<SubobjectInvocationDependenceEntry>& dst,
+        const std::vector<uint32_t>&                     prefix,
+        uint32_t                                         type_id,
+        InvocationDependence                             dependence) const;
     void EraseSubobjectScalarRangesByPrefix(std::vector<SubobjectScalarRangeEntry>& entries, const std::vector<uint32_t>& prefix) const;
-
+    void EraseSubobjectInvocationDependenceByPrefix(std::vector<SubobjectInvocationDependenceEntry>& entries, std::span<const uint32_t> prefix) const;
     bool TryBuildVectorShuffleComponentRanges(uint32_t result_id, uint32_t vec1_id, uint32_t vec2_id, const Instruction& instruction);
+    void BuildVectorShuffleInvocationDependence(uint32_t           result_id,
+                                                uint32_t           vec1_id,
+                                                uint32_t           vec2_id,
+                                                const Instruction& instruction);
     StoredValueMetadataSnapshot MakeStoredValueMetadataSnapshot(uint32_t value_id) const;
     bool StoredTargetsOverlap(const PointerV& lhs, const PointerV& rhs) const;
     void InvalidateOverlappingStoredValues(const PointerV& stored_pointer);
     bool TryFindReachingStoreForPointer(const PointerV& pointer, uint32_t pointer_id, StoredValueRecord& out_record) const;
     bool TryComputeProjectionPath(const PointerV& target_pointer, const PointerV& read_pointer, std::vector<uint32_t>& out_suffix_path) const;
-    bool TryProjectAggregateSubobjectMetadata(uint32_t result_id,
-                                              const std::vector<DenseValueRangeInfo>& source_component_ranges,
-                                              const std::vector<SubobjectScalarRangeEntry>& source_subobject_ranges,
-                                              const std::vector<uint32_t>& selected_path);
-    bool TrySetComputeBuiltinValueAndRange(uint32_t result_id, const PointerV& pointer, uint32_t type_id);
+    bool TryProjectAggregateSubobjectValueRange(uint32_t result_id,
+                                                const std::vector<DenseValueRangeInfo>& source_component_ranges,
+                                                const std::vector<SubobjectScalarRangeEntry>& source_subobject_ranges,
+                                                const std::vector<uint32_t>& selected_path);
+    void ProjectAggregateSubobjectInvocationDependence(uint32_t                     result_id,
+                                                       const ValueMetadata&         source_meta,
+                                                       const std::vector<uint32_t>& selected_path);
+    bool TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, const PointerV& pointer, uint32_t type_id);
+    bool TryGetFixedNonNegativeIntegerScalar(uint32_t result_id, uint64_t& out_value) const;
     void PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
     void PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
     void PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
     void PropagateBinaryRangeDiv(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
     void PropagateBinaryRangeMod(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
-    bool TrySetDenseAccessChainAddressRange(const Instruction& instruction, const PointerV& result_pointer);
-    bool TryQueueDenseReadSidePbufferPointers(const Instruction& instruction,
-                                              uint32_t           result_id,
-                                              const PointerV&    representative_slot_pointer);
+    void PropagateElementwiseBinaryInvocationDependence(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
+    void PropagateElementwiseUnsignedDivModInvocationDependence(uint32_t result_id, uint32_t dividend_id, uint32_t divisor_id);
+    bool TryGetRuntimeArrayLength(const PointerV& runtime_array_pointer, uint64_t& out_length) const;
+
+    struct DenseAccessChainIndexSelection
+    {
+        size_t              dynamic_index_path_position = 0;
+        DenseValueRangeInfo dynamic_index_range;
+    };
+
+    struct DenseAccessChainIndexAnalysis
+    {
+        InvocationDependence dependence = InvocationDependence::Invariant;
+        bool index_roles_proven = false;
+        std::optional<DenseAccessChainIndexSelection> dense_selection;
+    };
+
+    struct DenseAccessChainAddressRange
+    {
+        uint64_t min_address  = 0;
+        uint64_t max_address  = 0;
+        uint64_t byte_stride  = 1;
+        uint64_t element_size = 0;
+    };
+
+    DenseAccessChainIndexAnalysis AnalyzeDenseAccessChainIndexes(
+        std::span<const uint32_t> index_ids,
+        size_t                    result_path_size) const;
+    bool TryProveDenseAccessChainTypedLayout(const PointerV&            result_pointer,
+                                             size_t                     dynamic_index_path_position,
+                                             const DenseValueRangeInfo& dynamic_index_range) const;
+    bool TryBuildDenseAccessChainAddressRange(const PointerV&               result_pointer,
+                                              uint32_t                      result_pointee_type_id,
+                                              size_t                        dynamic_index_path_position,
+                                              const DenseValueRangeInfo&    dynamic_index_range,
+                                              DenseAccessChainAddressRange& out_range) const;
+    bool HasUniquePhysicalAddressBacking(uint64_t min_address,
+                                         uint64_t max_address,
+                                         uint64_t element_size) const;
+    bool TrySetDenseAccessChainAddressRange(
+        const Instruction&              instruction,
+        const PointerV&                 result_pointer,
+        DenseAccessChainIndexSelection* out_dynamic_index_selection = nullptr);
+    bool TryQueueDenseReadSidePbufferPointers(
+        uint32_t                              result_id,
+        const PointerV&                       representative_slot_pointer,
+        const DenseAccessChainIndexSelection& dynamic_index_selection);
+    // Returns whether a value of this type can carry data relevant to handle or buffer-device-address tracking
+    // when written to externally visible memory.
+    // Write-side consumers use this to avoid dense-range fallback for unrelated payloads such as
+    // floating-point application data.
+    bool CanWriteValueTypeCarryHandlePayload(const Type& type) const;
     bool TryGetDenseStoreRange(const PointerV& pointer, uint32_t pointer_id, uint32_t result_id, uint64_t& dst_start, uint64_t& byte_size, uint64_t& element_size);
     void PromoteUniformDerivedRangeForPointerValue(uint64_t source_addr, uint64_t element_size);
 

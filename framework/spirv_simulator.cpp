@@ -25,6 +25,90 @@ constexpr uint32_t kOpcodeMask     = 0xFFFFu;
 const std::string  execIndent      = "                      # ";
 constexpr uint64_t kMaxDenseReadSidePointerSlots = 65536u;
 
+#ifdef DEBUG_BUILD
+static bool MarkInvocationDependenceFallbackOpcodeReported(
+    InternalPersistentData* persistent_data, spv::Op opcode)
+{
+    if (persistent_data)
+    {
+        return persistent_data->MarkInvocationDependenceFallbackOpcodeReported(opcode);
+    }
+
+    // Some clients process one trace per process without supplying
+    // InternalPersistentData. Keep their diagnostics trace-wide rather than
+    // repeating the same opcode for every simulator/shader instance.
+    static std::mutex process_mutex;
+    static std::set<spv::Op> process_reported_opcodes;
+    std::lock_guard<std::mutex> lock(process_mutex);
+    return process_reported_opcodes.insert(opcode).second;
+}
+#endif
+
+static inline bool PathStartsWith(std::span<const uint32_t> path, std::span<const uint32_t> prefix)
+{
+    return (path.size() >= prefix.size()) && std::equal(prefix.begin(), prefix.end(), path.begin());
+}
+
+static InvocationDependence CombineInvocationDependence(InvocationDependence lhs, InvocationDependence rhs)
+{
+    if (lhs == InvocationDependence::Varying || rhs == InvocationDependence::Varying)
+    {
+        return InvocationDependence::Varying;
+    }
+
+    if (lhs == InvocationDependence::Invariant && rhs == InvocationDependence::Invariant)
+    {
+        return InvocationDependence::Invariant;
+    }
+
+    return InvocationDependence::Unknown;
+}
+
+static InvocationDependence SummarizeInvocationDependence(std::span<const InvocationDependence> components)
+{
+    if (components.empty())
+    {
+        return InvocationDependence::Unknown;
+    }
+
+    InvocationDependence summary = InvocationDependence::Invariant;
+    for (InvocationDependence component : components)
+    {
+        summary = CombineInvocationDependence(summary, component);
+    }
+    return summary;
+}
+
+static InvocationDependence GetDirectComponentInvocationDependence(const ValueMetadata& metadata, uint32_t component)
+{
+    if (component < metadata.component_invocation_dependence.size())
+    {
+        return metadata.component_invocation_dependence[component];
+    }
+
+    if (metadata.invocation_dependence == InvocationDependence::Invariant)
+    {
+        return InvocationDependence::Invariant;
+    }
+
+    return InvocationDependence::Unknown;
+}
+
+static bool TryGetSubobjectInvocationDependence(
+    std::span<const SubobjectInvocationDependenceEntry> entries,
+    std::span<const uint32_t> path,
+    InvocationDependence& out_dependence)
+{
+    for (const auto& entry : entries)
+    {
+        if (entry.path.size() != path.size()) { continue; }
+        if (!std::equal(entry.path.begin(), entry.path.end(), path.begin())) { continue; }
+        out_dependence = entry.dependence;
+        return true;
+    }
+    return false;
+}
+
 static inline uint16_t FloatToHalfBits(float value)
 {
 	uint32_t bits      = bit_cast<uint32_t>(value);
@@ -240,6 +324,27 @@ static inline constexpr bool IsRelationalIntCompare(spv::Op op)
         case spv::Op::OpSGreaterThanEqual:
         case spv::Op::OpIEqual:
         case spv::Op::OpINotEqual:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline constexpr bool IsConstantLikeOpcode(spv::Op opcode)
+{
+    switch (opcode)
+    {
+        case spv::Op::OpConstantTrue:
+        case spv::Op::OpConstantFalse:
+        case spv::Op::OpConstant:
+        case spv::Op::OpConstantComposite:
+        case spv::Op::OpConstantSampler:
+        case spv::Op::OpConstantNull:
+        case spv::Op::OpSpecConstantTrue:
+        case spv::Op::OpSpecConstantFalse:
+        case spv::Op::OpSpecConstant:
+        case spv::Op::OpSpecConstantComposite:
+        case spv::Op::OpSpecConstantOp:
             return true;
         default:
             return false;
@@ -696,6 +801,19 @@ void SPIRVSimulator::ParseAll()
         if ((spv::Op)instruction.opcode == spv::Op::OpLabel)
         {
             current_block_id_ = instruction.words[1];
+        }
+
+        if (((spv::Op)instruction.opcode == spv::Op::OpExecutionMode ||
+             (spv::Op)instruction.opcode == spv::Op::OpExecutionModeId) &&
+            instruction.word_count >= 3)
+        {
+            const spv::ExecutionMode mode = static_cast<spv::ExecutionMode>(instruction.words[2]);
+            if (mode == spv::ExecutionMode::ExecutionModeLocalSize ||
+                mode == spv::ExecutionMode::ExecutionModeLocalSizeId)
+            {
+                const uint32_t entry_point_id = instruction.words[1];
+                entry_point_local_size_mode_instruction_indices_[entry_point_id].push_back(instruction_index);
+            }
         }
 
         block_label_per_instruction_.push_back(current_block_id_);
@@ -3721,6 +3839,317 @@ static uint64_t SaturatingMul64(uint64_t a, uint64_t b)
     return a * b;
 }
 
+static bool CheckedAddU64(uint64_t lhs, uint64_t rhs, uint64_t& out)
+{
+    if (lhs > std::numeric_limits<uint64_t>::max() - rhs)
+    {
+        return false;
+    }
+    out = lhs + rhs;
+    return true;
+}
+
+static bool CheckedMulU64(uint64_t lhs, uint64_t rhs, uint64_t& out)
+{
+    if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
+    {
+        return false;
+    }
+    out = lhs * rhs;
+    return true;
+}
+
+static inline bool IsExactSingletonRange(const DenseValueRangeInfo& range)
+{
+    return range.valid && range.min == range.max;
+}
+
+static bool TryGetNonNegativeIntegerTypeMax(const Type& type, uint64_t& out_max)
+{
+    if (type.kind != Type::Kind::Int || type.scalar.width == 0 || type.scalar.width > 64)
+    {
+        return false;
+    }
+
+    if (type.scalar.is_signed)
+    {
+        out_max = type.scalar.width == 64
+                      ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+                      : (uint64_t{ 1 } << (type.scalar.width - 1)) - 1;
+    }
+    else
+    {
+        out_max = type.scalar.width == 64
+                      ? std::numeric_limits<uint64_t>::max()
+                      : (uint64_t{ 1 } << type.scalar.width) - 1;
+    }
+
+    return true;
+}
+
+static bool CheckedAddForType(uint64_t lhs, uint64_t rhs, const Type& result_type, uint64_t& out)
+{
+    uint64_t result_type_max = 0;
+    if (!TryGetNonNegativeIntegerTypeMax(result_type, result_type_max) ||
+        lhs > result_type_max || rhs > result_type_max - lhs)
+    {
+        return false;
+    }
+
+    out = lhs + rhs;
+    return true;
+}
+
+static bool CheckedSubForType(uint64_t lhs, uint64_t rhs, const Type& result_type, uint64_t& out)
+{
+    uint64_t result_type_max = 0;
+    if (!TryGetNonNegativeIntegerTypeMax(result_type, result_type_max) ||
+        lhs > result_type_max || rhs > result_type_max || lhs < rhs)
+    {
+        return false;
+    }
+
+    out = lhs - rhs;
+    return true;
+}
+
+static bool CheckedMulForType(uint64_t lhs, uint64_t rhs, const Type& result_type, uint64_t& out)
+{
+    uint64_t result_type_max = 0;
+    if (!TryGetNonNegativeIntegerTypeMax(result_type, result_type_max) ||
+        (lhs != 0 && rhs > result_type_max / lhs))
+    {
+        return false;
+    }
+
+    out = lhs * rhs;
+    return true;
+}
+
+static bool TryGetExactRangeCount(const DenseValueRangeInfo& range, uint64_t& out_count)
+{
+    if (!range.valid || !range.dense_range || range.stride == 0 || range.max < range.min)
+    {
+        return false;
+    }
+
+    const uint64_t span = range.max - range.min;
+    if ((span % range.stride) != 0)
+    {
+        return false;
+    }
+
+    const uint64_t step_count = span / range.stride;
+    if (step_count == std::numeric_limits<uint64_t>::max())
+    {
+        return false;
+    }
+
+    out_count = step_count + 1;
+    return true;
+}
+
+// Prove that the additive value set of two ranges is one exact dense arithmetic progression.
+// Singletons act as translations;
+// Two non-singleton ranges require independent invocation axes and exact mixed-radix tiling.
+// Failure leaves out unchanged so the caller can retain a conservative envelope.
+static bool TryCombineIndependentInvocationRanges(const DenseValueRangeInfo& lhs,
+                                                  const DenseValueRangeInfo& rhs,
+                                                  DenseValueRangeInfo&       out)
+{
+    // Validate both input range and their host-width additive bounds.
+    if (!lhs.valid || !rhs.valid || lhs.max < lhs.min || rhs.max < rhs.min)
+    {
+        return false;
+    }
+
+    uint64_t result_min = 0;
+    uint64_t expected_result_max = 0;
+    if (!CheckedAddU64(lhs.min, rhs.min, result_min) || !CheckedAddU64(lhs.max, rhs.max, expected_result_max))
+    {
+        return false;
+    }
+
+    const InvocationLinearizationInfo& lhs_linearization = lhs.invocation_linearization;
+    const InvocationLinearizationInfo& rhs_linearization = rhs.invocation_linearization;
+
+    // Reconstruct the candidate maximum from cardinality and stride.
+    // Publish only when it exactly matches the independently computed additive bound.
+    auto try_build_result = [&](uint64_t result_count, uint64_t result_stride) {
+        if (result_count == 0 || result_stride == 0)
+        {
+            return false;
+        }
+
+        uint64_t result_span = 0;
+        uint64_t result_max = 0;
+        if (!CheckedMulU64(result_count - 1, result_stride, result_span) ||
+            !CheckedAddU64(result_min, result_span, result_max) ||
+            result_max != expected_result_max)
+        {
+            return false;
+        }
+
+        DenseValueRangeInfo candidate = {};
+        candidate.valid = true;
+        candidate.thread_dependent = lhs.thread_dependent || rhs.thread_dependent;
+        candidate.dense_range = true;
+        candidate.min = result_min;
+        candidate.max = result_max;
+        candidate.stride = result_stride;
+        candidate.invocation_linearization.workgroup_id_component_mask =
+            lhs_linearization.workgroup_id_component_mask |
+            rhs_linearization.workgroup_id_component_mask;
+        candidate.invocation_linearization.local_invocation_id_component_mask =
+            lhs_linearization.local_invocation_id_component_mask |
+            rhs_linearization.local_invocation_id_component_mask;
+
+        out = candidate;
+        return true;
+    };
+
+    const bool lhs_is_singleton = IsExactSingletonRange(lhs);
+    const bool rhs_is_singleton = IsExactSingletonRange(rhs);
+
+    // A singleton introduces no varying dimension, so it needs neither dense
+    // metadata nor independent provenance. The other range must still be exact.
+    if (lhs_is_singleton && rhs_is_singleton)
+    {
+        return try_build_result(1, 1);
+    }
+    if (lhs_is_singleton)
+    {
+        uint64_t rhs_count = 0;
+        if (!TryGetExactRangeCount(rhs, rhs_count))
+        {
+            return false;
+        }
+        return try_build_result(rhs_count, rhs.stride);
+    }
+    if (rhs_is_singleton)
+    {
+        uint64_t lhs_count = 0;
+        if (!TryGetExactRangeCount(lhs, lhs_count))
+        {
+            return false;
+        }
+        return try_build_result(lhs_count, lhs.stride);
+    }
+
+    // Two varying ranges must derive from disjoint workgroup and local axes;
+    // otherwise their Cartesian-product cardinality cannot be established.
+    const bool lhs_has_provenance =
+        lhs_linearization.workgroup_id_component_mask != 0 ||
+        lhs_linearization.local_invocation_id_component_mask != 0;
+    const bool rhs_has_provenance =
+        rhs_linearization.workgroup_id_component_mask != 0 ||
+        rhs_linearization.local_invocation_id_component_mask != 0;
+    const bool workgroup_axes_overlap =
+        (lhs_linearization.workgroup_id_component_mask &
+         rhs_linearization.workgroup_id_component_mask) != 0;
+    const bool local_axes_overlap =
+        (lhs_linearization.local_invocation_id_component_mask &
+         rhs_linearization.local_invocation_id_component_mask) != 0;
+
+    if (!lhs_has_provenance || !rhs_has_provenance ||
+        workgroup_axes_overlap || local_axes_overlap)
+    {
+        return false;
+    }
+
+    uint64_t lhs_count = 0;
+    uint64_t rhs_count = 0;
+    // Both non-singleton operands must be exact dense progressions.
+    if (!TryGetExactRangeCount(lhs, lhs_count) || !TryGetExactRangeCount(rhs, rhs_count))
+    {
+        return false;
+    }
+
+    // The inner range must exactly fill one outer step. Strict equality proves
+    // there are neither holes nor overlaps and preserves a one-to-one tiling.
+    auto try_order = [&](const DenseValueRangeInfo& inner,
+                         uint64_t                   inner_count,
+                         const DenseValueRangeInfo& outer,
+                         uint64_t                   outer_count) {
+        uint64_t expected_outer_stride = 0;
+        if (!CheckedMulU64(inner.stride, inner_count, expected_outer_stride) ||
+            outer.stride != expected_outer_stride)
+        {
+            return false;
+        }
+
+        uint64_t result_count = 0;
+        if (!CheckedMulU64(inner_count, outer_count, result_count))
+        {
+            return false;
+        }
+        return try_build_result(result_count, inner.stride);
+    };
+
+    // Addition is symmetric; accept either operand as the inner radix.
+    if (try_order(lhs, lhs_count, rhs, rhs_count))
+    {
+        return true;
+    }
+
+    return try_order(rhs, rhs_count, lhs, lhs_count);
+}
+
+bool SPIRVSimulator::TryGetFixedNonNegativeIntegerScalar(uint32_t result_id, uint64_t& out_value) const
+{
+    const ValueMetadata& metadata = value_meta_[result_id];
+    if (metadata.value_range.valid)
+    {
+        return false;
+    }
+
+    if (metadata.invocation_dependence != InvocationDependence::Invariant)
+    {
+        return false;
+    }
+
+    // A representative value cannot prove a fixed scalar when metadata marks it arbitrary or uninitialized.
+    if ((metadata.flags & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) != 0)
+    {
+        return false;
+    }
+
+    const Type& type = GetTypeByResultId(result_id);
+    if (type.kind != Type::Kind::Int)
+    {
+        return false;
+    }
+
+    const Value& value = GetValue(result_id);
+    if (const uint64_t* unsigned_value = std::get_if<uint64_t>(&value))
+    {
+        out_value = *unsigned_value;
+        return true;
+    }
+
+    if (const int64_t* signed_value = std::get_if<int64_t>(&value))
+    {
+        if (*signed_value < 0)
+        {
+            return false;
+        }
+
+        out_value = static_cast<uint64_t>(*signed_value);
+        return true;
+    }
+
+    return false;
+}
+
+void SPIRVSimulator::SetConstantInvocationDependence(uint32_t result_id)
+{
+    ValueMetadata& metadata = value_meta_[result_id];
+    if ((metadata.flags & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) == 0)
+    {
+        metadata.invocation_dependence = InvocationDependence::Invariant;
+    }
+}
+
 uint64_t SPIRVSimulator::GetUIntScalarValue(uint32_t result_id) const
 {
     const Value& value = GetValue(result_id);
@@ -3738,6 +4167,109 @@ uint64_t SPIRVSimulator::GetUIntScalarValue(uint32_t result_id) const
     return 0;
 }
 
+std::optional<ComputeLocalSize> SPIRVSimulator::TryDeriveComputeLocalSizeFromWorkgroupSizeBuiltin(
+    uint32_t entry_point_function_id) const
+{
+    const auto model_it = entry_point_models_.find(entry_point_function_id);
+    assertmc(model_it != entry_point_models_.end(),
+             "SPIRV simulator: Selected entry point has no execution model");
+
+    // TODO: BuiltIn WorkgroupSize is also valid for Task and Mesh execution models.
+    // The simulator currently models workgroup geometry only for GLCompute.
+    // Add Task/Mesh dispatch inputs and builtin range initialization before
+    // enabling WorkgroupSize derivation for those execution models.
+    if (model_it->second != spv::ExecutionModel::ExecutionModelGLCompute)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<uint32_t> workgroup_size_result_id;
+    for (const auto& [result_id, decoration_list] : decorators_)
+    {
+        for (const DecorationInfo& decoration : decoration_list)
+        {
+            if (decoration.kind != spv::Decoration::DecorationBuiltIn)
+            {
+                continue;
+            }
+
+            assertmc(!decoration.literals.empty(), "SPIRV simulator: BuiltIn decoration has no literal");
+            const spv::BuiltIn builtin = static_cast<spv::BuiltIn>(decoration.literals[0]);
+            if (builtin != spv::BuiltIn::BuiltInWorkgroupSize)
+            {
+                continue;
+            }
+
+            if (workgroup_size_result_id.has_value())
+            {
+                assertmc(*workgroup_size_result_id == result_id,
+                         "SPIRV simulator: Multiple BuiltIn WorkgroupSize objects");
+            }
+            else
+            {
+                workgroup_size_result_id = result_id;
+            }
+        }
+    }
+
+    if (!workgroup_size_result_id.has_value())
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t result_id = *workgroup_size_result_id;
+    const Type&    vector_type = GetTypeByResultId(result_id);
+    assertmc(vector_type.kind == Type::Kind::Vector,
+             "SPIRV simulator: BuiltIn WorkgroupSize must be a vector");
+    assertmc(vector_type.vector.elem_count == 3,
+             "SPIRV simulator: BuiltIn WorkgroupSize must have three components");
+
+    const Type& component_type = GetTypeByTypeId(vector_type.vector.elem_type_id);
+    assertmc(component_type.kind == Type::Kind::Int,
+             "SPIRV simulator: BuiltIn WorkgroupSize components must be integers");
+    assertmc(component_type.scalar.width == 32,
+             "SPIRV simulator: BuiltIn WorkgroupSize components must be 32-bit integers");
+
+    // WorkgroupSize is authoritative when present; do not derive dispatch
+    // geometry from a representative or uninitialized value.
+    assertmc((GetFlags(result_id) & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) == 0,
+             "SPIRV simulator: BuiltIn WorkgroupSize must have an exact initialized value");
+
+    const Value& value = GetValue(result_id);
+    const auto*  vector_value = std::get_if<std::shared_ptr<VectorV>>(&value);
+    assertmc(vector_value != nullptr && *vector_value != nullptr,
+             "SPIRV simulator: BuiltIn WorkgroupSize has no evaluated vector value");
+
+    const std::vector<Value>& components = (*vector_value)->elems;
+    assertmc(components.size() == vector_type.vector.elem_count,
+             "SPIRV simulator: Evaluated WorkgroupSize value does not match its vector type");
+
+    auto read_component = [this](const Value& component) -> uint64_t {
+        if (const uint64_t* unsigned_value = std::get_if<uint64_t>(&component))
+        {
+            assertmc(*unsigned_value != 0, "SPIRV simulator: WorkgroupSize component must be non-zero");
+            return *unsigned_value;
+        }
+
+        if (const int64_t* signed_value = std::get_if<int64_t>(&component))
+        {
+            assertmc(*signed_value > 0, "SPIRV simulator: WorkgroupSize component must be positive");
+            return static_cast<uint64_t>(*signed_value);
+        }
+
+        assertxc("SPIRV simulator: WorkgroupSize component is not an integer scalar");
+        return 0;
+    };
+
+    ComputeLocalSize candidate;
+    candidate.x = read_component(components[0]);
+    candidate.y = read_component(components[1]);
+    candidate.z = read_component(components[2]);
+    candidate.valid = true;
+
+    return candidate;
+}
+
 void SPIRVSimulator::DeriveActiveComputeLocalSize(uint32_t entry_point_function_id)
 {
     active_compute_local_size_ = simulation_data_->compute_local_size;
@@ -3746,34 +4278,88 @@ void SPIRVSimulator::DeriveActiveComputeLocalSize(uint32_t entry_point_function_
         return;
     }
 
-    for (const Instruction& inst : instructions_)
+    const std::optional<ComputeLocalSize> workgroup_size =
+        TryDeriveComputeLocalSizeFromWorkgroupSizeBuiltin(entry_point_function_id);
+    if (workgroup_size.has_value())
     {
-        if ((inst.opcode != spv::Op::OpExecutionMode && inst.opcode != spv::Op::OpExecutionModeId) || inst.word_count < 3)
+        active_compute_local_size_ = *workgroup_size;
+        return;
+    }
+
+    const auto local_size_modes_it =
+        entry_point_local_size_mode_instruction_indices_.find(entry_point_function_id);
+    if (local_size_modes_it == entry_point_local_size_mode_instruction_indices_.end())
+    {
+        return;
+    }
+
+    std::optional<ComputeLocalSize> execution_mode_local_size;
+    for (const size_t instruction_index : local_size_modes_it->second)
+    {
+        const Instruction& inst = instructions_[instruction_index];
+        assertmc((inst.opcode == spv::Op::OpExecutionMode ||
+                  inst.opcode == spv::Op::OpExecutionModeId) &&
+                  inst.word_count >= 3 && inst.words[1] == entry_point_function_id,
+                 "SPIRV simulator: Invalid indexed local-size execution mode");
+
+        spv::ExecutionMode mode = static_cast<spv::ExecutionMode>(inst.words[2]);
+        ComputeLocalSize candidate;
+        if (mode == spv::ExecutionMode::ExecutionModeLocalSize)
         {
-            continue;
+            assertmc(inst.opcode == spv::Op::OpExecutionMode, "SPIRV simulator: LocalSize must use OpExecutionMode");
+            assertmc(inst.word_count == 6, "SPIRV simulator: LocalSize must have three components");
+
+            candidate.x = inst.words[3];
+            candidate.y = inst.words[4];
+            candidate.z = inst.words[5];
         }
-        if (inst.words[1] != entry_point_function_id)
+        else if (mode == spv::ExecutionMode::ExecutionModeLocalSizeId)
+        {
+            assertmc(inst.opcode == spv::Op::OpExecutionModeId, "SPIRV simulator: LocalSizeId must use OpExecutionModeId");
+            assertmc(inst.word_count == 6, "SPIRV simulator: LocalSizeId must have three component IDs");
+
+            auto read_component = [this](uint32_t component_id) -> uint64_t {
+                const Type& component_type = GetTypeByResultId(component_id);
+                assertmc(component_type.kind == Type::Kind::Int,
+                         "SPIRV simulator: LocalSizeId component must be an integer scalar");
+
+                // LocalSizeId is authoritative when present; reject inexact
+                // metadata instead of deriving geometry from its representative value.
+                assertmc((GetFlags(component_id) & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) == 0,
+                         "SPIRV simulator: LocalSizeId component must have an exact initialized value");
+
+                const Instruction& defining_instruction = instructions_[GetInstructionIndexForResultId(component_id)];
+                assertmc(IsConstantLikeOpcode(defining_instruction.opcode),
+                         "SPIRV simulator: LocalSizeId component must be a constant instruction");
+
+                const uint64_t component = GetUIntScalarValue(component_id);
+                return component;
+            };
+
+            candidate.x = read_component(inst.words[3]);
+            candidate.y = read_component(inst.words[4]);
+            candidate.z = read_component(inst.words[5]);
+        }
+        else
         {
             continue;
         }
 
-        spv::ExecutionMode mode = static_cast<spv::ExecutionMode>(inst.words[2]);
-        if (mode == spv::ExecutionMode::ExecutionModeLocalSize && inst.word_count >= 6)
-        {
-            active_compute_local_size_.x = inst.words[3];
-            active_compute_local_size_.y = inst.words[4];
-            active_compute_local_size_.z = inst.words[5];
-            active_compute_local_size_.valid = true;
-            return;
-        }
-        if (mode == spv::ExecutionMode::ExecutionModeLocalSizeId && inst.word_count >= 6)
-        {
-            active_compute_local_size_.x = GetUIntScalarValue(inst.words[3]);
-            active_compute_local_size_.y = GetUIntScalarValue(inst.words[4]);
-            active_compute_local_size_.z = GetUIntScalarValue(inst.words[5]);
-            active_compute_local_size_.valid = true;
-            return;
-        }
+        assertmc(candidate.x != 0 && candidate.y != 0 && candidate.z != 0,
+                 "SPIRV simulator: Local size components must be non-zero");
+        candidate.valid = true;
+
+        // SPIR-V permits at most one LocalSize, LocalSizeId, LocalSizeHint, or
+        // LocalSizeHintId execution mode per entry point. Reject an invalid
+        // module here rather than selecting a local-size declaration arbitrarily.
+        assertmc(!execution_mode_local_size.has_value(),
+                 "SPIRV simulator: Multiple local-size execution modes for one entry point");
+        execution_mode_local_size = candidate;
+    }
+
+    if (execution_mode_local_size.has_value())
+    {
+        active_compute_local_size_ = *execution_mode_local_size;
     }
 }
 
@@ -3789,6 +4375,176 @@ void SPIRVSimulator::CopyNonFlagValueMetadata(uint32_t target_rid, uint32_t sour
     dst.address_range_max = src.address_range_max;
     dst.address_range_stride = src.address_range_stride;
     dst.address_element_size = src.address_element_size;
+}
+
+void SPIRVSimulator::CopyInvocationDependenceMetadata(uint32_t target_rid, uint32_t source_rid)
+{
+    ValueMetadata& dst = value_meta_[target_rid];
+    const ValueMetadata& src = value_meta_[source_rid];
+    dst.invocation_dependence = src.invocation_dependence;
+    dst.component_invocation_dependence = src.component_invocation_dependence;
+    dst.subobject_invocation_dependence = src.subobject_invocation_dependence;
+}
+
+void SPIRVSimulator::PropagateExternalLoadInvocationDependence(uint32_t result_id,
+                                                               uint32_t pointer_id)
+{
+    const ValueMetadata& pointer_meta = value_meta_[pointer_id];
+    ValueMetadata&       result_meta  = value_meta_[result_id];
+
+    if (pointer_meta.invocation_dependence == InvocationDependence::Varying)
+    {
+        // A varying external address is sufficient to classify the loaded
+        // whole value as potentially varying. Keep the legacy signal for
+        // consumers which have not migrated to the tri-state metadata yet.
+        result_meta.invocation_dependence = InvocationDependence::Varying;
+        result_meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
+    }
+    else if (pointer_meta.invocation_dependence == InvocationDependence::Unknown &&
+             (pointer_meta.flags & SPS_FLAG_THREAD_SPECIFIC) != 0)
+    {
+        // Preserve the legacy fallback without promoting Unknown to a
+        // positive tri-state dependence proof.
+        result_meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
+    }
+}
+
+void SPIRVSimulator::PropagateBitcastInvocationDependence(uint32_t    result_id,
+                                                          uint32_t    operand_id,
+                                                          const Type& result_type,
+                                                          const Type& operand_type)
+{
+    struct BitcastDependenceShape
+    {
+        bool     is_vector       = false;
+        uint32_t component_count = 0;
+        uint32_t component_width = 0;
+    };
+
+    auto try_get_shape = [&](const Type& type) -> std::optional<BitcastDependenceShape> {
+        if (type.kind == Type::Kind::Int || type.kind == Type::Kind::Float)
+        {
+            return BitcastDependenceShape{false, 1, type.scalar.width};
+        }
+
+        if (type.kind == Type::Kind::Pointer)
+        {
+            // The simulator currently models all pointers as 64-bit values.
+            return BitcastDependenceShape{false, 1, 64};
+        }
+
+        if (type.kind == Type::Kind::Vector)
+        {
+            const Type& element_type = GetTypeByTypeId(type.vector.elem_type_id);
+            if (element_type.kind != Type::Kind::Int && element_type.kind != Type::Kind::Float)
+            {
+                return std::nullopt;
+            }
+
+            return BitcastDependenceShape{true, type.vector.elem_count, element_type.scalar.width};
+        }
+
+        return std::nullopt;
+    };
+
+    ValueMetadata&       result_meta  = value_meta_[result_id];
+    const ValueMetadata& operand_meta = value_meta_[operand_id];
+
+    // Always remove stale dependence state before checking whether both bitcast
+    // shapes are supported by this propagation proof.
+    result_meta.invocation_dependence = InvocationDependence::Unknown;
+    result_meta.component_invocation_dependence.clear();
+    result_meta.subobject_invocation_dependence.clear();
+
+    const std::optional<BitcastDependenceShape> result_shape  = try_get_shape(result_type);
+    const std::optional<BitcastDependenceShape> operand_shape = try_get_shape(operand_type);
+    if (!result_shape.has_value() || !operand_shape.has_value())
+    {
+        return;
+    }
+
+    const uint64_t result_total_bits = uint64_t{result_shape->component_count} * result_shape->component_width;
+    const uint64_t operand_total_bits = uint64_t{operand_shape->component_count} * operand_shape->component_width;
+    assertmc(result_total_bits == operand_total_bits, "OpBitcast dependence propagation requires equal total bit widths");
+
+    // OpBitcast preserves the complete bit pattern, so whole-value dependence
+    // is unchanged even when source and result component shapes differ.
+    result_meta.invocation_dependence = operand_meta.invocation_dependence;
+    if (result_meta.invocation_dependence == InvocationDependence::Varying)
+    {
+        result_meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
+    }
+
+    // Scalar and pointer results have no component dependence metadata.
+    if (!result_shape->is_vector)
+    {
+        return;
+    }
+
+    // OpBitcast can change component boundaries. Initialize every result component conservatively,
+    // then rebuild its dependence from the source-to-result component mapping below.
+    result_meta.component_invocation_dependence.assign(result_shape->component_count, InvocationDependence::Unknown);
+
+    auto get_operand_component_dependence = [&](uint32_t component) -> InvocationDependence {
+        if (operand_shape->is_vector)
+        {
+            return GetDirectComponentInvocationDependence(operand_meta, component);
+        }
+
+        assertmc(component == 0, "Scalar or pointer OpBitcast operand has one component");
+        return operand_meta.invocation_dependence;
+    };
+
+    // Equal component shapes map one source component to one result component.
+    if (operand_shape->component_count == result_shape->component_count)
+    {
+        assertmc(operand_shape->component_width == result_shape->component_width,
+                 "Equal-count OpBitcast components must have equal widths");
+        for (uint32_t component = 0; component < result_shape->component_count; ++component)
+        {
+            result_meta.component_invocation_dependence[component] = get_operand_component_dependence(component);
+        }
+        return;
+    }
+
+    // When one source component is split into several result components, each
+    // bit slice conservatively inherits the source component's dependence.
+    if (operand_shape->component_count < result_shape->component_count)
+    {
+        assertmc(result_shape->component_count % operand_shape->component_count == 0,
+                 "OpBitcast split ratio must be integral");
+        const uint32_t split_ratio = result_shape->component_count / operand_shape->component_count;
+        assertmc(operand_shape->component_width == result_shape->component_width * split_ratio,
+                 "OpBitcast split component widths do not match");
+
+        for (uint32_t result_component = 0; result_component < result_shape->component_count; ++result_component)
+        {
+            const uint32_t operand_component = result_component / split_ratio;
+            result_meta.component_invocation_dependence[result_component] = get_operand_component_dependence(operand_component);
+        }
+        return;
+    }
+
+    // When several complete source components are merged, summarize exactly
+    // the consecutive source group that contributes to each result component.
+    assertmc(operand_shape->component_count % result_shape->component_count == 0,
+             "OpBitcast merge ratio must be integral");
+    const uint32_t merge_ratio = operand_shape->component_count / result_shape->component_count;
+    assertmc(result_shape->component_width == operand_shape->component_width * merge_ratio,
+             "OpBitcast merged component widths do not match");
+
+    for (uint32_t result_component = 0; result_component < result_shape->component_count; ++result_component)
+    {
+        std::vector<InvocationDependence> inputs;
+        inputs.reserve(merge_ratio);
+        const uint32_t first_operand_component = result_component * merge_ratio;
+        for (uint32_t offset = 0; offset < merge_ratio; ++offset)
+        {
+            inputs.push_back(get_operand_component_dependence(first_operand_component + offset));
+        }
+
+        result_meta.component_invocation_dependence[result_component] = SummarizeInvocationDependence(inputs);
+    }
 }
 
 bool SPIRVSimulator::TryBuildVectorShuffleComponentRanges(uint32_t result_id,
@@ -3848,6 +4604,49 @@ bool SPIRVSimulator::TryBuildVectorShuffleComponentRanges(uint32_t result_id,
     return true;
 }
 
+void SPIRVSimulator::BuildVectorShuffleInvocationDependence(uint32_t           result_id,
+                                                            uint32_t           vec1_id,
+                                                            uint32_t           vec2_id,
+                                                            const Instruction& instruction)
+{
+    const ValueMetadata& vec1_meta = value_meta_[vec1_id];
+    const ValueMetadata& vec2_meta = value_meta_[vec2_id];
+
+    const Type&    vec1_type  = GetTypeByResultId(vec1_id);
+    const uint32_t vec1_width = vec1_type.vector.elem_count;
+
+    std::vector<InvocationDependence> result_components;
+    result_components.reserve(instruction.word_count - 5);
+
+    // Project each selector independently from the two logically concatenated
+    // source vectors. Undefined selectors have no source dependence proof.
+    for (uint32_t literal_index = 5; literal_index < instruction.word_count; ++literal_index)
+    {
+        const uint32_t selector = instruction.words[literal_index];
+        if (selector == 0xFFFFFFFFu)
+        {
+            result_components.push_back(InvocationDependence::Unknown);
+            continue;
+        }
+
+        if (selector < vec1_width)
+        {
+            result_components.push_back(GetDirectComponentInvocationDependence(vec1_meta, selector));
+            continue;
+        }
+
+        const uint32_t vec2_component = selector - vec1_width;
+        result_components.push_back(GetDirectComponentInvocationDependence(vec2_meta, vec2_component));
+    }
+
+    ValueMetadata& result_meta = value_meta_[result_id];
+    result_meta.component_invocation_dependence = std::move(result_components);
+
+    // SetValue() has already cleared stale subobject metadata. Vector scalar
+    // leaves are represented only by direct component metadata.
+    result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+}
+
 void SPIRVSimulator::AppendSubobjectScalarRangesFromValue(std::vector<SubobjectScalarRangeEntry>& dst,
                                                           const std::vector<uint32_t>& prefix,
                                                           uint32_t source_id) const
@@ -3883,23 +4682,124 @@ void SPIRVSimulator::AppendSubobjectScalarRangesFromValue(std::vector<SubobjectS
     }
 }
 
-bool SPIRVSimulator::PathStartsWith(const std::vector<uint32_t>& path,
-                                    const std::vector<uint32_t>& prefix) const
+void SPIRVSimulator::AppendSubobjectInvocationDependenceFromValue(
+    std::vector<SubobjectInvocationDependenceEntry>& dst,
+    const std::vector<uint32_t>&                     prefix,
+    uint32_t                                         source_id) const
 {
-    if (prefix.size() > path.size())
+    const ValueMetadata& src = value_meta_[source_id];
+    const Type& src_type = GetTypeByResultId(source_id);
+
+    if (src_type.kind == Type::Kind::BoolT ||
+        src_type.kind == Type::Kind::Int ||
+        src_type.kind == Type::Kind::Float)
     {
-        return false;
+        dst.push_back(SubobjectInvocationDependenceEntry{ prefix, src.invocation_dependence });
+        return;
     }
 
-    for (size_t i = 0; i < prefix.size(); ++i)
+    if (src_type.kind == Type::Kind::Vector)
     {
-        if (path[i] != prefix[i])
+        for (uint32_t component = 0; component < src.component_invocation_dependence.size(); ++component)
         {
-            return false;
+            std::vector<uint32_t> path = prefix;
+            path.push_back(component);
+            dst.push_back(SubobjectInvocationDependenceEntry{ std::move(path), src.component_invocation_dependence[component] });
+        }
+        return;
+    }
+
+    if (src_type.kind == Type::Kind::Matrix ||
+        src_type.kind == Type::Kind::Struct ||
+        src_type.kind == Type::Kind::Array ||
+        src_type.kind == Type::Kind::RuntimeArray)
+    {
+        for (const SubobjectInvocationDependenceEntry& entry : src.subobject_invocation_dependence)
+        {
+            std::vector<uint32_t> path = prefix;
+            path.insert(path.end(), entry.path.begin(), entry.path.end());
+            dst.push_back(SubobjectInvocationDependenceEntry{ std::move(path), entry.dependence });
         }
     }
+}
 
-    return true;
+// Append the complete statically enumerable scalar-leaf shape of type_id below prefix,
+// assigning the same dependence to every leaf. Existing entries in dst are preserved
+// so callers can build a larger aggregate incrementally.
+void SPIRVSimulator::AppendUniformSubobjectInvocationDependenceForType(
+    std::vector<SubobjectInvocationDependenceEntry>& dst,
+    const std::vector<uint32_t>&                     prefix,
+    uint32_t                                         type_id,
+    InvocationDependence                             dependence) const
+{
+    const Type& type = GetTypeByTypeId(type_id);
+
+    if (type.kind == Type::Kind::BoolT ||
+        type.kind == Type::Kind::Int ||
+        type.kind == Type::Kind::Float)
+    {
+        // A scalar is the leaf represented by the current path.
+        dst.push_back(SubobjectInvocationDependenceEntry{ prefix, dependence });
+        return;
+    }
+
+    if (type.kind == Type::Kind::Vector)
+    {
+        // Vector components are scalar leaves directly below the prefix.
+        for (uint32_t component = 0; component < type.vector.elem_count; ++component)
+        {
+            std::vector<uint32_t> path = prefix;
+            path.push_back(component);
+            dst.push_back(SubobjectInvocationDependenceEntry{ std::move(path), dependence });
+        }
+        return;
+    }
+
+    if (type.kind == Type::Kind::Matrix)
+    {
+        // Matrix scalar leaves use a column-then-row path.
+        const Type& column_type = GetTypeByTypeId(type.matrix.col_type_id);
+        for (uint32_t column = 0; column < type.matrix.col_count; ++column)
+        {
+            for (uint32_t row = 0; row < column_type.vector.elem_count; ++row)
+            {
+                std::vector<uint32_t> path = prefix;
+                path.push_back(column);
+                path.push_back(row);
+                dst.push_back(SubobjectInvocationDependenceEntry{ std::move(path), dependence });
+            }
+        }
+        return;
+    }
+
+    if (type.kind == Type::Kind::Struct)
+    {
+        // Recurse through each member so nested composites expand to scalars.
+        const std::vector<uint32_t>& member_type_ids = struct_members_.at(type_id);
+        for (uint32_t member = 0; member < member_type_ids.size(); ++member)
+        {
+            std::vector<uint32_t> path = prefix;
+            path.push_back(member);
+            AppendUniformSubobjectInvocationDependenceForType(dst, path, member_type_ids[member], dependence);
+        }
+        return;
+    }
+
+    if (type.kind == Type::Kind::Array)
+    {
+        // Fixed-size arrays are statically enumerable; recurse through each element.
+        const uint64_t element_count = GetArrayLength(type.array.length_id);
+        for (uint32_t element = 0; element < element_count; ++element)
+        {
+            std::vector<uint32_t> path = prefix;
+            path.push_back(element);
+            AppendUniformSubobjectInvocationDependenceForType(dst, path, type.array.elem_type_id, dependence);
+        }
+        return;
+    }
+
+    // Runtime arrays and unsupported types have no complete type-level leaf
+    // shape, so callers must use a conservative summary fallback.
 }
 
 void SPIRVSimulator::EraseSubobjectScalarRangesByPrefix(std::vector<SubobjectScalarRangeEntry>& entries,
@@ -3910,6 +4810,17 @@ void SPIRVSimulator::EraseSubobjectScalarRangesByPrefix(std::vector<SubobjectSca
                                      return PathStartsWith(entry.path, prefix);
                                  }),
                   entries.end());
+}
+
+void SPIRVSimulator::EraseSubobjectInvocationDependenceByPrefix(
+    std::vector<SubobjectInvocationDependenceEntry>& entries,
+    std::span<const uint32_t> prefix) const
+{
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                 [&](const auto& entry) {
+                                    return PathStartsWith(entry.path, prefix);
+                                 }),
+                entries.end());
 }
 
 StoredValueMetadataSnapshot SPIRVSimulator::MakeStoredValueMetadataSnapshot(uint32_t value_id) const
@@ -3925,6 +4836,10 @@ StoredValueMetadataSnapshot SPIRVSimulator::MakeStoredValueMetadataSnapshot(uint
     out.address_range_max = src.address_range_max;
     out.address_range_stride = src.address_range_stride;
     out.address_element_size = src.address_element_size;
+
+    out.invocation_dependence = src.invocation_dependence;
+    out.component_invocation_dependence = src.component_invocation_dependence;
+    out.subobject_invocation_dependence = src.subobject_invocation_dependence;
     return out;
 }
 
@@ -4051,10 +4966,10 @@ void SPIRVSimulator::InvalidateOverlappingStoredValues(const PointerV& stored_po
     }
 }
 
-bool SPIRVSimulator::TryProjectAggregateSubobjectMetadata(uint32_t result_id,
-                                                          const std::vector<DenseValueRangeInfo>& source_component_ranges,
-                                                          const std::vector<SubobjectScalarRangeEntry>& source_subobject_ranges,
-                                                          const std::vector<uint32_t>& selected_path)
+bool SPIRVSimulator::TryProjectAggregateSubobjectValueRange(uint32_t result_id,
+                                                            const std::vector<DenseValueRangeInfo>& source_component_ranges,
+                                                            const std::vector<SubobjectScalarRangeEntry>& source_subobject_ranges,
+                                                            const std::vector<uint32_t>& selected_path)
 {
     ValueMetadata& result_meta = value_meta_[result_id];
     const Type& result_type = GetTypeByResultId(result_id);
@@ -4074,6 +4989,7 @@ bool SPIRVSimulator::TryProjectAggregateSubobjectMetadata(uint32_t result_id,
     // metadata representation.
     if (result_is_scalar && selected_path.size() == 1)
     {
+        // Aggregate scalar members fall through to the subobject-path lookup below.
         const uint32_t component_index = selected_path[0];
         if (component_index < source_component_ranges.size() &&
             source_component_ranges[component_index].valid)
@@ -4162,15 +5078,222 @@ bool SPIRVSimulator::TryProjectAggregateSubobjectMetadata(uint32_t result_id,
     return projected;
 }
 
-bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const PointerV& pointer, uint32_t type_id)
+// Project invocation-dependence metadata from the selected source subtree to
+// the result root, preserving exact leaf proofs and conservative fallbacks.
+void SPIRVSimulator::ProjectAggregateSubobjectInvocationDependence(uint32_t                     result_id,
+                                                                   const ValueMetadata&         source_meta,
+                                                                   const std::vector<uint32_t>& selected_path)
+{
+    ValueMetadata& result_meta = value_meta_[result_id];
+    const Type&    result_type = GetTypeByResultId(result_id);
+
+    const bool result_is_scalar =
+        result_type.kind == Type::Kind::BoolT ||
+        result_type.kind == Type::Kind::Int ||
+        result_type.kind == Type::Kind::Float;
+    const bool result_is_aggregate =
+        result_type.kind == Type::Kind::Matrix ||
+        result_type.kind == Type::Kind::Struct ||
+        result_type.kind == Type::Kind::Array ||
+        result_type.kind == Type::Kind::RuntimeArray;
+
+    // Build the complete statically enumerable result shape as Unknown first,
+    // so missing source proofs remain visible when summaries are rebuilt.
+    if (result_type.kind == Type::Kind::Vector)
+    {
+        result_meta.component_invocation_dependence.assign(result_type.vector.elem_count,
+                                                           InvocationDependence::Unknown);
+    }
+    else if (result_is_aggregate && result_type.kind != Type::Kind::RuntimeArray)
+    {
+        const uint32_t result_type_id = GetTypeID(result_id);
+
+        // Initialize the complete scalar-leaf shape first. Source projection
+        // overwrites exact matches and leaves unsupported paths as Unknown.
+        AppendUniformSubobjectInvocationDependenceForType(
+            result_meta.subobject_invocation_dependence, {}, result_type_id, InvocationDependence::Unknown);
+
+        uint32_t component_count = 0;
+        if (result_type.kind == Type::Kind::Matrix)
+        {
+            component_count = result_type.matrix.col_count;
+        }
+        else if (result_type.kind == Type::Kind::Struct)
+        {
+            component_count = static_cast<uint32_t>(struct_members_.at(result_type_id).size());
+        }
+        else if (result_type.kind == Type::Kind::Array)
+        {
+            component_count = static_cast<uint32_t>(GetArrayLength(result_type.array.length_id));
+        }
+        result_meta.component_invocation_dependence.assign(component_count, InvocationDependence::Unknown);
+    }
+
+    // Select source leaves below selected_path, remove that prefix, and write
+    // exact matches into the result shape without importing sibling metadata.
+    for (const SubobjectInvocationDependenceEntry& source_entry : source_meta.subobject_invocation_dependence)
+    {
+        if (!PathStartsWith(source_entry.path, selected_path))
+        {
+            continue;
+        }
+
+        const size_t relative_path_size = source_entry.path.size() - selected_path.size();
+        std::vector<uint32_t> relative_path(relative_path_size);
+        std::copy_n(source_entry.path.end() - relative_path_size, relative_path_size, relative_path.begin());
+
+        // Exact scalar Invariant/Varying metadata is final. Unknown may still
+        // be refined by a stronger direct-component or source-level proof.
+        if (relative_path.empty())
+        {
+            if (!result_is_scalar)
+            {
+                continue;
+            }
+            result_meta.invocation_dependence = source_entry.dependence;
+            if (source_entry.dependence != InvocationDependence::Unknown)
+            {
+                return;
+            }
+            continue;
+        }
+
+        if (result_is_scalar)
+        {
+            continue;
+        }
+
+        if (result_type.kind == Type::Kind::Vector)
+        {
+            if (relative_path.size() != 1)
+            {
+                continue;
+            }
+            const uint32_t component = relative_path[0];
+            if (component >= result_meta.component_invocation_dependence.size())
+            {
+                continue;
+            }
+            result_meta.component_invocation_dependence[component] = source_entry.dependence;
+            continue;
+        }
+
+        if (!result_is_aggregate || result_type.kind == Type::Kind::RuntimeArray)
+        {
+            continue;
+        }
+
+        // Non-vector aggregates already contain every expected relative leaf;
+        // projection only updates the matching entry and never imports siblings.
+        for (SubobjectInvocationDependenceEntry& result_entry : result_meta.subobject_invocation_dependence)
+        {
+            if (result_entry.path == relative_path)
+            {
+                result_entry.dependence = source_entry.dependence;
+                break;
+            }
+        }
+    }
+
+    // A scalar prefers its exact projected leaf. If that was unavailable or Unknown,
+    // fall back to a direct-component or whole-source Invariant proof.
+    if (result_is_scalar)
+    {
+        if (selected_path.size() == 1)
+        {
+            result_meta.invocation_dependence = GetDirectComponentInvocationDependence(source_meta, selected_path[0]);
+        }
+        else if (source_meta.invocation_dependence == InvocationDependence::Invariant)
+        {
+            result_meta.invocation_dependence = InvocationDependence::Invariant;
+        }
+        return;
+    }
+
+    // Unsupported result kinds have no invocation-dependence projection.
+    if (result_type.kind != Type::Kind::Vector && !result_is_aggregate)
+    {
+        return;
+    }
+
+    // Use exact direct-component metadata for a direct selection; otherwise
+    // only a whole-source Invariant proof can describe the selected subtree.
+    InvocationDependence selected_summary = InvocationDependence::Unknown;
+    if (selected_path.size() == 1 && selected_path[0] < source_meta.component_invocation_dependence.size())
+    {
+        selected_summary = source_meta.component_invocation_dependence[selected_path[0]];
+    }
+    else if (source_meta.invocation_dependence == InvocationDependence::Invariant)
+    {
+        selected_summary = InvocationDependence::Invariant;
+    }
+
+    // A whole-subtree Invariant proof applies to every descendant. Reject
+    // contradictory Varying metadata before filling all Unknown descendants.
+    if (selected_summary == InvocationDependence::Invariant)
+    {
+        for (InvocationDependence& dependence : result_meta.component_invocation_dependence)
+        {
+            assertmc(dependence != InvocationDependence::Varying,
+                     "SPIRV simulator: Invariant composite extract has a varying component");
+            dependence = InvocationDependence::Invariant;
+        }
+        for (SubobjectInvocationDependenceEntry& entry : result_meta.subobject_invocation_dependence)
+        {
+            assertmc(entry.dependence != InvocationDependence::Varying,
+                     "SPIRV simulator: Invariant composite extract has a varying subobject");
+            entry.dependence = InvocationDependence::Invariant;
+        }
+    }
+
+    if (result_type.kind == Type::Kind::RuntimeArray)
+    {
+        // Runtime arrays have no type-level element count, so only a reliable
+        // summary for the selected whole value can be retained at this stage.
+        result_meta.invocation_dependence = selected_summary;
+        return;
+    }
+
+    // Rebuild each non-vector aggregate component from its complete leaf shape.
+    if (result_type.kind != Type::Kind::Vector)
+    {
+        // The leaf shape is complete, so absent proofs participate as Unknown
+        // when each direct component is summarized.
+        for (uint32_t component = 0; component < result_meta.component_invocation_dependence.size(); ++component)
+        {
+            std::vector<InvocationDependence> component_leaves;
+            for (const SubobjectInvocationDependenceEntry& entry : result_meta.subobject_invocation_dependence)
+            {
+                if (!entry.path.empty() && entry.path[0] == component)
+                {
+                    component_leaves.push_back(entry.dependence);
+                }
+            }
+            result_meta.component_invocation_dependence[component] = SummarizeInvocationDependence(component_leaves);
+        }
+    }
+
+    // Summarize all direct components. If that remains Unknown, retain a coarse
+    // selected-subtree Varying proof without marking descendants as Varying.
+    result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+
+    if (result_meta.invocation_dependence == InvocationDependence::Unknown &&
+        selected_summary == InvocationDependence::Varying)
+    {
+        result_meta.invocation_dependence = InvocationDependence::Varying;
+    }
+}
+
+bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, const PointerV& pointer, uint32_t type_id)
 {
     if (pointer.storage_class != spv::StorageClass::StorageClassInput || pointer.base_result_id == 0)
     {
         return false;
     }
-    if (!HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBuiltIn) ||
-        !simulation_data_->has_compute_num_workgroups)
+    if (!HasDecorator(pointer.base_result_id, spv::Decoration::DecorationBuiltIn))
     {
+        // TODO: Resolve BuiltIn decorations applied to interface-block members
+        // through OpMemberDecorate and pointer.idx_path.
         return false;
     }
 
@@ -4195,38 +5318,111 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const
         return vec;
     };
 
-    auto set_scalar_range = [&](uint64_t min_val, uint64_t max_val) {
+    struct ComponentRangeInput
+    {
+        uint64_t min;
+        uint64_t max;
+        uint8_t workgroup_id_component_mask = 0;
+        uint8_t local_invocation_id_component_mask = 0;
+    };
+
+    auto make_dense_range = [](uint64_t min_val,
+                               uint64_t max_val,
+                               uint8_t  workgroup_id_component_mask = 0,
+                               uint8_t  local_invocation_id_component_mask = 0) {
+        DenseValueRangeInfo range = { true, true, true, min_val, max_val, 1 };
+        range.invocation_linearization.workgroup_id_component_mask = workgroup_id_component_mask;
+        range.invocation_linearization.local_invocation_id_component_mask = local_invocation_id_component_mask;
+        return range;
+    };
+
+    auto set_scalar_range = [&](uint64_t min_val,
+                                uint64_t max_val,
+                                uint8_t  workgroup_id_component_mask = 0,
+                                uint8_t  local_invocation_id_component_mask = 0) {
         ValueMetadata& meta = value_meta_[result_id];
         meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
-        meta.value_range = DenseValueRangeInfo{ true, true, true, min_val, max_val, 1 };
+        meta.invocation_dependence = InvocationDependence::Varying;
+        meta.value_range = make_dense_range(
+            min_val, max_val, workgroup_id_component_mask, local_invocation_id_component_mask);
     };
 
     auto set_vector_linear_range = [&](uint64_t max_linear) {
         ValueMetadata& meta = value_meta_[result_id];
         meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
-        meta.value_range = DenseValueRangeInfo{ true, true, true, 0, max_linear, 1 };
+        meta.invocation_dependence = InvocationDependence::Varying;
+        meta.value_range = make_dense_range(0, max_linear);
     };
 
-    auto set_component_ranges = [&](std::initializer_list<std::pair<uint64_t, uint64_t>> ranges) {
+    auto set_component_ranges = [&](std::initializer_list<ComponentRangeInput> ranges) {
         ValueMetadata& meta = value_meta_[result_id];
         meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
         meta.component_ranges.clear();
+        meta.component_invocation_dependence.assign(ranges.size(), InvocationDependence::Varying);
         for (const auto& range : ranges)
         {
-            meta.component_ranges.push_back(DenseValueRangeInfo{ true, true, true, range.first, range.second, 1 });
+            meta.component_ranges.push_back(make_dense_range(range.min,
+                                                             range.max,
+                                                             range.workgroup_id_component_mask,
+                                                             range.local_invocation_id_component_mask));
         }
     };
 
     switch (builtin)
     {
+        case spv::BuiltIn::BuiltInNumWorkgroups:
+        {
+            if (simulation_data_->has_compute_num_workgroups == false)
+            {
+                return false;
+            }
+
+            if (result_type.kind == Type::Kind::Vector)
+            {
+                SetValue(result_id, make_uvec3(nx, ny, nz));
+
+                ValueMetadata& result_meta = value_meta_[result_id];
+                result_meta.invocation_dependence = InvocationDependence::Invariant;
+                result_meta.component_invocation_dependence.assign(3, InvocationDependence::Invariant);
+                return true;
+            }
+
+            if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
+            {
+                const uint32_t component = pointer.idx_path[0];
+                if (component == 0)
+                {
+                    SetValue(result_id, nx);
+                    value_meta_[result_id].invocation_dependence = InvocationDependence::Invariant;
+                    return true;
+                }
+                if (component == 1)
+                {
+                    SetValue(result_id, ny);
+                    value_meta_[result_id].invocation_dependence = InvocationDependence::Invariant;
+                    return true;
+                }
+                if (component == 2)
+                {
+                    SetValue(result_id, nz);
+                    value_meta_[result_id].invocation_dependence = InvocationDependence::Invariant;
+                    return true;
+                }
+            }
+            return false;
+        }
         case spv::BuiltIn::BuiltInWorkgroupId:
+            if (!simulation_data_->has_compute_num_workgroups)
+            {
+                return false;
+            }
             if (result_type.kind == Type::Kind::Vector)
             {
                 SetValue(result_id, make_uvec3(base_x, base_y, base_z));
                 set_component_ranges({
-                    { base_x, base_x + nx - 1 },
-                    { base_y, base_y + ny - 1 },
-                    { base_z, base_z + nz - 1 },
+                    { base_x, base_x + nx - 1, kInvocationComponentX },
+                    { base_y, base_y + ny - 1, kInvocationComponentY },
+                    { base_z, base_z + nz - 1, kInvocationComponentZ },
                 });
                 set_vector_linear_range(SaturatingMul64(SaturatingMul64(nx, ny), nz) - 1);
                 return true;
@@ -4234,19 +5430,23 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const
             if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
             {
                 const uint32_t c = pointer.idx_path[0];
-                if (c == 0) { SetValue(result_id, uint64_t(base_x)); set_scalar_range(base_x, base_x + nx - 1); return true; }
-                if (c == 1) { SetValue(result_id, uint64_t(base_y)); set_scalar_range(base_y, base_y + ny - 1); return true; }
-                if (c == 2) { SetValue(result_id, uint64_t(base_z)); set_scalar_range(base_z, base_z + nz - 1); return true; }
+                if (c == 0) { SetValue(result_id, uint64_t(base_x)); set_scalar_range(base_x, base_x + nx - 1, kInvocationComponentX); return true; }
+                if (c == 1) { SetValue(result_id, uint64_t(base_y)); set_scalar_range(base_y, base_y + ny - 1, kInvocationComponentY); return true; }
+                if (c == 2) { SetValue(result_id, uint64_t(base_z)); set_scalar_range(base_z, base_z + nz - 1, kInvocationComponentZ); return true; }
             }
             break;
         case spv::BuiltIn::BuiltInLocalInvocationId:
+            if (!active_compute_local_size_.valid)
+            {
+                return false;
+            }
             if (result_type.kind == Type::Kind::Vector)
             {
                 SetValue(result_id, make_uvec3(0, 0, 0));
                 set_component_ranges({
-                    { 0, lx - 1 },
-                    { 0, ly - 1 },
-                    { 0, lz - 1 },
+                    { 0, lx - 1, 0, kInvocationComponentX },
+                    { 0, ly - 1, 0, kInvocationComponentY },
+                    { 0, lz - 1, 0, kInvocationComponentZ },
                 });
                 set_vector_linear_range(SaturatingMul64(SaturatingMul64(lx, ly), lz) - 1);
                 return true;
@@ -4254,19 +5454,23 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const
             if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
             {
                 const uint32_t c = pointer.idx_path[0];
-                if (c == 0) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lx - 1); return true; }
-                if (c == 1) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, ly - 1); return true; }
-                if (c == 2) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lz - 1); return true; }
+                if (c == 0) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lx - 1, 0, kInvocationComponentX); return true; }
+                if (c == 1) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, ly - 1, 0, kInvocationComponentY); return true; }
+                if (c == 2) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lz - 1, 0, kInvocationComponentZ); return true; }
             }
             break;
         case spv::BuiltIn::BuiltInGlobalInvocationId:
+            if (!simulation_data_->has_compute_num_workgroups || !active_compute_local_size_.valid)
+            {
+                return false;
+            }
             if (result_type.kind == Type::Kind::Vector)
             {
                 SetValue(result_id, make_uvec3(SaturatingMul64(base_x, lx), SaturatingMul64(base_y, ly), SaturatingMul64(base_z, lz)));
                 set_component_ranges({
-                    { SaturatingMul64(base_x, lx), SaturatingMul64(base_x + nx, lx) - 1 },
-                    { SaturatingMul64(base_y, ly), SaturatingMul64(base_y + ny, ly) - 1 },
-                    { SaturatingMul64(base_z, lz), SaturatingMul64(base_z + nz, lz) - 1 },
+                    { SaturatingMul64(base_x, lx), SaturatingMul64(base_x + nx, lx) - 1, kInvocationComponentX, kInvocationComponentX },
+                    { SaturatingMul64(base_y, ly), SaturatingMul64(base_y + ny, ly) - 1, kInvocationComponentY, kInvocationComponentY },
+                    { SaturatingMul64(base_z, lz), SaturatingMul64(base_z + nz, lz) - 1, kInvocationComponentZ, kInvocationComponentZ },
                 });
                 const uint64_t gx = SaturatingMul64(nx, lx);
                 const uint64_t gy = SaturatingMul64(ny, ly);
@@ -4277,16 +5481,23 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const
             if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
             {
                 const uint32_t c = pointer.idx_path[0];
-                if (c == 0) { uint64_t min_v = SaturatingMul64(base_x, lx); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_x + nx, lx) - 1); return true; }
-                if (c == 1) { uint64_t min_v = SaturatingMul64(base_y, ly); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_y + ny, ly) - 1); return true; }
-                if (c == 2) { uint64_t min_v = SaturatingMul64(base_z, lz); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_z + nz, lz) - 1); return true; }
+                if (c == 0) { uint64_t min_v = SaturatingMul64(base_x, lx); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_x + nx, lx) - 1, kInvocationComponentX, kInvocationComponentX); return true; }
+                if (c == 1) { uint64_t min_v = SaturatingMul64(base_y, ly); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_y + ny, ly) - 1, kInvocationComponentY, kInvocationComponentY); return true; }
+                if (c == 2) { uint64_t min_v = SaturatingMul64(base_z, lz); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_z + nz, lz) - 1, kInvocationComponentZ, kInvocationComponentZ); return true; }
             }
             break;
         case spv::BuiltIn::BuiltInLocalInvocationIndex:
         {
+            if (!active_compute_local_size_.valid)
+            {
+                return false;
+            }
             const uint64_t total = SaturatingMul64(SaturatingMul64(lx, ly), lz);
             SetValue(result_id, uint64_t(0));
-            set_scalar_range(0, total ? total - 1 : 0);
+            set_scalar_range(0,
+                             total ? total - 1 : 0,
+                             0,
+                             kInvocationComponentX | kInvocationComponentY | kInvocationComponentZ);
             return true;
         }
         default:
@@ -4294,6 +5505,161 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndRange(uint32_t result_id, const
     }
 
     return false;
+}
+
+void SPIRVSimulator::PropagateElementwiseBinaryInvocationDependence(uint32_t result_id,
+                                                                    uint32_t lhs_id,
+                                                                    uint32_t rhs_id)
+{
+    ValueMetadata& result_meta = value_meta_[result_id];
+    const ValueMetadata& lhs_meta = value_meta_[lhs_id];
+    const ValueMetadata& rhs_meta = value_meta_[rhs_id];
+
+    const Type& result_type = GetTypeByResultId(result_id);
+    if (result_type.kind == Type::Kind::Int)
+    {
+        result_meta.invocation_dependence = CombineInvocationDependence(lhs_meta.invocation_dependence, rhs_meta.invocation_dependence);
+        result_meta.component_invocation_dependence.clear();
+        result_meta.subobject_invocation_dependence.clear();
+        return;
+    }
+
+    if (result_type.kind == Type::Kind::Vector)
+    {
+        const Type& component_type = GetTypeByTypeId(result_type.vector.elem_type_id);
+        if (component_type.kind != Type::Kind::Int)
+        {
+            return;
+        }
+
+        std::vector<InvocationDependence> result_components;
+        result_components.reserve(result_type.vector.elem_count);
+
+        for (uint32_t component = 0; component < result_type.vector.elem_count; ++component)
+        {
+            const InvocationDependence lhs_dependence = GetDirectComponentInvocationDependence(lhs_meta, component);
+            const InvocationDependence rhs_dependence = GetDirectComponentInvocationDependence(rhs_meta, component);
+            result_components.push_back(CombineInvocationDependence(lhs_dependence, rhs_dependence));
+        }
+
+        result_meta.component_invocation_dependence = std::move(result_components);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+        result_meta.subobject_invocation_dependence.clear();
+    }
+}
+
+bool SPIRVSimulator::IsUnsignedDivisorNonZero(uint32_t divisor_id) const
+{
+    const ValueMetadata& divisor_meta = value_meta_[divisor_id];
+
+    // A positive lower bound proves that every divisor in the invocation domain is non-zero.
+    if (divisor_meta.value_range.valid && divisor_meta.value_range.min > 0)
+    {
+        return true;
+    }
+
+    // Without a range proof, a representative value applies to the whole domain only when the divisor is invariant.
+    if (divisor_meta.invocation_dependence != InvocationDependence::Invariant)
+    {
+        return false;
+    }
+
+    // Invariance does not make an arbitrary or uninitialized representative value exact.
+    if ((divisor_meta.flags & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) != 0)
+    {
+        return false;
+    }
+
+    // Check the original SSA value, not the temporary zero-to-one replacement used to continue simulation.
+    const Value&    divisor          = GetValue(divisor_id);
+    const uint64_t* unsigned_divisor = std::get_if<uint64_t>(&divisor);
+    return unsigned_divisor != nullptr && *unsigned_divisor != 0;
+}
+
+bool SPIRVSimulator::IsUnsignedDivisorComponentNonZero(uint32_t divisor_id, uint32_t component) const
+{
+    const ValueMetadata& divisor_meta = value_meta_[divisor_id];
+    if (component < divisor_meta.component_ranges.size())
+    {
+        const DenseValueRangeInfo& component_range = divisor_meta.component_ranges[component];
+        if (component_range.valid && component_range.min > 0)
+        {
+            return true;
+        }
+    }
+
+    if (GetDirectComponentInvocationDependence(divisor_meta, component) != InvocationDependence::Invariant)
+    {
+        return false;
+    }
+
+    if ((divisor_meta.flags & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) != 0)
+    {
+        return false;
+    }
+
+    const Value& divisor        = GetValue(divisor_id);
+    const auto*  divisor_vector = std::get_if<std::shared_ptr<VectorV>>(&divisor);
+    if (divisor_vector == nullptr || *divisor_vector == nullptr || component >= (*divisor_vector)->elems.size())
+    {
+        return false;
+    }
+
+    const uint64_t* unsigned_divisor = std::get_if<uint64_t>(&(*divisor_vector)->elems[component]);
+    return unsigned_divisor != nullptr && *unsigned_divisor != 0;
+}
+
+void SPIRVSimulator::PropagateElementwiseUnsignedDivModInvocationDependence(uint32_t result_id,
+                                                                            uint32_t dividend_id,
+                                                                            uint32_t divisor_id)
+{
+    ValueMetadata&       result_meta   = value_meta_[result_id];
+    const ValueMetadata& dividend_meta = value_meta_[dividend_id];
+    const ValueMetadata& divisor_meta  = value_meta_[divisor_id];
+
+    const Type& result_type = GetTypeByResultId(result_id);
+    if (result_type.kind == Type::Kind::Int)
+    {
+        if (IsUnsignedDivisorNonZero(divisor_id))
+        {
+            result_meta.invocation_dependence =
+                CombineInvocationDependence(dividend_meta.invocation_dependence, divisor_meta.invocation_dependence);
+        }
+        else
+        {
+            result_meta.invocation_dependence = InvocationDependence::Unknown;
+        }
+
+        result_meta.component_invocation_dependence.clear();
+        result_meta.subobject_invocation_dependence.clear();
+        return;
+    }
+
+    if (result_type.kind == Type::Kind::Vector)
+    {
+        std::vector<InvocationDependence> result_components;
+        result_components.reserve(result_type.vector.elem_count);
+
+        for (uint32_t component = 0; component < result_type.vector.elem_count; ++component)
+        {
+            if (IsUnsignedDivisorComponentNonZero(divisor_id, component))
+            {
+                const InvocationDependence dividend_dependence =
+                    GetDirectComponentInvocationDependence(dividend_meta, component);
+                const InvocationDependence divisor_dependence =
+                    GetDirectComponentInvocationDependence(divisor_meta, component);
+                result_components.push_back(CombineInvocationDependence(dividend_dependence, divisor_dependence));
+            }
+            else
+            {
+                result_components.push_back(InvocationDependence::Unknown);
+            }
+        }
+
+        result_meta.component_invocation_dependence = std::move(result_components);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+        result_meta.subobject_invocation_dependence.clear();
+    }
 }
 
 void SPIRVSimulator::PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id)
@@ -4307,26 +5673,87 @@ void SPIRVSimulator::PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id
         return;
     }
 
-    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
+    const Type& result_type = GetTypeByResultId(result_id);
+    if (result_type.kind != Type::Kind::Int)
     {
         return;
     }
 
-    uint64_t a_min = a_range.valid ? a_range.min : GetUIntScalarValue(lhs_id);
+    uint64_t a_fixed_value = 0;
+    uint64_t b_fixed_value = 0;
+    const bool a_is_fixed = TryGetFixedNonNegativeIntegerScalar(lhs_id, a_fixed_value);
+    const bool b_is_fixed = TryGetFixedNonNegativeIntegerScalar(rhs_id, b_fixed_value);
+
+    // Each operand must have either a valid range or a proven fixed value.
+    // Otherwise its zero-initialized fixed value must not be used as a bound.
+    if ((!a_range.valid && !a_is_fixed) ||
+        (!b_range.valid && !b_is_fixed))
+    {
+        return;
+    }
+
+    uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
     uint64_t a_max = a_range.valid ? a_range.max : a_min;
-    uint64_t b_min = b_range.valid ? b_range.min : GetUIntScalarValue(rhs_id);
+    uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
     uint64_t b_max = b_range.valid ? b_range.max : b_min;
 
+    DenseValueRangeInfo out_range = {};
+    out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
+    out_range.dense_range = false;
+    out_range.stride = 1;
+    if (!CheckedAddForType(a_min, b_min, result_type, out_range.min) ||
+        !CheckedAddForType(a_max, b_max, result_type, out_range.max))
+    {
+        return;
+    }
+    out_range.valid = true;
+
+    if (a_range.valid && b_is_fixed)
+    {
+        // Adding a fixed scalar is an exact translation.
+        if (IsExactSingletonRange(a_range))
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = a_range.invocation_linearization;
+        }
+        else if (a_range.dense_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = a_range.stride;
+            out_range.invocation_linearization = a_range.invocation_linearization;
+        }
+    }
+    else if (a_is_fixed && b_range.valid)
+    {
+        // Addition is commutative; preserve the ranged rhs metadata.
+        if (IsExactSingletonRange(b_range))
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = b_range.invocation_linearization;
+        }
+        else if (b_range.dense_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = b_range.stride;
+            out_range.invocation_linearization = b_range.invocation_linearization;
+        }
+    }
+    else if (a_range.valid && b_range.valid)
+    {
+        DenseValueRangeInfo combined_range = {};
+        if (TryCombineIndependentInvocationRanges(a_range, b_range, combined_range))
+        {
+            // The helper returns the complete exact min/max/stride/dense/mask result.
+            out_range = combined_range;
+        }
+        // Otherwise keep the checked min/max envelope already stored in
+        // out_range, with dense=false, stride=1, and an empty axis mask.
+    }
+
     ValueMetadata& out = value_meta_[result_id];
-    out.flags |= SPS_FLAG_THREAD_SPECIFIC;
-    out.value_range = DenseValueRangeInfo{
-        true,
-        a_range.thread_dependent || b_range.thread_dependent,
-        (a_range.dense_range || !a_range.valid) && (b_range.dense_range || !b_range.valid),
-        a_min + b_min,
-        a_max + b_max,
-        std::max<uint64_t>(a_range.valid ? a_range.stride : 1, b_range.valid ? b_range.stride : 1),
-    };
+    out.value_range = out_range;
 }
 
 void SPIRVSimulator::PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id)
@@ -4340,31 +5767,99 @@ void SPIRVSimulator::PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id
         return;
     }
 
-    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
+    const Type& result_type = GetTypeByResultId(result_id);
+    if (result_type.kind != Type::Kind::Int)
     {
         return;
     }
 
-    uint64_t a_min = a_range.valid ? a_range.min : GetUIntScalarValue(lhs_id);
-    uint64_t a_max = a_range.valid ? a_range.max : a_min;
-    uint64_t b_min = b_range.valid ? b_range.min : GetUIntScalarValue(rhs_id);
-    uint64_t b_max = b_range.valid ? b_range.max : b_min;
+    uint64_t a_fixed_value = 0;
+    uint64_t b_fixed_value = 0;
+    const bool a_is_fixed = TryGetFixedNonNegativeIntegerScalar(lhs_id, a_fixed_value);
+    const bool b_is_fixed = TryGetFixedNonNegativeIntegerScalar(rhs_id, b_fixed_value);
 
-    if (a_min < b_max)
+    if ((!a_range.valid && !a_is_fixed) ||
+        (!b_range.valid && !b_is_fixed))
     {
         return;
+    }
+
+    uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
+    uint64_t a_max = a_range.valid ? a_range.max : a_min;
+    uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
+    uint64_t b_max = b_range.valid ? b_range.max : b_min;
+
+    DenseValueRangeInfo out_range = {};
+    out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
+    out_range.dense_range = false;
+    out_range.stride = 1;
+    if (!CheckedSubForType(a_min, b_max, result_type, out_range.min) ||
+        !CheckedSubForType(a_max, b_min, result_type, out_range.max))
+    {
+        return;
+    }
+    out_range.valid = true;
+
+    if (a_range.valid && b_is_fixed)
+    {
+        // Subtracting a fixed scalar is an exact downward translation.
+        if (IsExactSingletonRange(a_range))
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = a_range.invocation_linearization;
+        }
+        else if (a_range.dense_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = a_range.stride;
+            out_range.invocation_linearization = a_range.invocation_linearization;
+        }
+    }
+    else if (a_is_fixed && b_range.valid)
+    {
+        // A fixed lhs reflects the ranged rhs without changing its stride.
+        if (IsExactSingletonRange(b_range))
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = b_range.invocation_linearization;
+        }
+        else if (b_range.dense_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = b_range.stride;
+            out_range.invocation_linearization = b_range.invocation_linearization;
+        }
+    }
+    else if (a_range.valid && b_range.valid)
+    {
+        DenseValueRangeInfo normalized_lhs = a_range;
+        DenseValueRangeInfo normalized_rhs = b_range;
+
+        uint64_t normalized_lhs_max = 0;
+        uint64_t normalized_rhs_max = 0;
+        if (CheckedSubForType(a_max, b_max, result_type, normalized_lhs_max) &&
+            CheckedSubForType(b_max, b_min, result_type, normalized_rhs_max))
+        {
+            normalized_lhs.min = out_range.min;
+            normalized_lhs.max = normalized_lhs_max;
+            normalized_rhs.min = 0;
+            normalized_rhs.max = normalized_rhs_max;
+
+            DenseValueRangeInfo combined_range = {};
+            if (TryCombineIndependentInvocationRanges(normalized_lhs, normalized_rhs, combined_range))
+            {
+                out_range = combined_range;
+            }
+        }
+        // If exact combination cannot be proved, keep the checked min/max
+        // envelope already stored in out_range, with dense=false, stride=1,
+        // and empty axis masks.
     }
 
     ValueMetadata& out = value_meta_[result_id];
-    out.flags |= SPS_FLAG_THREAD_SPECIFIC;
-    out.value_range = DenseValueRangeInfo{
-        true,
-        a_range.thread_dependent || b_range.thread_dependent,
-        (a_range.dense_range || !a_range.valid) && (b_range.dense_range || !b_range.valid),
-        a_min - b_max,
-        a_max - b_min,
-        std::max<uint64_t>(a_range.valid ? a_range.stride : 1, b_range.valid ? b_range.stride : 1),
-    };
+    out.value_range = out_range;
 }
 
 void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id)
@@ -4378,39 +5873,143 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
         return;
     }
 
-    if (GetTypeByResultId(result_id).kind != Type::Kind::Int)
+    const Type& result_type = GetTypeByResultId(result_id);
+    if (result_type.kind != Type::Kind::Int)
     {
         return;
     }
 
-    uint64_t a_min = a_range.valid ? a_range.min : GetUIntScalarValue(lhs_id);
+    uint64_t a_fixed_value = 0;
+    uint64_t b_fixed_value = 0;
+    const bool a_is_fixed = TryGetFixedNonNegativeIntegerScalar(lhs_id, a_fixed_value);
+    const bool b_is_fixed = TryGetFixedNonNegativeIntegerScalar(rhs_id, b_fixed_value);
+
+    if ((!a_range.valid && !a_is_fixed) ||
+        (!b_range.valid && !b_is_fixed))
+    {
+        return;
+    }
+
+    const bool a_is_fixed_zero = a_is_fixed && a_fixed_value == 0;
+    const bool b_is_fixed_zero = b_is_fixed && b_fixed_value == 0;
+    if (a_is_fixed_zero || b_is_fixed_zero)
+    {
+        const DenseValueRangeInfo& source_range = a_range.valid ? a_range : b_range;
+
+        DenseValueRangeInfo out_range = {};
+        out_range.valid = true;
+        out_range.thread_dependent = source_range.thread_dependent;
+        out_range.dense_range = true;
+        out_range.min = 0;
+        out_range.max = 0;
+        out_range.stride = 1;
+        out_range.invocation_linearization = source_range.invocation_linearization;
+
+        value_meta_[result_id].value_range = out_range;
+        return;
+    }
+
+    uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
     uint64_t a_max = a_range.valid ? a_range.max : a_min;
-    uint64_t b_min = b_range.valid ? b_range.min : GetUIntScalarValue(rhs_id);
+    uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
     uint64_t b_max = b_range.valid ? b_range.max : b_min;
 
     DenseValueRangeInfo out_range = {};
-    out_range.valid = true;
     out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
     out_range.dense_range = false;
-    out_range.min = SaturatingMul64(a_min, b_min);
-    out_range.max = SaturatingMul64(a_max, b_max);
-    if (a_range.valid && !b_range.valid)
+    out_range.stride = 1;
+    if (!CheckedMulForType(a_min, b_min, result_type, out_range.min) ||
+        !CheckedMulForType(a_max, b_max, result_type, out_range.max))
     {
-        out_range.stride = a_range.stride * std::max<uint64_t>(b_min, 1);
-        out_range.dense_range = a_range.dense_range && (b_min == 1 || a_range.stride == 1);
+        return;
     }
-    else if (!a_range.valid && b_range.valid)
+    out_range.valid = true;
+
+    const bool a_is_singleton_range = IsExactSingletonRange(a_range);
+    const bool b_is_singleton_range = IsExactSingletonRange(b_range);
+
+    if (a_range.valid && b_is_fixed)
     {
-        out_range.stride = b_range.stride * std::max<uint64_t>(a_min, 1);
-        out_range.dense_range = b_range.dense_range && (a_min == 1 || b_range.stride == 1);
+        if (a_is_singleton_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = a_range.invocation_linearization;
+        }
+        else if (a_range.dense_range &&
+                 CheckedMulForType(a_range.stride, b_fixed_value, result_type, out_range.stride))
+        {
+            out_range.dense_range = true;
+            out_range.invocation_linearization = a_range.invocation_linearization;
+        }
     }
-    else
+    else if (a_is_fixed && b_range.valid)
     {
-        out_range.stride = std::max<uint64_t>(a_range.stride, b_range.stride);
+        if (b_is_singleton_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = b_range.invocation_linearization;
+        }
+        else if (b_range.dense_range &&
+                 CheckedMulForType(b_range.stride, a_fixed_value, result_type, out_range.stride))
+        {
+            out_range.dense_range = true;
+            out_range.invocation_linearization = b_range.invocation_linearization;
+        }
+    }
+    else if (a_range.valid && b_range.valid)
+    {
+        InvocationLinearizationInfo combined_linearization = {};
+        combined_linearization.workgroup_id_component_mask =
+            a_range.invocation_linearization.workgroup_id_component_mask |
+            b_range.invocation_linearization.workgroup_id_component_mask;
+        combined_linearization.local_invocation_id_component_mask =
+            a_range.invocation_linearization.local_invocation_id_component_mask |
+            b_range.invocation_linearization.local_invocation_id_component_mask;
+
+        // Only singleton cases below can prove an exact dense product. Two
+        // non-singleton ranges generally do not multiply into an exact
+        // arithmetic progression, so their checked envelope remains non-dense.
+        if (a_is_singleton_range && b_is_singleton_range)
+        {
+            out_range.dense_range = true;
+            out_range.stride = 1;
+            out_range.invocation_linearization = combined_linearization;
+        }
+        else if (a_is_singleton_range)
+        {
+            if (a_range.min == 0)
+            {
+                out_range.dense_range = true;
+                out_range.stride = 1;
+                out_range.invocation_linearization = combined_linearization;
+            }
+            else if (b_range.dense_range &&
+                     CheckedMulForType(b_range.stride, a_range.min, result_type, out_range.stride))
+            {
+                out_range.dense_range = true;
+                out_range.invocation_linearization = combined_linearization;
+            }
+        }
+        else if (b_is_singleton_range)
+        {
+            if (b_range.min == 0)
+            {
+                out_range.dense_range = true;
+                out_range.stride = 1;
+                out_range.invocation_linearization = combined_linearization;
+            }
+            else if (a_range.dense_range &&
+                     CheckedMulForType(a_range.stride, b_range.min, result_type, out_range.stride))
+            {
+                out_range.dense_range = true;
+                out_range.invocation_linearization = combined_linearization;
+            }
+        }
     }
 
     ValueMetadata& out = value_meta_[result_id];
-    out.flags |= SPS_FLAG_THREAD_SPECIFIC;
     out.value_range = out_range;
 }
 
@@ -4478,6 +6077,44 @@ void SPIRVSimulator::PropagateBinaryRangeMod(uint32_t result_id, uint32_t lhs_id
     };
 }
 
+bool SPIRVSimulator::CanWriteValueTypeCarryHandlePayload(const Type& type) const
+{
+    switch (type.kind)
+    {
+        case Type::Kind::Int:
+            // Handles can be represented as one integer or split across an
+            // integer vector, array, or aggregate.
+            return true;
+        case Type::Kind::AccelerationStructureKHR:
+            return true;
+        case Type::Kind::Pointer:
+            return type.pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer;
+        case Type::Kind::Vector:
+            return CanWriteValueTypeCarryHandlePayload(GetTypeByTypeId(type.vector.elem_type_id));
+        case Type::Kind::Array:
+        case Type::Kind::RuntimeArray:
+            return CanWriteValueTypeCarryHandlePayload(GetTypeByTypeId(type.array.elem_type_id));
+        case Type::Kind::Struct:
+        {
+            const auto members_it = struct_members_.find(type.structure.id);
+            if (members_it == struct_members_.end())
+            {
+                return false;
+            }
+            for (uint32_t member_type_id : members_it->second)
+            {
+                if (CanWriteValueTypeCarryHandlePayload(GetTypeByTypeId(member_type_id)))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
 bool SPIRVSimulator::TryGetDenseStoreRange(const PointerV& pointer, uint32_t pointer_id, uint32_t result_id, uint64_t& dst_start, uint64_t& byte_size, uint64_t& element_size)
 {
     if (pointer.storage_class == spv::StorageClass::StorageClassFunction ||
@@ -4525,8 +6162,566 @@ bool SPIRVSimulator::TryGetDenseStoreRange(const PointerV& pointer, uint32_t poi
     return true;
 }
 
-bool SPIRVSimulator::TrySetDenseAccessChainAddressRange(const Instruction& instruction,
-                                                        const PointerV& result_pointer)
+bool SPIRVSimulator::TryGetRuntimeArrayLength(const PointerV& runtime_array_pointer,
+                                               uint64_t&       out_length) const
+{
+    out_length = 0;
+
+    if (simulation_data_ == nullptr || runtime_array_pointer.pointer_handle == 0)
+    {
+        return false;
+    }
+
+    const uint64_t array_offset = GetPointerOffset(runtime_array_pointer);
+    if (array_offset > std::numeric_limits<size_t>::max())
+    {
+        return false;
+    }
+
+    const auto pointer_it = simulation_data_->rt_array_lengths.find(runtime_array_pointer.pointer_handle);
+    if (pointer_it == simulation_data_->rt_array_lengths.end())
+    {
+        return false;
+    }
+
+    const auto offset_it = pointer_it->second.find(static_cast<size_t>(array_offset));
+    if (offset_it == pointer_it->second.end())
+    {
+        return false;
+    }
+
+    out_length = static_cast<uint64_t>(offset_it->second);
+    return true;
+}
+
+SPIRVSimulator::DenseAccessChainIndexAnalysis SPIRVSimulator::AnalyzeDenseAccessChainIndexes(
+    std::span<const uint32_t> index_ids,
+    size_t                    result_path_size) const
+{
+    DenseAccessChainIndexAnalysis analysis;
+    bool                          indexes_supported = true;
+    uint32_t                      dynamic_index_id  = 0;
+    size_t                        dynamic_index_offset = 0;
+
+    // Select the one invocation-varying index that defines the affine address
+    // dimension. Every other index must be proved to be a fixed non-negative
+    // integer; absence of the legacy thread-specific flag is not such a proof.
+    for (size_t index_offset = 0; index_offset < index_ids.size(); ++index_offset)
+    {
+        const uint32_t index_id = index_ids[index_offset];
+        const InvocationDependence index_dependence = value_meta_[index_id].invocation_dependence;
+
+        analysis.dependence = CombineInvocationDependence(analysis.dependence, index_dependence);
+
+        if (index_dependence == InvocationDependence::Varying)
+        {
+            if (dynamic_index_id != 0)
+            {
+                // One range cannot describe two independently varying index
+                // dimensions. Keep scanning to retain their combined pointer
+                // dependence for fallback handling.
+                indexes_supported = false;
+                continue;
+            }
+            dynamic_index_id     = index_id;
+            dynamic_index_offset = index_offset;
+            continue;
+        }
+
+        if (index_dependence == InvocationDependence::Unknown)
+        {
+            // Do not infer a fixed index from missing dependence metadata.
+            // Continue so a later Varying index is still reflected in the
+            // result pointer dependence.
+            indexes_supported = false;
+            continue;
+        }
+
+        // The common helper rejects ranges, arbitrary/uninitialized values,
+        // negative signed values, and non-integer scalars. PointerV stores path
+        // elements as uint32_t, so also reject values that would be truncated.
+        uint64_t fixed_index = 0;
+        if (!TryGetFixedNonNegativeIntegerScalar(index_id, fixed_index) ||
+            fixed_index > std::numeric_limits<uint32_t>::max())
+        {
+            indexes_supported = false;
+        }
+    }
+
+    if (result_path_size < index_ids.size())
+    {
+        // The completed pointer path must contain every index appended by this
+        // AccessChain before an instruction-local operand can be mapped to it.
+        indexes_supported = false;
+    }
+
+    analysis.index_roles_proven = indexes_supported;
+    if (!indexes_supported || dynamic_index_id == 0)
+    {
+        return analysis;
+    }
+
+    // Varying identifies the dynamic candidate; its value range must still be
+    // an exact, enumerable dense sequence before it can drive address variants.
+    const DenseValueRangeInfo& dynamic_index_range = value_meta_[dynamic_index_id].value_range;
+    if (!dynamic_index_range.valid ||
+        !dynamic_index_range.thread_dependent ||
+        !dynamic_index_range.dense_range ||
+        dynamic_index_range.stride == 0 ||
+        dynamic_index_range.max < dynamic_index_range.min)
+    {
+        return analysis;
+    }
+
+    const uint64_t index_span = dynamic_index_range.max - dynamic_index_range.min;
+    if ((index_span % dynamic_index_range.stride) != 0)
+    {
+        // The inclusive maximum must be reachable from min by whole stride
+        // steps, otherwise min/stride/max do not describe one exact sequence.
+        return analysis;
+    }
+
+    // DenseValueRangeInfo stores uint64_t values, but PointerV::idx_path stores
+    // uint32_t indexes. Reject values that would be truncated when constructing
+    // the min and max pointers.
+    if (dynamic_index_range.min > std::numeric_limits<uint32_t>::max() ||
+        dynamic_index_range.max > std::numeric_limits<uint32_t>::max())
+    {
+        return analysis;
+    }
+
+    // The path can begin with indexes inherited from the base pointer, so map
+    // the instruction-local operand to its position in the complete path.
+    const size_t appended_path_begin = result_path_size - index_ids.size();
+    analysis.dense_selection = DenseAccessChainIndexSelection{
+        appended_path_begin + dynamic_index_offset,
+        dynamic_index_range,
+    };
+    return analysis;
+}
+
+bool SPIRVSimulator::TryProveDenseAccessChainTypedLayout(
+    const PointerV&            result_pointer,
+    size_t                     dynamic_index_path_position,
+    const DenseValueRangeInfo& dynamic_index_range) const
+{
+    if (dynamic_index_path_position >= result_pointer.idx_path.size())
+    {
+        return false;
+    }
+
+    // Walk the fixed prefix without ResolvePointerV(). That resolver assumes
+    // valid struct member indexes, so typed bounds must be proved first. This
+    // walk also identifies the container directly indexed by the dynamic value.
+    const Type& base_pointer_type = GetTypeByTypeId(result_pointer.base_type_id);
+    if (base_pointer_type.kind != Type::Kind::Pointer)
+    {
+        return false;
+    }
+
+    uint32_t prefix_container_type_id = base_pointer_type.pointer.pointee_type_id;
+    PointerV prefix_container_pointer = result_pointer;
+    prefix_container_pointer.idx_path.clear();
+
+    for (size_t path_position = 0; path_position < dynamic_index_path_position; ++path_position)
+    {
+        const uint32_t fixed_index = result_pointer.idx_path[path_position];
+        const Type& prefix_container_type = GetTypeByTypeId(prefix_container_type_id);
+
+        if (prefix_container_type.kind == Type::Kind::Struct)
+        {
+            const auto members_it = struct_members_.find(prefix_container_type_id);
+            if (members_it == struct_members_.end() || fixed_index >= members_it->second.size())
+            {
+                return false;
+            }
+            prefix_container_type_id = members_it->second[fixed_index];
+        }
+        else if (prefix_container_type.kind == Type::Kind::Array)
+        {
+            if (fixed_index >= GetArrayLength(prefix_container_type.array.length_id))
+            {
+                return false;
+            }
+            prefix_container_type_id = prefix_container_type.array.elem_type_id;
+        }
+        else if (prefix_container_type.kind == Type::Kind::RuntimeArray)
+        {
+            // A fixed runtime-array prefix is one invariant container and is
+            // accepted only when its logical length is explicitly known.
+            uint64_t runtime_length = 0;
+            if (!TryGetRuntimeArrayLength(prefix_container_pointer, runtime_length) ||
+                fixed_index >= runtime_length)
+            {
+                return false;
+            }
+            prefix_container_type_id = prefix_container_type.array.elem_type_id;
+        }
+        else if (prefix_container_type.kind == Type::Kind::Vector)
+        {
+            if (fixed_index >= prefix_container_type.vector.elem_count)
+            {
+                return false;
+            }
+            prefix_container_type_id = prefix_container_type.vector.elem_type_id;
+        }
+        else
+        {
+            return false;
+        }
+
+        prefix_container_pointer.idx_path.push_back(fixed_index);
+    }
+
+    const uint32_t dynamic_index_container_type_id = prefix_container_type_id;
+    const Type& dynamic_index_container_type = GetTypeByTypeId(dynamic_index_container_type_id);
+
+    // Remove the dynamic index and its fixed suffix. The remaining pointer
+    // identifies the one container whose bounds the dynamic range must satisfy.
+    PointerV dynamic_index_container_pointer = result_pointer;
+    dynamic_index_container_pointer.idx_path.resize(dynamic_index_path_position);
+
+    bool     runtime_bounds_deferred_to_backing = false;
+    uint32_t suffix_container_type_id           = 0;
+
+    // A dynamic first path element in these logical storage classes is a
+    // descriptor-array selection. It may switch allocations and therefore
+    // cannot be represented by offsets from one resolved backing pointer.
+    const bool is_top_level_descriptor_array =
+        dynamic_index_path_position == 0 &&
+        (result_pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+         result_pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+         result_pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer);
+
+    if (dynamic_index_container_type.kind == Type::Kind::Vector)
+    {
+        if (dynamic_index_range.max >= dynamic_index_container_type.vector.elem_count)
+        {
+            return false;
+        }
+        suffix_container_type_id = dynamic_index_container_type.vector.elem_type_id;
+    }
+    else if (dynamic_index_container_type.kind == Type::Kind::Array)
+    {
+        if (is_top_level_descriptor_array ||
+            dynamic_index_range.max >= GetArrayLength(dynamic_index_container_type.array.length_id))
+        {
+            return false;
+        }
+        suffix_container_type_id = dynamic_index_container_type.array.elem_type_id;
+    }
+    else if (dynamic_index_container_type.kind == Type::Kind::RuntimeArray)
+    {
+        if (is_top_level_descriptor_array)
+        {
+            return false;
+        }
+
+        uint64_t runtime_length = 0;
+        if (TryGetRuntimeArrayLength(dynamic_index_container_pointer, runtime_length))
+        {
+            // This container precedes the varying selection, so one trusted
+            // length proves the complete dynamic range in bounds.
+            if (dynamic_index_range.max >= runtime_length)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            // Only a physical runtime array can defer its missing logical upper
+            // bound to the restricted last-Block-member allocation proof below.
+            if (result_pointer.storage_class != spv::StorageClass::StorageClassPhysicalStorageBuffer)
+            {
+                return false;
+            }
+            runtime_bounds_deferred_to_backing = true;
+        }
+        suffix_container_type_id = dynamic_index_container_type.array.elem_type_id;
+    }
+    else
+    {
+        return false;
+    }
+
+    // Validate every fixed suffix before resolving addresses. RuntimeArray is
+    // intentionally unsupported here: after the varying index it could denote
+    // a different container, and one representative length would not prove the
+    // suffix index in bounds for every selected outer element.
+    for (size_t path_position = dynamic_index_path_position + 1;
+         path_position < result_pointer.idx_path.size();
+         ++path_position)
+    {
+        const uint32_t fixed_index = result_pointer.idx_path[path_position];
+        const Type& suffix_container_type = GetTypeByTypeId(suffix_container_type_id);
+
+        if (suffix_container_type.kind == Type::Kind::Struct)
+        {
+            const auto members_it = struct_members_.find(suffix_container_type_id);
+            if (members_it == struct_members_.end() || fixed_index >= members_it->second.size())
+            {
+                return false;
+            }
+            suffix_container_type_id = members_it->second[fixed_index];
+        }
+        else if (suffix_container_type.kind == Type::Kind::Array)
+        {
+            if (fixed_index >= GetArrayLength(suffix_container_type.array.length_id))
+            {
+                return false;
+            }
+            suffix_container_type_id = suffix_container_type.array.elem_type_id;
+        }
+        else if (suffix_container_type.kind == Type::Kind::Vector)
+        {
+            if (fixed_index >= suffix_container_type.vector.elem_count)
+            {
+                return false;
+            }
+            suffix_container_type_id = suffix_container_type.vector.elem_type_id;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    if (runtime_bounds_deferred_to_backing)
+    {
+        // An empty path means the dynamic index directly indexes the base
+        // runtime array, so there is no parent member whose layout can justify
+        // replacing the missing logical length with backing bytes.
+        if (dynamic_index_container_pointer.idx_path.empty())
+        {
+            return false;
+        }
+
+        // Backing bytes may replace a missing runtime length only when the
+        // runtime array is the final member of a Block. Otherwise bytes after
+        // it could belong to another logical member or object.
+        PointerV runtime_array_parent_pointer = dynamic_index_container_pointer;
+        const uint32_t runtime_array_member_index = runtime_array_parent_pointer.idx_path.back();
+        runtime_array_parent_pointer.idx_path.pop_back();
+
+        const uint32_t parent_type_id = GetTargetPointerType(runtime_array_parent_pointer);
+        const Type&    parent_type    = GetTypeByTypeId(parent_type_id);
+        const auto     members_it     = struct_members_.find(parent_type_id);
+
+        if (parent_type.kind != Type::Kind::Struct ||
+            !HasDecorator(parent_type_id, spv::Decoration::DecorationBlock) ||
+            members_it == struct_members_.end() ||
+            runtime_array_member_index >= members_it->second.size() ||
+            runtime_array_member_index != members_it->second.size() - 1 ||
+            members_it->second[runtime_array_member_index] != dynamic_index_container_type_id)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool SPIRVSimulator::TryBuildDenseAccessChainAddressRange(
+    const PointerV&               result_pointer,
+    uint32_t                      result_pointee_type_id,
+    size_t                        dynamic_index_path_position,
+    const DenseValueRangeInfo&    dynamic_index_range,
+    DenseAccessChainAddressRange& out_range) const
+{
+    if (dynamic_index_path_position >= result_pointer.idx_path.size() ||
+        dynamic_index_range.stride == 0 ||
+        dynamic_index_range.max < dynamic_index_range.min ||
+        dynamic_index_range.min > std::numeric_limits<uint32_t>::max() ||
+        dynamic_index_range.max > std::numeric_limits<uint32_t>::max())
+    {
+        return false;
+    }
+
+    const uint64_t index_span = dynamic_index_range.max - dynamic_index_range.min;
+    if ((index_span % dynamic_index_range.stride) != 0)
+    {
+        return false;
+    }
+
+    // Determine the bytes touched by one final leaf access. Numeric vectors are
+    // treated as whole elements; container padding belongs to the address
+    // stride, not to the accessed element size.
+    const Type& result_pointee_type = GetTypeByTypeId(result_pointee_type_id);
+    uint64_t    element_size        = 0;
+    if (result_pointee_type.kind == Type::Kind::Int ||
+        result_pointee_type.kind == Type::Kind::Float ||
+        result_pointee_type.kind == Type::Kind::Pointer)
+    {
+        const size_t bit_size = GetBitsizeOfType(result_pointee_type_id);
+        if (bit_size == 0 || (bit_size % 8) != 0)
+        {
+            // Zero is not a usable layout size, and integer division must not
+            // truncate a non-byte-addressable scalar or pointer width.
+            return false;
+        }
+        element_size = static_cast<uint64_t>(bit_size / 8);
+    }
+    else if (result_pointee_type.kind == Type::Kind::Vector)
+    {
+        const uint32_t component_type_id = result_pointee_type.vector.elem_type_id;
+        const Type&    component_type    = GetTypeByTypeId(component_type_id);
+        if (component_type.kind != Type::Kind::Int &&
+            component_type.kind != Type::Kind::Float)
+        {
+            return false;
+        }
+
+        const size_t component_bit_size = GetBitsizeOfType(component_type_id);
+        if (component_bit_size == 0 || (component_bit_size % 8) != 0)
+        {
+            // Avoid silently truncating a non-byte-addressable component size
+            // through integer division by eight.
+            return false;
+        }
+
+        const size_t vector_bit_size = GetBitsizeOfType(result_pointee_type_id);
+        if (vector_bit_size == 0 || (vector_bit_size % 8) != 0)
+        {
+            // Check the whole vector independently because this is the byte
+            // extent consumed by downstream load/store range handling.
+            return false;
+        }
+        element_size = static_cast<uint64_t>(vector_bit_size / 8);
+    }
+    else
+    {
+        return false;
+    }
+
+    // Resolve the first and last reachable indexes while preserving all fixed
+    // prefix/suffix indexes. Both must resolve relative to the same backing base.
+    PointerV min_pointer = result_pointer;
+    PointerV max_pointer = result_pointer;
+    min_pointer.idx_path[dynamic_index_path_position] = static_cast<uint32_t>(dynamic_index_range.min);
+    max_pointer.idx_path[dynamic_index_path_position] = static_cast<uint32_t>(dynamic_index_range.max);
+
+    const std::pair<std::byte*, uint64_t> min_resolved = ResolvePointerV(min_pointer);
+    const std::pair<std::byte*, uint64_t> max_resolved = ResolvePointerV(max_pointer);
+    if (min_resolved.first == nullptr ||
+        max_resolved.first == nullptr ||
+        min_resolved.first != max_resolved.first)
+    {
+        return false;
+    }
+
+    const uint64_t base_address = bit_cast<uint64_t>(min_resolved.first);
+    uint64_t       min_address  = 0;
+    uint64_t       max_address  = 0;
+    if (!CheckedAddU64(base_address, min_resolved.second, min_address) ||
+        !CheckedAddU64(base_address, max_resolved.second, max_address) ||
+        max_address < min_address)
+    {
+        return false;
+    }
+
+    uint64_t byte_stride = element_size;
+
+    // For a multi-element sequence, the next reachable index reveals the
+    // actual byte stride, including ArrayStride and struct field layout.
+    if (index_span != 0)
+    {
+        const uint64_t next_index = dynamic_index_range.min + dynamic_index_range.stride;
+        PointerV       next_pointer = result_pointer;
+        next_pointer.idx_path[dynamic_index_path_position] = static_cast<uint32_t>(next_index);
+
+        const std::pair<std::byte*, uint64_t> next_resolved = ResolvePointerV(next_pointer);
+        if (next_resolved.first == nullptr || next_resolved.first != min_resolved.first)
+        {
+            return false;
+        }
+
+        uint64_t next_address = 0;
+        if (!CheckedAddU64(base_address, next_resolved.second, next_address) ||
+            next_address <= min_address)
+        {
+            return false;
+        }
+
+        byte_stride = next_address - min_address;
+        if (byte_stride < element_size)
+        {
+            // Publishing overlapping elements as independent range members
+            // would make downstream read/write classification unsound.
+            return false;
+        }
+
+        // Prove that the resolved endpoints and derived byte stride form one
+        // exact affine sequence; checked arithmetic prevents wraparound.
+        const uint64_t step_count = index_span / dynamic_index_range.stride;
+        uint64_t       address_span = 0;
+        uint64_t       expected_max_address = 0;
+        if (!CheckedMulU64(byte_stride, step_count, address_span) ||
+            !CheckedAddU64(min_address, address_span, expected_max_address) ||
+            expected_max_address != max_address)
+        {
+            return false;
+        }
+    }
+
+    out_range = DenseAccessChainAddressRange{
+        min_address,
+        max_address,
+        byte_stride,
+        element_size,
+    };
+    return true;
+}
+
+bool SPIRVSimulator::HasUniquePhysicalAddressBacking(uint64_t min_address,
+                                                     uint64_t max_address,
+                                                     uint64_t element_size) const
+{
+    if (simulation_data_ == nullptr || element_size == 0 || max_address < min_address)
+    {
+        return false;
+    }
+
+    // The complete address range, including the final element extent, must be
+    // covered by exactly one physical allocation. Multiple matches make the
+    // backing allocation identity ambiguous.
+    size_t matching_allocation_count = 0;
+    for (const auto& entry : simulation_data_->physical_address_buffers)
+    {
+        const size_t allocation_size_value = entry.second.first;
+        const std::byte* allocation_data = static_cast<const std::byte*>(entry.second.second);
+        if (allocation_data == nullptr || allocation_size_value == 0)
+        {
+            continue;
+        }
+
+        const uint64_t allocation_start = bit_cast<uint64_t>(allocation_data);
+        const uint64_t allocation_size  = static_cast<uint64_t>(allocation_size_value);
+        if (min_address < allocation_start || min_address - allocation_start >= allocation_size)
+        {
+            continue;
+        }
+
+        const uint64_t max_offset = max_address - allocation_start;
+        if (max_offset >= allocation_size || element_size > allocation_size - max_offset)
+        {
+            continue;
+        }
+
+        ++matching_allocation_count;
+        if (matching_allocation_count > 1)
+        {
+            // Overlapping host ranges make allocation identity ambiguous.
+            return false;
+        }
+    }
+
+    return matching_allocation_count == 1;
+}
+
+bool SPIRVSimulator::TrySetDenseAccessChainAddressRange(
+    const Instruction&              instruction,
+    const PointerV&                 result_pointer,
+    DenseAccessChainIndexSelection* out_dynamic_index_selection)
 {
     assert(instruction.opcode == spv::Op::OpAccessChain ||
            instruction.opcode == spv::Op::OpInBoundsAccessChain);
@@ -4536,250 +6731,187 @@ bool SPIRVSimulator::TrySetDenseAccessChainAddressRange(const Instruction& instr
     const uint32_t base_id        = instruction.words[3];
     const Type&    result_type    = GetTypeByTypeId(result_type_id);
 
+    // Address-range construction is best-effort. Clear every address field up front
+    // so any rejection below leaves no partially usable range.
     ValueMetadata& out_meta = value_meta_[result_id];
-    out_meta.address_range_valid  = false;
-    out_meta.address_range_min    = 0;
-    out_meta.address_range_max    = 0;
-    out_meta.address_range_stride = 1;
-    out_meta.address_element_size = 0;
+    out_meta.invocation_dependence = InvocationDependence::Unknown;
+    out_meta.address_range_valid   = false;
+    out_meta.address_range_min     = 0;
+    out_meta.address_range_max     = 0;
+    out_meta.address_range_stride  = 1;
+    out_meta.address_element_size  = 0;
 
     if (instruction.word_count <= 4 || result_type.kind != Type::Kind::Pointer)
     {
         return false;
     }
 
-    // Build a range only when the final index is thread-dependent and all
-    // preceding indexes are fixed. The current metadata represents one dense
-    // sequence and cannot combine multiple dynamic address contributions.
+    // Prove the role of every index and select one exact dense varying index.
+    // The analysis also retains combined dependence when this proof fails.
+    const std::span<const uint32_t> index_ids = instruction.words.subspan(4, instruction.word_count - 4);
+    const DenseAccessChainIndexAnalysis index_analysis = AnalyzeDenseAccessChainIndexes(index_ids, result_pointer.idx_path.size());
 
-    // Pre-existing base-pointer ranges, thread-dependent non-final indexes,
-    // descriptor-array indirection, thread-dependent matrix indexing, vector or
-    // composite result pointees, and padded final elements are rejected.
+    const ValueMetadata& base_meta = value_meta_[base_id];
+    const InvocationDependence base_dependence = base_meta.invocation_dependence;
+    const InvocationDependence result_dependence = CombineInvocationDependence(base_dependence, index_analysis.dependence);
 
-    // TODO: Before accepting vector/composite pointees or non-final dynamic
-    // indexes, extend the metadata and promotion model, carry matrix layout
-    // context through memory I/O, and then combine per-level index contributions.
-
-    const uint32_t final_operand_index = instruction.word_count - 1;
-    bool has_thread_dependent_non_final_index = false;
-
-    // Preserve any detected thread dependency when range construction is rejected.
-    for (uint32_t operand_index = 4; operand_index < instruction.word_count; ++operand_index)
-    {
-        const uint32_t             index_id    = instruction.words[operand_index];
-        const DenseValueRangeInfo& index_range = value_meta_[index_id].value_range;
-        if (ValueIsThreadSpecific(index_id) ||
-            (index_range.valid && index_range.thread_dependent))
+    // Downstream pointer consumers have not all migrated to the tri-state
+    // metadata yet, so Varying is temporarily dual-written to the legacy flag.
+    auto publish_pointer_dependence = [&](InvocationDependence dependence) {
+        out_meta.invocation_dependence = dependence;
+        if (dependence == InvocationDependence::Varying)
         {
             out_meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
-            has_thread_dependent_non_final_index = operand_index < final_operand_index;
-            break;
         }
+    };
+
+    if (!index_analysis.index_roles_proven)
+    {
+        // A failed fixed/path proof cannot safely use one representative
+        // pointer when its invocation dependence is unknown or varying.
+        // Preserve Invariant only when it was positively proved; otherwise
+        // publish conservative variation so downstream consumers fall back.
+        if (result_dependence != InvocationDependence::Invariant)
+        {
+#ifdef DEBUG_BUILD
+            for (uint32_t index_id : index_ids)
+            {
+                if (value_meta_[index_id].invocation_dependence != InvocationDependence::Unknown)
+                {
+                    continue;
+                }
+
+                const bool has_defining_instruction = HasInstructionForResultId(index_id);
+                const spv::Op defining_opcode = has_defining_instruction
+                    ? instructions_[GetInstructionIndexForResultId(index_id)].opcode
+                    : spv::Op::OpNop;
+                const bool should_report = MarkInvocationDependenceFallbackOpcodeReported(persistent_data_, defining_opcode);
+                if (!should_report)
+                {
+                    continue;
+                }
+
+                std::cout << "WARNING: AccessChain index %" << index_id << " has Unknown invocation dependence";
+                if (has_defining_instruction)
+                {
+                    std::cout << " (defining opcode: " << spv::OpToString(defining_opcode) << ")";
+                }
+                std::cout << "; dense address-range proof is unavailable, using conservative fallback."
+                          << std::endl;
+            }
+#endif
+
+            publish_pointer_dependence(InvocationDependence::Varying);
+        }
+        return false;
+    }
+
+    // Dependence is useful independently of an exact address range. Publish it
+    // after a successful complete scan even if a later proof fails.
+    publish_pointer_dependence(result_dependence);
+
+    if (!index_analysis.dense_selection.has_value())
+    {
+        // An all-fixed AccessChain, or a varying index without an exact dense
+        // range, has no address sequence that can be recorded here.
+        return false;
     }
 
     // Do not combine an existing base-pointer range with a new dynamic index.
-    if (value_meta_[base_id].address_range_valid || ValueIsThreadSpecific(base_id))
+    // TODO: Also reject Unknown after pointer-address dependence producers and
+    // the remaining pointer transfer/chain paths are fully covered.
+    if (base_meta.address_range_valid || base_dependence == InvocationDependence::Varying)
     {
         return false;
     }
 
-    // All indexes before the final index must be fixed value.
-    if (has_thread_dependent_non_final_index)
-    {
-        return false;
-    }
-
-    const uint32_t final_index_id = instruction.words[final_operand_index];
-    const DenseValueRangeInfo& final_index_range = value_meta_[final_index_id].value_range;
-    if (!final_index_range.valid || !final_index_range.thread_dependent || !final_index_range.dense_range)
-    {
-        return false;
-    }
-
-    if (final_index_range.stride == 0 || final_index_range.max < final_index_range.min)
-    {
-        return false;
-    }
-
-    const uint64_t index_span = final_index_range.max - final_index_range.min;
-    // The inclusive maximum must be reachable from min by whole stride steps.
-    if ((index_span % final_index_range.stride) != 0)
-    {
-        return false;
-    }
-
-    // DenseValueRangeInfo stores uint64_t values, but PointerV::idx_path stores uint32_t indexes.
-    // Reject values that would be truncated when constructing the min and max pointers.
-    if (final_index_range.min > std::numeric_limits<uint32_t>::max() ||
-        final_index_range.max > std::numeric_limits<uint32_t>::max())
-    {
-        return false;
-    }
-
-    // Find the container type indexed by the final index.
-    PointerV final_index_container_pointer = result_pointer;
-    if (final_index_container_pointer.idx_path.empty())
-    {
-        return false;
-    }
-    final_index_container_pointer.idx_path.pop_back();
-
-    const Type& final_index_container_type =
-        GetTypeByTypeId(GetTargetPointerType(final_index_container_pointer));
-    if (final_index_container_type.kind != Type::Kind::Vector &&
-        final_index_container_type.kind != Type::Kind::Array &&
-        final_index_container_type.kind != Type::Kind::RuntimeArray)
-    {
-        return false;
-    }
-
-    // TODO: Validate final_index_range against fixed Array and Vector bounds before
-    // resolving addresses. The global index range may exceed the in-bounds indexes
-    // that reach this access and extend the resulting address range past the object.
-
-    // A top-level descriptor-array index may select a different allocation and
-    // therefore cannot be represented as offsets from one backing pointer.
-    if (result_pointer.idx_path.size() == 1 &&
-        (result_pointer.storage_class == spv::StorageClass::StorageClassUniform ||
-         result_pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
-         result_pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer) &&
-        (final_index_container_type.kind == Type::Kind::Array ||
-         final_index_container_type.kind == Type::Kind::RuntimeArray))
-    {
-        return false;
-    }
-
-    // The final result pointee must be a scalar or pointer. Vector and composite
-    // pointees require metadata that can represent their internal value semantics.
+    const DenseAccessChainIndexSelection& dynamic_index = *index_analysis.dense_selection;
     const uint32_t result_pointee_type_id = result_type.pointer.pointee_type_id;
-    const Type& result_pointee_type = GetTypeByTypeId(result_pointee_type_id);
-    if (result_pointee_type.kind != Type::Kind::Int &&
-        result_pointee_type.kind != Type::Kind::Float &&
-        result_pointee_type.kind != Type::Kind::Pointer)
+
+    // Prove that the complete pointer path is valid for its declared types and
+    // that the full dynamic index range is within the selected container.
+    if (!TryProveDenseAccessChainTypedLayout(result_pointer,
+                                             dynamic_index.dynamic_index_path_position,
+                                             dynamic_index.dynamic_index_range))
     {
         return false;
     }
 
-    const uint64_t result_pointee_bit_size = GetBitsizeOfType(result_pointee_type_id);
-    if (result_pointee_bit_size == 0 || (result_pointee_bit_size % 8) != 0)
-    {
-        return false;
-    }
-    const uint64_t element_size = result_pointee_bit_size / 8;
-
-    const size_t final_path_position = result_pointer.idx_path.size() - 1;
-    // Resolve the first and last element addresses using the actual pointer layout.
-    PointerV min_pointer = result_pointer;
-    PointerV max_pointer = result_pointer;
-    min_pointer.idx_path[final_path_position] = static_cast<uint32_t>(final_index_range.min);
-    max_pointer.idx_path[final_path_position] = static_cast<uint32_t>(final_index_range.max);
-
-    const std::pair<std::byte*, uint64_t> min_resolved = ResolvePointerV(min_pointer);
-    const std::pair<std::byte*, uint64_t> max_resolved = ResolvePointerV(max_pointer);
-    // Different base pointers mean that the indexes selected different backing
-    // allocations, so the addresses cannot form one linear range.
-    if (min_resolved.first == nullptr ||
-        max_resolved.first == nullptr ||
-        min_resolved.first != max_resolved.first)
+    // Build the complete candidate range, including the accessed element size,
+    // and prove that the dense indexes resolve to one exact affine byte-address
+    // sequence relative to a single backing base.
+    DenseAccessChainAddressRange candidate_range;
+    if (!TryBuildDenseAccessChainAddressRange(result_pointer,
+                                              result_pointee_type_id,
+                                              dynamic_index.dynamic_index_path_position,
+                                              dynamic_index.dynamic_index_range,
+                                              candidate_range))
     {
         return false;
     }
 
-    const uint64_t base_address = bit_cast<uint64_t>(min_resolved.first);
-    if (min_resolved.second > std::numeric_limits<uint64_t>::max() - base_address ||
-        max_resolved.second > std::numeric_limits<uint64_t>::max() - base_address)
+    // Physical ranges additionally require one unambiguous allocation that
+    // contains every accessed byte, including the final element extent.
+    if (result_pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer &&
+        !HasUniquePhysicalAddressBacking(candidate_range.min_address,
+                                         candidate_range.max_address,
+                                         candidate_range.element_size))
     {
         return false;
     }
 
-    const uint64_t min_address = base_address + min_resolved.second;
-    const uint64_t max_address = base_address + max_resolved.second;
-    if (max_address < min_address)
-    {
-        return false;
-    }
-
-    // A single selected element has no second address from which to derive the
-    // stride, so its scalar or pointer element size is the byte stride.
-    uint64_t byte_stride = element_size;
-
-    // For a multi-element range, resolve the next reachable index to derive the real byte stride.
-    if (index_span != 0)
-    {
-        const uint64_t next_index = final_index_range.min + final_index_range.stride;
-        PointerV next_pointer = result_pointer;
-        next_pointer.idx_path[final_path_position] = static_cast<uint32_t>(next_index);
-
-        const std::pair<std::byte*, uint64_t> next_resolved = ResolvePointerV(next_pointer);
-        if (next_resolved.first == nullptr ||
-            next_resolved.first != min_resolved.first ||
-            next_resolved.second > std::numeric_limits<uint64_t>::max() - base_address)
-        {
-            return false;
-        }
-
-        const uint64_t next_address = base_address + next_resolved.second;
-        if (next_address <= min_address)
-        {
-            return false;
-        }
-        byte_stride = next_address - min_address;
-
-        const uint64_t step_count = index_span / final_index_range.stride;
-        if (byte_stride > std::numeric_limits<uint64_t>::max() / step_count ||
-            min_address > std::numeric_limits<uint64_t>::max() - (byte_stride * step_count))
-        {
-            return false;
-        }
-        const uint64_t address_span = byte_stride * step_count;
-        if (max_address != min_address + address_span)
-        {
-            return false;
-        }
-    }
-
-    // Only tightly packed final elements can form a dense address range.
-    if (byte_stride != element_size)
-    {
-        // TODO: Support strided and padded address ranges.
-        return false;
-    }
-
-    // address_range_max is the start address of the final element.
-    out_meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
+    // Commit only after index, typed-layout, affine-address, and backing proofs
+    // have all succeeded, preserving atomic failure semantics.
     out_meta.address_range_valid  = true;
-    out_meta.address_range_min    = min_address;
-    out_meta.address_range_max    = max_address;
-    out_meta.address_range_stride = byte_stride;
-    out_meta.address_element_size = element_size;
+    out_meta.address_range_min    = candidate_range.min_address;
+    out_meta.address_range_max    = candidate_range.max_address;
+    out_meta.address_range_stride = candidate_range.byte_stride;
+    out_meta.address_element_size = candidate_range.element_size;
+    if (out_dynamic_index_selection)
+    {
+        *out_dynamic_index_selection = dynamic_index;
+    }
     return true;
 }
 
-bool SPIRVSimulator::TryQueueDenseReadSidePbufferPointers(const Instruction& instruction,
-                                                          uint32_t           result_id,
-                                                          const PointerV&    representative_slot_pointer)
+bool SPIRVSimulator::TryQueueDenseReadSidePbufferPointers(
+    uint32_t                              result_id,
+    const PointerV&                       representative_slot_pointer,
+    const DenseAccessChainIndexSelection& dynamic_index_selection)
 {
-    assert(instruction.opcode == spv::Op::OpAccessChain || instruction.opcode == spv::Op::OpInBoundsAccessChain);
-
     const ValueMetadata& result_meta = value_meta_[result_id];
-    assert(result_meta.address_range_valid);
-    assert(result_meta.address_range_stride != 0);
-    assert(result_meta.address_range_max >= result_meta.address_range_min);
-    assert(result_meta.address_range_stride == result_meta.address_element_size);
-    assert(!representative_slot_pointer.idx_path.empty());
+    const bool result_address_range_valid = result_meta.address_range_valid &&
+                                            result_meta.address_range_stride != 0 &&
+                                            result_meta.address_range_max >= result_meta.address_range_min &&
+                                            result_meta.address_element_size != 0 &&
+                                            result_meta.address_range_stride >= result_meta.address_element_size;
+    assertmc(result_address_range_valid, "Dense AccessChain result metadata address-range was violated");
 
-    const uint32_t             final_index_id    = instruction.words[instruction.word_count - 1];
-    const DenseValueRangeInfo& final_index_range = value_meta_[final_index_id].value_range;
-    assert(final_index_range.valid);
-    assert(final_index_range.thread_dependent);
-    assert(final_index_range.dense_range);
-    assert(final_index_range.stride != 0);
-    assert(final_index_range.max >= final_index_range.min);
+    const DenseValueRangeInfo& dynamic_index_range = dynamic_index_selection.dynamic_index_range;
+    const bool dynamic_index_range_valid = dynamic_index_range.valid &&
+                                           dynamic_index_range.thread_dependent &&
+                                           dynamic_index_range.dense_range &&
+                                           dynamic_index_range.stride != 0 &&
+                                           dynamic_index_range.max >= dynamic_index_range.min &&
+                                           dynamic_index_range.max <= std::numeric_limits<uint32_t>::max();
+    assertmc(dynamic_index_range_valid,
+             "Dense AccessChain dynamic-index range contract was violated");
+    assertmc(dynamic_index_selection.dynamic_index_path_position < representative_slot_pointer.idx_path.size(),
+             "Dense AccessChain dynamic-index path position is out of bounds");
 
     const uint64_t address_span = result_meta.address_range_max - result_meta.address_range_min;
-    assert((address_span % result_meta.address_range_stride) == 0);
+    assertmc((address_span % result_meta.address_range_stride) == 0,
+             "Dense AccessChain address range must contain complete stride steps");
 
-    const uint64_t slot_count = (address_span / result_meta.address_range_stride) + 1;
+    const uint64_t index_span         = dynamic_index_range.max - dynamic_index_range.min;
+    assertmc((index_span % dynamic_index_range.stride) == 0,
+             "Dense AccessChain dynamic-index range must contain complete stride steps");
+
+    const uint64_t address_slot_count = (address_span / result_meta.address_range_stride) + 1;
+    const uint64_t slot_count = (index_span / dynamic_index_range.stride) + 1;
+    assertmc(slot_count == address_slot_count,
+             "Dense AccessChain address and dynamic-index ranges must describe the same slot count");
+
     // Bound one expansion so a valid but very large range cannot consume excessive time and memory.
     // Returning false lets Op_AccessChain preserve the representative pair and report incomplete coverage.
     if (slot_count > kMaxDenseReadSidePointerSlots)
@@ -4790,13 +6922,13 @@ bool SPIRVSimulator::TryQueueDenseReadSidePbufferPointers(const Instruction& ins
     std::vector<std::pair<PointerV, PointerV>> pending_pairs;
     pending_pairs.reserve(static_cast<size_t>(slot_count));
 
-    const size_t final_path_position = representative_slot_pointer.idx_path.size() - 1;
+    const size_t dynamic_index_path_position = dynamic_index_selection.dynamic_index_path_position;
     for (uint64_t step = 0; step < slot_count; ++step)
     {
-        const uint64_t logical_index = final_index_range.min + (step * final_index_range.stride);
+        const uint64_t logical_index = dynamic_index_range.min + (step * dynamic_index_range.stride);
 
-        PointerV slot_pointer                      = representative_slot_pointer;
-        slot_pointer.idx_path[final_path_position] = static_cast<uint32_t>(logical_index);
+        PointerV slot_pointer = representative_slot_pointer;
+        slot_pointer.idx_path[dynamic_index_path_position] = static_cast<uint32_t>(logical_index);
 
         const std::optional<Value> loaded_value = ReadPointer(slot_pointer);
         if (!loaded_value || !std::holds_alternative<PointerV>(*loaded_value))
@@ -8846,6 +10978,20 @@ void SPIRVSimulator::Op_String(const Instruction& instruction)
     string_literals_[result_id] = read_instruction_literal(instruction, 2);
 }
 
+const std::byte* SPIRVSimulator::FindSpecializationOverrideData(uint32_t spec_id) const
+{
+    const auto override_it = simulation_data_->specialization_constant_offsets.find(spec_id);
+    if (override_it == simulation_data_->specialization_constant_offsets.end())
+    {
+        return nullptr;
+    }
+
+    assertmc(simulation_data_->specialization_constants != nullptr,
+             "SPIRV simulator: Specialization override has no data block");
+    // TODO: Validate this offset against the specialization_constants data size once SimulationData exposes it.
+    return static_cast<const std::byte*>(simulation_data_->specialization_constants) + override_it->second;
+}
+
 void SPIRVSimulator::Op_Constant(const Instruction& instruction)
 {
     /*
@@ -8871,12 +11017,8 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
     if (HasDecorator(result_id, spv::Decoration::DecorationSpecId))
     {
         uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
-        if (simulation_data_->specialization_constant_offsets.find(spec_id) !=
-            simulation_data_->specialization_constant_offsets.end())
+        if (const std::byte* raw_spec_const_data = FindSpecializationOverrideData(spec_id))
         {
-            size_t           spec_id_offset = simulation_data_->specialization_constant_offsets.at(spec_id);
-            const std::byte* raw_spec_const_data =
-                static_cast<const std::byte*>(simulation_data_->specialization_constants) + spec_id_offset;
             std::vector<uint32_t> buffer_data;
             ReadWords(raw_spec_const_data, type_id, buffer_data);
 
@@ -8885,14 +11027,18 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
         }
         else
         {
+            // The simulator consumes a fully specialized Vulkan pipeline stage,
+            // not an intermediate partially specialized SPIR-V module. When the
+            // pipeline has no external override for this SpecId, Vulkan selects
+            // the SPIR-V default as the exact effective constant value. A generic
+            // partial-specialization uncertainty model is outside this contract.
             if (verbose_)
             {
-                std::cout << execIndent << "No spec constant data provided for result_id: " << result_id
-                          << ", using default" << std::endl;
+                std::cout << execIndent << "No external specialization override for SpecId: " << spec_id
+                          << " (result_id: " << result_id << "), using SPIR-V default" << std::endl;
             }
             const uint32_t* buffer_pointer = instruction.words.subspan(3).data();
             SetValue(result_id, MakeScalar(type_id, buffer_pointer));
-            SetFlags(result_id, SPS_FLAG_UNINITIALIZED | SPS_FLAG_IS_ARBITRARY);
         }
     }
     else
@@ -8900,6 +11046,8 @@ void SPIRVSimulator::Op_Constant(const Instruction& instruction)
         const uint32_t* buffer_pointer = instruction.words.subspan(3).data();
         SetValue(result_id, MakeScalar(type_id, buffer_pointer));
     }
+
+    SetConstantInvocationDependence(result_id);
 }
 
 void SPIRVSimulator::Op_ConstantComposite(const Instruction& instruction)
@@ -8970,6 +11118,9 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
         std::vector<DenseValueRangeInfo> component_ranges;
         component_ranges.reserve(type.vector.elem_count);
 
+        std::vector<InvocationDependence> component_dependence;
+        component_dependence.reserve(type.vector.elem_count);
+
         for (uint32_t i = 3; i < instruction.word_count; ++i)
         {
             const uint32_t operand_id = instruction.words[i];
@@ -8996,6 +11147,8 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
                     {
                         component_ranges.push_back(DenseValueRangeInfo{});
                     }
+
+                    component_dependence.push_back(GetDirectComponentInvocationDependence(src_meta, c));
                 }
             }
             else
@@ -9009,23 +11162,51 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
                 {
                     component_ranges.push_back(DenseValueRangeInfo{});
                 }
+                component_dependence.push_back(src_meta.invocation_dependence);
             }
         }
 
         SetValue(result_id, vec);
-        value_meta_[result_id].component_ranges = std::move(component_ranges);
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.component_ranges = std::move(component_ranges);
+        result_meta.component_invocation_dependence = std::move(component_dependence);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
     }
     else if (type.kind == Type::Kind::Matrix)
     {
         auto matrix = std::make_shared<MatrixV>();
         matrix->cols.reserve(instruction.word_count - 3);
+
+        std::vector<InvocationDependence> component_dependence;
+        component_dependence.reserve(type.matrix.col_count);
+
+        std::vector<SubobjectInvocationDependenceEntry> subobject_dependence;
+
+        const Type& column_type = GetTypeByTypeId(type.matrix.col_type_id);
+
         for (auto i = 3; i < instruction.word_count; ++i)
         {
-          ExtractFlags(instruction.words[i], value_meta);
-          matrix->cols.push_back(GetValue(instruction.words[i]));
+            const uint32_t column_id = instruction.words[i];
+            const uint32_t column_index = i - 3;
+            const ValueMetadata& column_meta = value_meta_[column_id];
+
+            ExtractFlags(column_id, value_meta);
+            matrix->cols.push_back(GetValue(column_id));
+            // A column's top-level summary is authoritative for that direct component.
+            component_dependence.push_back(column_meta.invocation_dependence);
+
+            for (uint32_t row = 0; row < column_type.vector.elem_count; ++row)
+            {
+                const InvocationDependence row_dependence = GetDirectComponentInvocationDependence(column_meta, row);
+                subobject_dependence.push_back(SubobjectInvocationDependenceEntry{ { column_index, row }, row_dependence });
+            }
         }
 
         SetValue(result_id, matrix);
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.component_invocation_dependence = std::move(component_dependence);
+        result_meta.subobject_invocation_dependence = std::move(subobject_dependence);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
     }
     else if (type.kind == Type::Kind::CooperativeMatrixKHR)
     {
@@ -9076,19 +11257,33 @@ void SPIRVSimulator::Op_CompositeConstruct(const Instruction& instruction)
 
         std::vector<SubobjectScalarRangeEntry> subobject_scalar_ranges;
 
+        std::vector<InvocationDependence> component_dependence;
+        component_dependence.reserve(instruction.word_count - 3);
+
+        std::vector<SubobjectInvocationDependenceEntry> subobject_dependence;
+
         for (uint32_t i = 3; i < instruction.word_count; ++i)
         {
             const uint32_t operand_id = instruction.words[i];
             const uint32_t member_index = i - 3;
+            const ValueMetadata& src_meta = value_meta_[operand_id];
 
             ExtractFlags(operand_id, value_meta);
             aggregate->elems.push_back(GetValue(operand_id));
             AppendSubobjectScalarRangesFromValue(
                 subobject_scalar_ranges, std::vector<uint32_t>{ member_index }, operand_id);
+            // An operand's top-level summary is authoritative for that direct component.
+            component_dependence.push_back(src_meta.invocation_dependence);
+            AppendSubobjectInvocationDependenceFromValue(
+                subobject_dependence, std::vector<uint32_t>{ member_index }, operand_id);
         }
 
         SetValue(result_id, aggregate);
-        value_meta_[result_id].subobject_scalar_ranges = std::move(subobject_scalar_ranges);
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.subobject_scalar_ranges = std::move(subobject_scalar_ranges);
+        result_meta.component_invocation_dependence = std::move(component_dependence);
+        result_meta.subobject_invocation_dependence = std::move(subobject_dependence);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
     }
     else if (type.kind == Type::Kind::TensorARM)
     {
@@ -9373,7 +11568,8 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
 
     const PointerV& pointer = std::get<PointerV>(GetValue(pointer_id));
 
-    if (!TrySetComputeBuiltinValueAndRange(result_id, pointer, type_id))
+    const bool is_compute_builtin_load = TrySetComputeBuiltinValueAndMetadata(result_id, pointer, type_id);
+    if (!is_compute_builtin_load)
     {
         // TODO: Compare pointer with candidates here and track
         const std::optional<Value> pointee_value = ReadPointer(pointer);
@@ -9384,8 +11580,9 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
         SetValue(result_id, *pointee_value);
     }
 
-    // Restore non-flag metadata from the most recent internal-memory store,
-    // projecting aggregate metadata when this load selects a stored subobject.
+    // Restore non-flag metadata from the most recent internal-memory store in
+    // the current representative execution, projecting aggregate metadata
+    // when this load selects a stored subobject.
     if (pointer.storage_class == spv::StorageClass::StorageClassFunction ||
         pointer.storage_class == spv::StorageClass::StorageClassPrivate ||
         pointer.storage_class == spv::StorageClass::StorageClassWorkgroup ||
@@ -9408,13 +11605,23 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
                     meta.address_range_max = store_record.stored_meta.address_range_max;
                     meta.address_range_stride = store_record.stored_meta.address_range_stride;
                     meta.address_element_size = store_record.stored_meta.address_element_size;
+
+                    meta.invocation_dependence = store_record.stored_meta.invocation_dependence;
+                    meta.component_invocation_dependence = store_record.stored_meta.component_invocation_dependence;
+                    meta.subobject_invocation_dependence = store_record.stored_meta.subobject_invocation_dependence;
                 }
                 else
                 {
-                    TryProjectAggregateSubobjectMetadata(result_id,
-                                                         store_record.stored_meta.component_ranges,
-                                                         store_record.stored_meta.subobject_scalar_ranges,
-                                                         suffix_path);
+                    TryProjectAggregateSubobjectValueRange(result_id,
+                                                           store_record.stored_meta.component_ranges,
+                                                           store_record.stored_meta.subobject_scalar_ranges,
+                                                           suffix_path);
+
+                    ValueMetadata stored_value_meta;
+                    stored_value_meta.invocation_dependence = store_record.stored_meta.invocation_dependence;
+                    stored_value_meta.component_invocation_dependence = store_record.stored_meta.component_invocation_dependence;
+                    stored_value_meta.subobject_invocation_dependence = store_record.stored_meta.subobject_invocation_dependence;
+                    ProjectAggregateSubobjectInvocationDependence(result_id, stored_value_meta, suffix_path);
                 }
             }
         }
@@ -9448,6 +11655,20 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     }
 
     TransferFlagsFromPointee(result_id, pointer);
+
+    // External memory has no authoritative reaching-store snapshot. A
+    // varying load address is nevertheless sufficient to conservatively mark
+    // the loaded whole value as varying. Internal memory and compute builtins
+    // keep their dedicated metadata producers above.
+    if (!is_compute_builtin_load &&
+        (pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
+         pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+         pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+         pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
+         pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer))
+    {
+        PropagateExternalLoadInvocationDependence(result_id, pointer_id);
+    }
 }
 
 void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
@@ -9474,6 +11695,7 @@ void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
     SetValue(result_id, CopyValue(GetValue(object_id)));
     TransferFlags(result_id, object_id);
     CopyNonFlagValueMetadata(result_id, object_id);
+    CopyInvocationDependenceMetadata(result_id, object_id);
 
     bool changed_trace_state = false;
     auto stored_it = values_stored_.find(object_id);
@@ -9516,6 +11738,7 @@ void SPIRVSimulator::Op_CopyLogical(const Instruction& instruction)
     SetValue(result_id, CopyValue(GetValue(object_id)));
     TransferFlags(result_id, object_id);
     CopyNonFlagValueMetadata(result_id, object_id);
+    CopyInvocationDependenceMetadata(result_id, object_id);
 
     bool changed_trace_state = false;
     auto stored_it = values_stored_.find(object_id);
@@ -9715,8 +11938,19 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         pointer.storage_class != spv::StorageClass::StorageClassWorkgroup &&
         pointer.storage_class != spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT &&
         pointer.storage_class != spv::StorageClass::StorageClassImage;
+    const bool has_varying_invocation_dependence =
+        value_meta_[result_id].invocation_dependence == InvocationDependence::Varying ||
+        value_meta_[pointer_id].invocation_dependence == InvocationDependence::Varying;
+    // Preserve the legacy thread-specific signal only as a fallback for values
+    // whose tri-state invocation dependence has not yet been classified.
+    const bool has_legacy_thread_specific_flag =
+        (value_meta_[result_id].invocation_dependence == InvocationDependence::Unknown &&
+         (value_meta_[result_id].flags & SPS_FLAG_THREAD_SPECIFIC) != 0) ||
+        (value_meta_[pointer_id].invocation_dependence == InvocationDependence::Unknown &&
+         (value_meta_[pointer_id].flags & SPS_FLAG_THREAD_SPECIFIC) != 0);
     if (memory_flag_tracker_ && should_track_dense_store_fallback &&
-        ((value_meta_[result_id].flags | value_meta_[pointer_id].flags) & SPS_FLAG_THREAD_SPECIFIC))
+        (has_varying_invocation_dependence || has_legacy_thread_specific_flag) &&
+        CanWriteValueTypeCarryHandlePayload(GetTypeByResultId(result_id)))
     {
         uint64_t dense_dst_start = 0;
         uint64_t dense_byte_size = 0;
@@ -9889,7 +12123,8 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
     SetValue(result_id, new_pointer);
     TransferFlags(result_id, base_id);
 
-    const bool has_dense_address_range = TrySetDenseAccessChainAddressRange(instruction, new_pointer);
+    DenseAccessChainIndexSelection dynamic_index_selection;
+    const bool has_dense_address_range = TrySetDenseAccessChainAddressRange(instruction, new_pointer, &dynamic_index_selection);
     // TrySetDenseAccessChainAddressRange marks the result metadata when it finds a thread-dependent index,
     // even if dense-range construction later fails.
     const bool is_thread_specific_access = ValueIsThreadSpecific(result_id);
@@ -9903,8 +12138,8 @@ void SPIRVSimulator::Op_AccessChain(const Instruction& instruction)
         // address)
 
         // Prefer complete dense slot coverage; queue the representative pair only when expansion is unavailable.
-        const bool queued_dense =
-            has_dense_address_range && TryQueueDenseReadSidePbufferPointers(instruction, result_id, new_pointer);
+        const bool queued_dense = has_dense_address_range &&
+                                  TryQueueDenseReadSidePbufferPointers(result_id, new_pointer, dynamic_index_selection);
         if (!queued_dense)
         {
             if (is_thread_specific_access)
@@ -10906,6 +13141,7 @@ void SPIRVSimulator::Op_IAdd(const Instruction& instruction)
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
     PropagateBinaryRangeAdd(result_id, instruction.words[3], instruction.words[4]);
+    PropagateElementwiseBinaryInvocationDependence(result_id, instruction.words[3], instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ISub(const Instruction& instruction)
@@ -11152,6 +13388,7 @@ void SPIRVSimulator::Op_ISub(const Instruction& instruction)
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
     PropagateBinaryRangeSub(result_id, instruction.words[3], instruction.words[4]);
+    PropagateElementwiseBinaryInvocationDependence(result_id, instruction.words[3], instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_LogicalNot(const Instruction& instruction)
@@ -11493,16 +13730,16 @@ void SPIRVSimulator::Op_SpecConstantFalse(const Instruction& instruction)
 
     uint32_t type_id   = instruction.words[1];
     uint32_t result_id = instruction.words[2];
+    const Type& type   = GetTypeByTypeId(type_id);
 
     assertmc(HasDecorator(result_id, spv::Decoration::DecorationSpecId),
             "Op_SpecConstantFalse type is not decorated with SpecId");
+    assertmc(type.kind == Type::Kind::BoolT,
+             "Op_SpecConstantFalse result type must be Bool");
 
     uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
-    if (simulation_data_->specialization_constant_offsets.find(spec_id) != simulation_data_->specialization_constant_offsets.end())
+    if (const std::byte* raw_spec_const_data = FindSpecializationOverrideData(spec_id))
     {
-        size_t spec_id_offset = simulation_data_->specialization_constant_offsets.at(spec_id);
-        const std::byte* raw_spec_const_data =
-            static_cast<const std::byte*>(simulation_data_->specialization_constants) + spec_id_offset;
         std::vector<uint32_t> buffer_data;
         ReadWords(raw_spec_const_data, type_id, buffer_data);
 
@@ -11513,6 +13750,8 @@ void SPIRVSimulator::Op_SpecConstantFalse(const Instruction& instruction)
     {
         SetValue(result_id, (uint64_t)0);
     }
+
+    SetConstantInvocationDependence(result_id);
 }
 
 void SPIRVSimulator::Op_SpecConstantTrue(const Instruction& instruction)
@@ -11532,16 +13771,16 @@ void SPIRVSimulator::Op_SpecConstantTrue(const Instruction& instruction)
 
     uint32_t type_id   = instruction.words[1];
     uint32_t result_id = instruction.words[2];
+    const Type& type   = GetTypeByTypeId(type_id);
 
     assertmc(HasDecorator(result_id, spv::Decoration::DecorationSpecId),
             "Op_SpecConstantFalse type is not decorated with SpecId");
+    assertmc(type.kind == Type::Kind::BoolT,
+             "Op_SpecConstantTrue result type must be Bool");
 
     uint32_t spec_id = GetDecoratorLiteral(result_id, spv::Decoration::DecorationSpecId);
-    if (simulation_data_->specialization_constant_offsets.find(spec_id) != simulation_data_->specialization_constant_offsets.end())
+    if (const std::byte* raw_spec_const_data = FindSpecializationOverrideData(spec_id))
     {
-        size_t spec_id_offset = simulation_data_->specialization_constant_offsets.at(spec_id);
-        const std::byte* raw_spec_const_data =
-            static_cast<const std::byte*>(simulation_data_->specialization_constants) + spec_id_offset;
         std::vector<uint32_t> buffer_data;
         ReadWords(raw_spec_const_data, type_id, buffer_data);
 
@@ -11552,6 +13791,8 @@ void SPIRVSimulator::Op_SpecConstantTrue(const Instruction& instruction)
     {
         SetValue(result_id, (uint64_t)1);
     }
+
+    SetConstantInvocationDependence(result_id);
 }
 
 void SPIRVSimulator::Op_SpecConstantOp(const Instruction& instruction)
@@ -13015,10 +15256,11 @@ void SPIRVSimulator::Op_CompositeExtract(const Instruction& instruction)
         }
 
         const ValueMetadata& composite_meta = value_meta_[composite_id];
-        TryProjectAggregateSubobjectMetadata(result_id,
-                                             composite_meta.component_ranges,
-                                             composite_meta.subobject_scalar_ranges,
-                                             selected_path);
+        TryProjectAggregateSubobjectValueRange(result_id,
+                                               composite_meta.component_ranges,
+                                               composite_meta.subobject_scalar_ranges,
+                                               selected_path);
+        ProjectAggregateSubobjectInvocationDependence(result_id, composite_meta, selected_path);
     }
 
     TransferFlags(result_id, instruction.words[3]);
@@ -13164,6 +15406,8 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         if (type.kind == Type::Kind::Pointer)
         {
             SetValue(result_id, operand);
+            TransferFlags(result_id, operand_id);
+            PropagateBitcastInvocationDependence(result_id, operand_id, type, operand_type);
 
             // TODO: Compare pointer with candidates here and track
 
@@ -13348,7 +15592,8 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
 
     SetValue(result_id, result);
 
-    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, operand_id);
+    PropagateBitcastInvocationDependence(result_id, operand_id, type, operand_type);
     if (holds_pbuffer_ptr)
     {
         SetHoldsPbufferPtr(result_id);
@@ -13490,6 +15735,7 @@ void SPIRVSimulator::Op_IMul(const Instruction& instruction)
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
     PropagateBinaryRangeMul(result_id, instruction.words[3], instruction.words[4]);
+    PropagateElementwiseBinaryInvocationDependence(result_id, instruction.words[3], instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
@@ -13546,7 +15792,8 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
         }
     }
 
-    TransferFlags(result_id, instruction.words[3]);
+    TransferFlags(result_id, integer_id);
+    CopyInvocationDependenceMetadata(result_id, integer_id);
     SetHoldsPbufferPtr(result_id);
 }
 
@@ -13713,6 +15960,7 @@ void SPIRVSimulator::Op_UDiv(const Instruction& instruction)
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
     PropagateBinaryRangeDiv(result_id, instruction.words[3], instruction.words[4]);
+    PropagateElementwiseUnsignedDivModInvocationDependence(result_id, instruction.words[3], instruction.words[4]);
 }
 
 void SPIRVSimulator::Op_UMod(const Instruction& instruction)
@@ -13816,6 +16064,7 @@ void SPIRVSimulator::Op_UMod(const Instruction& instruction)
     TransferFlags(result_id, operand1_id);
     TransferFlags(result_id, operand2_id);
     PropagateBinaryRangeMod(result_id, operand1_id, operand2_id);
+    PropagateElementwiseUnsignedDivModInvocationDependence(result_id, operand1_id, operand2_id);
 }
 
 void SPIRVSimulator::Op_SRem(const Instruction& instruction)
@@ -14132,6 +16381,7 @@ void SPIRVSimulator::Op_ConstantTrue(const Instruction& instruction)
 
     Value result = (uint64_t)1;
     SetValue(result_id, result);
+    SetConstantInvocationDependence(result_id);
 }
 
 void SPIRVSimulator::Op_ConstantFalse(const Instruction& instruction)
@@ -14151,6 +16401,7 @@ void SPIRVSimulator::Op_ConstantFalse(const Instruction& instruction)
 
     Value result = (uint64_t)0;
     SetValue(result_id, result);
+    SetConstantInvocationDependence(result_id);
 }
 
 void SPIRVSimulator::Op_ConstantNull(const Instruction& instruction)
@@ -14187,6 +16438,81 @@ void SPIRVSimulator::Op_ConstantNull(const Instruction& instruction)
 
 
     SetValue(result_id, MakeNullValue(result_id, type_id));
+    if (type.kind == Type::Kind::BoolT ||
+        type.kind == Type::Kind::Int ||
+        type.kind == Type::Kind::Float)
+    {
+        SetConstantInvocationDependence(result_id);
+    }
+    else if (type.kind == Type::Kind::Vector)
+    {
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.component_invocation_dependence.assign(type.vector.elem_count, InvocationDependence::Invariant);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+    }
+    else if (type.kind == Type::Kind::Matrix)
+    {
+        const Type& column_type = GetTypeByTypeId(type.matrix.col_type_id);
+
+        std::vector<InvocationDependence> component_dependence(type.matrix.col_count, InvocationDependence::Invariant);
+
+        std::vector<SubobjectInvocationDependenceEntry> subobject_dependence;
+        for (uint32_t column = 0; column < type.matrix.col_count; ++column)
+        {
+            for (uint32_t row = 0; row < column_type.vector.elem_count; ++row)
+            {
+                subobject_dependence.push_back(SubobjectInvocationDependenceEntry{
+                    { column, row }, InvocationDependence::Invariant });
+            }
+        }
+
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.component_invocation_dependence = std::move(component_dependence);
+        result_meta.subobject_invocation_dependence = std::move(subobject_dependence);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+    }
+    else if (type.kind == Type::Kind::Struct)
+    {
+        const std::vector<uint32_t>& member_type_ids = struct_members_.at(type_id);
+
+        std::vector<InvocationDependence> component_dependence(member_type_ids.size(), InvocationDependence::Invariant);
+
+        std::vector<SubobjectInvocationDependenceEntry> subobject_dependence;
+        for (uint32_t member = 0; member < member_type_ids.size(); ++member)
+        {
+            AppendUniformSubobjectInvocationDependenceForType(
+                subobject_dependence,
+                std::vector<uint32_t>{ member },
+                member_type_ids[member],
+                InvocationDependence::Invariant);
+        }
+
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.component_invocation_dependence = std::move(component_dependence);
+        result_meta.subobject_invocation_dependence = std::move(subobject_dependence);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+    }
+    else if (type.kind == Type::Kind::Array)
+    {
+        const uint64_t element_count = GetArrayLength(type.array.length_id);
+
+        std::vector<InvocationDependence> component_dependence(element_count, InvocationDependence::Invariant);
+
+        std::vector<SubobjectInvocationDependenceEntry> subobject_dependence;
+        for (uint32_t element = 0; element < element_count; ++element)
+        {
+            AppendUniformSubobjectInvocationDependenceForType(
+                subobject_dependence,
+                std::vector<uint32_t>{ element },
+                type.array.elem_type_id,
+                InvocationDependence::Invariant);
+        }
+
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.component_invocation_dependence = std::move(component_dependence);
+        result_meta.subobject_invocation_dependence = std::move(subobject_dependence);
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+    }
 }
 
 void SPIRVSimulator::Op_AtomicIAdd(const Instruction& instruction)
@@ -14684,6 +17010,7 @@ void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
     The type of the part selected to modify must match the type of Object. Each index is an unsigned 32-bit integer.
     */
     assert(instruction.opcode == spv::Op::OpCompositeInsert);
+    assertmc(instruction.word_count > 5, "SPIRV simulator: Empty composite insert path");
 
     uint32_t result_id    = instruction.words[2];
     uint32_t obj_id       = instruction.words[3];
@@ -14734,9 +17061,10 @@ void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
 
-    // Start with the base composite metadata, then replace the metadata for
-    // the subobject overwritten by this insert.
+    // Copy all base metadata first; the affected range and dependence entries
+    // are replaced below.
     CopyNonFlagValueMetadata(result_id, composite_id);
+    CopyInvocationDependenceMetadata(result_id, composite_id);
 
     // The literal indexes form the logical path of the replaced subobject.
     std::vector<uint32_t> insert_prefix;
@@ -14747,14 +17075,21 @@ void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
     }
 
     ValueMetadata& result_meta = value_meta_[result_id];
-    // Remove stale leaf ranges below the replaced path, then materialize the
-    // inserted object's ranges under that same path.
-    EraseSubobjectScalarRangesByPrefix(result_meta.subobject_scalar_ranges, insert_prefix);
-    AppendSubobjectScalarRangesFromValue(result_meta.subobject_scalar_ranges, insert_prefix, obj_id);
+    const Type&    result_type = GetTypeByResultId(result_id);
+    const uint32_t direct_component_index = insert_prefix[0];
 
-    // Keep the vector-specific fast path consistent with the generic
-    // subobject metadata for a direct component insert.
-    const Type& result_type = GetTypeByResultId(result_id);
+    const ValueMetadata& base_meta = value_meta_[composite_id];
+    const ValueMetadata& object_meta = value_meta_[obj_id];
+    const InvocationDependence old_direct_summary = GetDirectComponentInvocationDependence(base_meta, direct_component_index);
+
+    // A whole-value Invariant proves that missing base components are Invariant;
+    // otherwise they must remain Unknown.
+    const InvocationDependence missing_base_component =
+        base_meta.invocation_dependence == InvocationDependence::Invariant
+            ? InvocationDependence::Invariant
+            : InvocationDependence::Unknown;
+
+    // A vector root stores scalar metadata in component arrays, not subobject entries.
     if (result_type.kind == Type::Kind::Vector && insert_prefix.size() == 1)
     {
         if (result_meta.component_ranges.size() < result_type.vector.elem_count)
@@ -14762,20 +17097,117 @@ void SPIRVSimulator::Op_CompositeInsert(const Instruction& instruction)
             result_meta.component_ranges.resize(result_type.vector.elem_count);
         }
 
-        const uint32_t component_index = insert_prefix[0];
-        if (component_index < result_meta.component_ranges.size())
+        if (direct_component_index < result_meta.component_ranges.size())
         {
-            if (value_meta_[obj_id].value_range.valid)
+            if (object_meta.value_range.valid)
             {
-                result_meta.component_ranges[component_index] = value_meta_[obj_id].value_range;
+                result_meta.component_ranges[direct_component_index] = object_meta.value_range;
             }
             else
             {
-                result_meta.component_ranges[component_index] = DenseValueRangeInfo{};
+                result_meta.component_ranges[direct_component_index] = DenseValueRangeInfo{};
             }
         }
+
+        result_meta.component_invocation_dependence.resize(result_type.vector.elem_count, missing_base_component);
+        if (direct_component_index < result_meta.component_invocation_dependence.size())
+        {
+            result_meta.component_invocation_dependence[direct_component_index] = object_meta.invocation_dependence;
+        }
+
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+
+        return;
     }
 
+    assertmc(result_type.kind != Type::Kind::Vector,
+             "SPIRV simulator: Vector OpCompositeInsert path must contain exactly one index");
+
+    // Non-vector aggregate roots store scalar leaves as subobject paths.
+    EraseSubobjectScalarRangesByPrefix(result_meta.subobject_scalar_ranges, insert_prefix);
+    AppendSubobjectScalarRangesFromValue(result_meta.subobject_scalar_ranges, insert_prefix, obj_id);
+
+    EraseSubobjectInvocationDependenceByPrefix(result_meta.subobject_invocation_dependence, insert_prefix);
+    AppendSubobjectInvocationDependenceFromValue(result_meta.subobject_invocation_dependence, insert_prefix, obj_id);
+
+    uint32_t direct_component_count = 0;
+    uint32_t direct_component_type_id = 0;
+    if (result_type.kind == Type::Kind::Matrix)
+    {
+        direct_component_count = result_type.matrix.col_count;
+        direct_component_type_id = result_type.matrix.col_type_id;
+    }
+    else if (result_type.kind == Type::Kind::Struct)
+    {
+        direct_component_count = static_cast<uint32_t>(struct_members_.at(GetTypeID(result_id)).size());
+        direct_component_type_id = struct_members_.at(GetTypeID(result_id))[direct_component_index];
+    }
+    else if (result_type.kind == Type::Kind::Array)
+    {
+        direct_component_count = static_cast<uint32_t>(GetArrayLength(result_type.array.length_id));
+        direct_component_type_id = result_type.array.elem_type_id;
+    }
+    else if (result_type.kind == Type::Kind::RuntimeArray)
+    {
+        // Runtime arrays have no type-level length; use the current concrete aggregate shape.
+        const Value& result_value = GetValue(result_id);
+        assertmc(std::holds_alternative<std::shared_ptr<AggregateV>>(result_value),
+                 "SPIRV simulator: RuntimeArray result is not an aggregate");
+        direct_component_count = static_cast<uint32_t>(
+            std::get<std::shared_ptr<AggregateV>>(result_value)->elems.size());
+        direct_component_type_id = result_type.array.elem_type_id;
+    }
+    result_meta.component_invocation_dependence.resize(direct_component_count, missing_base_component);
+
+    if (insert_prefix.size() == 1)
+    {
+        // A direct replacement takes the inserted object's top-level summary as-is.
+        result_meta.component_invocation_dependence[direct_component_index] = object_meta.invocation_dependence;
+        result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
+        return;
+    }
+
+    // Enumerate every scalar leaf in the affected direct component so that
+    // missing unchanged leaves still participate in its rebuilt summary.
+    std::vector<SubobjectInvocationDependenceEntry> expected_leaves;
+    AppendUniformSubobjectInvocationDependenceForType(
+        expected_leaves,
+        { direct_component_index },
+        direct_component_type_id,
+        InvocationDependence::Unknown);
+
+    std::vector<InvocationDependence> component_inputs;
+    component_inputs.reserve(expected_leaves.size() + 1);
+
+    for (const auto& expected_leaf : expected_leaves)
+    {
+        // The inserted subtree is represented once by its top-level summary below.
+        if (PathStartsWith(expected_leaf.path, insert_prefix)) { continue; }
+
+        InvocationDependence leaf_dependence = InvocationDependence::Unknown;
+        // A missing unchanged leaf is provably Invariant only when the old direct component was Invariant.
+        if (!TryGetSubobjectInvocationDependence(result_meta.subobject_invocation_dependence, expected_leaf.path, leaf_dependence) &&
+            old_direct_summary == InvocationDependence::Invariant)
+        {
+            leaf_dependence = InvocationDependence::Invariant;
+        }
+        component_inputs.push_back(leaf_dependence);
+    }
+    if (expected_leaves.empty())
+    {
+        // Runtime arrays and unsupported component types have no type-level leaf shape;
+        // retain a conservative summary for the unchanged portion.
+        component_inputs.push_back(
+            old_direct_summary == InvocationDependence::Invariant
+                ? InvocationDependence::Invariant
+                : InvocationDependence::Unknown);
+    }
+    // Treat the inserted scalar or aggregate subtree as one summary input.
+    component_inputs.push_back(object_meta.invocation_dependence);
+
+    // Rebuild the affected direct component, then the complete result summary.
+    result_meta.component_invocation_dependence[direct_component_index] = SummarizeInvocationDependence(component_inputs);
+    result_meta.invocation_dependence = SummarizeInvocationDependence(result_meta.component_invocation_dependence);
 }
 
 void SPIRVSimulator::Op_Transpose(const Instruction& instruction)
@@ -15528,6 +17960,7 @@ void SPIRVSimulator::Op_VectorShuffle(const Instruction& instruction)
     SetValue(result_id, result);
 
     TryBuildVectorShuffleComponentRanges(result_id, vec1_id, vec2_id, instruction);
+    BuildVectorShuffleInvocationDependence(result_id, vec1_id, vec2_id, instruction);
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
 }
@@ -15851,6 +18284,7 @@ void SPIRVSimulator::Op_BitwiseOr(const Instruction& instruction)
 
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
+    PropagateElementwiseBinaryInvocationDependence(result_id, op1_id, op2_id);
 }
 
 void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
@@ -15989,6 +18423,7 @@ void SPIRVSimulator::Op_BitwiseAnd(const Instruction& instruction)
 
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
+    PropagateElementwiseBinaryInvocationDependence(result_id, op1_id, op2_id);
 }
 
 void SPIRVSimulator::Op_Not(const Instruction& instruction)
@@ -18192,6 +20627,7 @@ void SPIRVSimulator::Op_UConvert(const Instruction& instruction)
     }
 
     TransferFlags(result_id, operand_id);
+    CopyInvocationDependenceMetadata(result_id, operand_id);
 }
 
 void SPIRVSimulator::Op_SConvert(const Instruction& instruction)
@@ -19265,6 +21701,7 @@ void SPIRVSimulator::Op_BitwiseXor(const Instruction& instruction)
 
     TransferFlags(result_id, instruction.words[3]);
     TransferFlags(result_id, instruction.words[4]);
+    PropagateElementwiseBinaryInvocationDependence(result_id, op1_id, op2_id);
 }
 
 void SPIRVSimulator::Op_ControlBarrier(const Instruction& instruction)

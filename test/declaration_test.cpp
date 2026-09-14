@@ -29,6 +29,11 @@ class OpConstantNullDeclarationTests : public SPIRVSimulatorMockBase, public Tes
     static constexpr const char* kPhysicalNullError =
         "SPIR-V simulator: .*OpConstantNull - PyhsicalStorageBuffer not allowed";
 
+    void SetUp() override
+    {
+        value_meta_.resize(kPhysicalResultId + 1, { 0 });
+    }
+
     void RegisterType(uint32_t type_id, const ::SPIRVSimulator::Type& type)
     {
         types_[type_id] = type;
@@ -346,7 +351,7 @@ TEST_F(OpConstantNullDeclarationTests, CrashPhysicalStorageBufferPointers)
     }
     catch (const std::runtime_error& e)
     {
-        EXPECT_THAT(e.what(), HasSubstr(kPhysicalNullError));
+        EXPECT_THAT(e.what(), MatchesRegex(kPhysicalNullError));
     }
 #endif
 }

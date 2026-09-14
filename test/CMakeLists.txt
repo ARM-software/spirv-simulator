@@ -23,10 +23,25 @@ target_sources(access_chain_address_range_test PRIVATE ${SOURCE_FILES} ${HEADER_
 target_compile_definitions(access_chain_address_range_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
 target_link_libraries(access_chain_address_range_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
 
+add_executable(access_chain_dense_range_consumer_test)
+target_sources(access_chain_dense_range_consumer_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} access_chain_dense_range_consumer_test.cpp)
+target_compile_definitions(access_chain_dense_range_consumer_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
+target_link_libraries(access_chain_dense_range_consumer_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
+
 add_executable(declaration_test)
 target_sources(declaration_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} declaration_test.cpp)
 target_compile_definitions(declaration_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
 target_link_libraries(declaration_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
+
+add_executable(compute_local_size_test)
+target_sources(compute_local_size_test PRIVATE compute_local_size_test.cpp)
+target_compile_definitions(compute_local_size_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
+target_link_libraries(compute_local_size_test PRIVATE GTest::gtest_main spirv_simulator_lib)
+
+add_executable(specialization_constant_test)
+target_sources(specialization_constant_test PRIVATE specialization_constant_test.cpp)
+target_compile_definitions(specialization_constant_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
+target_link_libraries(specialization_constant_test PRIVATE GTest::gtest_main spirv_simulator_lib)
 
 add_executable(value_metadata_test)
 target_sources(value_metadata_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} value_metadata_test.cpp)
@@ -57,7 +72,10 @@ set(CMAKE_CTEST_ARGUMENTS --output-on-failure --verbose)
 
 gtest_discover_tests(arithmetic_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(access_chain_address_range_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(access_chain_dense_range_consumer_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(declaration_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(compute_local_size_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(specialization_constant_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(value_metadata_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(misc_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(tensor_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
@@ -65,7 +83,7 @@ gtest_discover_tests(memory_tracker_test REPORTER verbose DISCOVERY_MODE PRE_TES
 
 add_custom_target(run_tests
   COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -VV
-  DEPENDS arithmetic_test access_chain_address_range_test declaration_test value_metadata_test misc_test tensor_test memory_tracker_test
+  DEPENDS arithmetic_test access_chain_address_range_test access_chain_dense_range_consumer_test declaration_test compute_local_size_test specialization_constant_test value_metadata_test misc_test tensor_test memory_tracker_test
 )
 
 file(GLOB SPIRV_FILES ${PROJECT_SOURCE_DIR}/test_shaders/*.spv ${PROJECT_SOURCE_DIR}/test_shaders/*.spirv)
