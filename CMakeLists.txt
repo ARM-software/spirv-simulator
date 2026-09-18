@@ -12,6 +12,7 @@ enable_testing()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CTEST_ARGUMENTS "--output-on-failure")
 
 if(SANITIZE)
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")

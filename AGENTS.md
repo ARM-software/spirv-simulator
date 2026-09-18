@@ -12,17 +12,17 @@
 - Keep header guards/`#pragma once`, grouped includes, and minimal headers in headers.
 - Types/classes use PascalCase (`SPIRVSimulator`); functions/methods are PascalCase; variables and struct fields are lower_snake_case.
 - Mirror existing patterns in `framework/spirv_simulator.*` and `test/testing_common.*`; prefer standard library utilities and assertions already in use.
+- Read [Terminology.md](Terminology.md) for terminology list.
 
-## Notes & Configuration Tips
+## Notes & configuration
 - The SPIRV simulator implements the SPIRV specification and parses SPIRV code to extract information about pointers and memory usage.
-
-## Code reviews
 - Do not run compilation or tests as part of code reviews.
+- For performance runs, make sure you build in release mode (made with `-DCMAKE_BUILD_TYPE=Release`, eg in a `build_release` folder).
+- Performance can be measured like this: `taskset 1 perf stat -r 100 build_release/spirv_simulator test_shaders/aztec_ruins_shader_4.spv`
 
 ## Adding support for a new SPIRV OpCode
 - Opcodes are handled in the c++ files `framework/spirv_simulator.cpp` and `framework/spirv_simulator.hpp`, and the class `SPIRVSimulator`
 - Each Opcode has a function handler of the form `void Op_<name>(const Instruction&);`
-- Build with `make -j`
 - Run tests with `ctest --output-on-failure`
 
 Minimal function implementation:
@@ -49,7 +49,3 @@ void SPIRVSimulator::Op_<name>(const Instruction& instruction)
 - Run tests with `ctest --output-on-failure`. Fix any errors shown.
 - When adding opcodes, include positive/edge cases and pointer/descriptor coverage where applicable.
 - For shader-driven scenarios, place inputs in `test_shaders/` and reference them via `./spirv_simulator` in tests.
-
-## Performance measurements
-- For performance runs, make sure you build in release mode (made with `-DCMAKE_BUILD_TYPE=Release`, eg in a `build_release` folder).
-- Performance can be measured like this: `taskset 1 perf stat -r 100 build_release/spirv_simulator test_shaders/aztec_ruins_shader_4.spv`
