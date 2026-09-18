@@ -84,7 +84,7 @@ TEST_F(TensorCrashTests, TypeTensorRejectsTooFewOperands)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV Simulator: OpTypeTensorARM requires at least 3 arguments");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*OpTypeTensorARM requires at least 3 arguments");
 #endif
 }
 
@@ -100,7 +100,7 @@ TEST_F(TensorCrashTests, TensorReadRejectsNonScalarResult)
                                                             .words      = instruction_words };
 
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead result must be scalar or array of scalars");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorRead result must be scalar or array of scalars");
 #endif
 }
 
@@ -115,7 +115,7 @@ TEST_F(TensorCrashTests, TensorReadRejectsUnrankedTensor)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead tensor must be ranked");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorRead tensor must be ranked");
 #endif
 }
 
@@ -130,7 +130,7 @@ TEST_F(TensorCrashTests, TensorReadRejectsCoordinateCountMismatch)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead number of coords must be equal to rank of tensor");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorRead number of coords must be equal to rank of tensor");
 #endif
 }
 
@@ -145,7 +145,7 @@ TEST_F(TensorCrashTests, TensorReadRejectsNonIntegerCoordinates)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorRead coords must be integer type scalars");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorRead coords must be integer type scalars");
 #endif
 }
 
@@ -158,7 +158,7 @@ TEST_F(TensorCrashTests, TensorReadRejectsMakeElementAvailableOperand)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: MakeElementAvailableARM illegal for TensorRead");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*MakeElementAvailableARM illegal for TensorRead");
 #endif
 }
 
@@ -173,7 +173,7 @@ TEST_F(TensorCrashTests, TensorWriteRejectsUnrankedTensor)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite tensor must be ranked");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorWrite tensor must be ranked");
 #endif
 }
 
@@ -189,7 +189,7 @@ TEST_F(TensorCrashTests, TensorWriteRejectsCoordinateCountMismatch)
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
     EXPECT_DEATH( {this->ExecuteInstruction(instruction);},
-                           "SPIRV simulator: TensorWrite number of coords must be equal to rank of tensor");
+                           "SPIR-V simulator: .*TensorWrite number of coords must be equal to rank of tensor");
 #endif
 }
 
@@ -204,7 +204,7 @@ TEST_F(TensorCrashTests, TensorWriteRejectsNonIntegerCoordinates)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite coords must be integer type scalars");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorWrite coords must be integer type scalars");
 #endif
 }
 
@@ -219,7 +219,7 @@ TEST_F(TensorCrashTests, TensorWriteRejectsNonScalarObject)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite result must be scalar or array of scalars");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorWrite result must be scalar or array of scalars");
 #endif
 }
 
@@ -234,7 +234,7 @@ TEST_F(TensorCrashTests, TensorWriteRejectsScalarObjectWithWrongElementType)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite object must be type contained in tensor");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorWrite object must be type contained in tensor");
 #endif
 }
 
@@ -249,7 +249,7 @@ TEST_F(TensorCrashTests, TensorWriteRejectsArrayObjectWithWrongElementType)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorWrite object must be type contained in tensor");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorWrite object must be type contained in tensor");
 #endif
 }
 
@@ -264,7 +264,7 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerResultType)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize result type must be integer scalar");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorQuerySize result type must be integer scalar");
 #endif
 }
 
@@ -279,7 +279,7 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsUnrankedTensor)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize tensor must be ranked");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorQuerySize tensor must be ranked");
 #endif
 }
 
@@ -294,7 +294,7 @@ TEST_F(TensorCrashTests, TensorQuerySizeRejectsNonIntegerDimension)
                                                             .word_count = static_cast<uint16_t>(instruction_words.size()),
                                                             .words      = instruction_words };
 #ifdef DEBUG_BUILD
-    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIRV simulator: TensorQuerySize dimension must be given as integer scalar");
+    EXPECT_DEATH( {this->ExecuteInstruction(instruction);}, "SPIR-V simulator: .*TensorQuerySize dimension must be given as integer scalar");
 #endif
 }
 

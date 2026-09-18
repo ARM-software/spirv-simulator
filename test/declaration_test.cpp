@@ -27,7 +27,7 @@ class OpConstantNullDeclarationTests : public SPIRVSimulatorMockBase, public Tes
     static constexpr uint32_t kPhysicalResultId    = 2004;
     static constexpr uint64_t kArrayLength         = 3;
     static constexpr const char* kPhysicalNullError =
-        "SPIRV Simulator: OpConstantNull - PyhsicalStorageBuffer not allowed";
+        "SPIR-V simulator: .*OpConstantNull - PyhsicalStorageBuffer not allowed";
 
     void RegisterType(uint32_t type_id, const ::SPIRVSimulator::Type& type)
     {

@@ -110,7 +110,7 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
         {                                  \
             PrintExecutionContext();       \
         }                                  \
-        throw std::runtime_error(msg);     \
+        throw std::runtime_error("SPIR-V simulator: " msg);     \
     } while (0)
 
 #define assertmc(exp, msg)                 \
@@ -122,7 +122,7 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
             {                              \
                 PrintExecutionContext();   \
             }                              \
-            throw std::runtime_error(msg); \
+            throw std::runtime_error("SPIR-V simulator: " msg); \
         }                                  \
     } while (0)
 
@@ -135,7 +135,7 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
         {                                  \
             PrintExecutionContext();       \
         }                                  \
-        assert((void(msg), false));        \
+        assert((void("SPIR-V simulator: "  msg), false)); \
     } while (0)
 
 #define assertmc(exp, msg)                 \
@@ -147,7 +147,7 @@ using UnorderedSet = ankerl::unordered_dense::set<Key, Hash, KeyEqual>;
             {                              \
                 PrintExecutionContext();   \
             }                              \
-            assert((void(msg), exp));      \
+            assert((void("SPIR-V simulator: " msg), exp)); \
         }                                  \
     } while (0)
 
@@ -217,7 +217,7 @@ struct ComputeLocalSize
 
 struct SimulationData
 {
-    // The SpirV ID of the entry point to use
+    // The SPIR-V ID of the entry point to use
     uint32_t entry_point_id = 0;
     // The OpName label (function name) of the entry point to use, takes priority over entry_point_id if it is set.
     std::string entry_point_op_name = "";
@@ -329,7 +329,7 @@ private:
 
 enum BitLocation
 {
-    Constant,     // Constant embedded in the shader, offsets will be relative to the start of the spirv binary code
+    Constant,     // Constant embedded in the shader, offsets will be relative to the start of the SPIR-V binary code
     SpecConstant, // Spec constant, binding will be SpecId
     StorageClass  // storage_class specifies what block type we are dealing with
 };
@@ -363,7 +363,7 @@ struct DataSourceBits
     uint64_t binding_id;
 
     // Absolute byte offset into the containing buffer where the data is located
-    // If location is Constant, then this will be the byte offset into the spirv shader words input
+    // If location is Constant, then this will be the byte offset into the SPIR-V shader words input
     uint64_t byte_offset;
 
     // The bit offset from the byte offset where the data was stored
@@ -1063,7 +1063,7 @@ void extract_bytes(std::vector<std::byte>& output, T input, size_t num_bits)
 {
     if (sizeof(input) != 8)
     {
-        throw std::runtime_error("SPIRV simulator: extract_bytes called on type that is not 8 bytes");
+        throw std::runtime_error("SPIR-V simulator: extract_bytes called on type that is not 8 bytes");
     }
 
     std::array<std::byte, sizeof(T)> arr;
@@ -1083,7 +1083,7 @@ template <typename T>
 T ReverseBits(T value, unsigned bitWidth)
 {
     assert(std::is_unsigned<T>::value &&
-           "SPIRV simulator: Can only reverse the bits in unsigned integer types, cast first");
+           "SPIR-V simulator: Can only reverse the bits in unsigned integer types, cast first");
     T result = 0;
     for (unsigned i = 0; i < bitWidth; ++i)
     {
@@ -1098,7 +1098,7 @@ template <typename T>
 T ArithmeticRightShiftUnsigned(T value, unsigned shift, unsigned bitWidth)
 {
     assert(std::is_unsigned<T>::value &&
-           "SPIRV simulator: Can only arith shift the bits in unsigned integer types, cast first");
+           "SPIR-V simulator: Can only arith shift the bits in unsigned integer types, cast first");
 
     if (shift == 0 || shift >= bitWidth)
         return value;
@@ -1186,7 +1186,7 @@ inline std::string read_instruction_literal(const Instruction& instruction,
         ++word_index;
     }
 
-    std::cout << "SPIRV simulator: WARNING: read_instruction_literal reached end of range without seeing NUL terminator\n" << std::endl;
+    std::cout << "SPIR-V simulator: WARNING: read_instruction_literal reached end of range without seeing NUL terminator\n" << std::endl;
 
     return std::string(bytes.begin(), bytes.end());;
 }
@@ -1950,7 +1950,7 @@ class SPIRVSimulator
         return return_index;
     }
 
-    // Opcode handlers, 97/498 implemented for SPIRV 1.6
+    // Opcode handlers, 97/498 implemented for SPIR-V 1.6
     void T_Void(const Instruction&);
     void T_Bool(const Instruction&);
     void T_Int(const Instruction&);

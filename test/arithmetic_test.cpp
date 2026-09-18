@@ -944,13 +944,13 @@ std::vector<TestParameters> throw_tests{
                                 std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<double>{ 1.0, 1.0 }) })
         .set_operand_at(
             2, std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<uint64_t>{ 2, 2 }), CommonTypes::ivec2)
-        .set_death_message("SPIRV simulator: vector contains non-doubles in Op_FAdd")
+        .set_death_message("SPIR-V simulator: .*vector contains non-doubles in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)
         .set_operands_range(0, CommonTypes::f64, std::initializer_list<double>{ 3.0, 1.0 })
         .set_operand_at(2, 2, CommonTypes::i64)
-        .set_death_message("SPIRV simulator: Operands not of float type in Op_FAdd")
+        .set_death_message("SPIR-V simulator: .*Operands not of float type in Op_FAdd")
         .build(),
     TestParametersBuilder()
         .set_opcode(spv::Op::OpFAdd)

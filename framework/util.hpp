@@ -10,20 +10,20 @@
 #ifdef NDEBUG
 #include <stdexcept>
 
-#define assertx(msg) throw std::runtime_error(msg);
+#define assertx(msg) throw std::runtime_error("SPIR-V simulator: " msg);
 #define assertm(exp, msg)                  \
     do                                     \
     {                                      \
         if (!(exp))                        \
         {                                  \
-            throw std::runtime_error(msg); \
+            throw std::runtime_error("SPIR-V simulator: " msg); \
         }                                  \
     } while (0)
 #else
 #include <cassert>
 
-#define assertx(msg) assert((void(msg), false))
-#define assertm(exp, msg) assert((void(msg), exp))
+#define assertx(msg) assert((void("SPIR-V simulator: " msg), false))
+#define assertm(exp, msg) assert((void("SPIR-V simulator: " msg), exp))
 
 #endif
 
