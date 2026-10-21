@@ -1,0 +1,42 @@
+; Control: base = address(4096); base->values[y] = 1; 2x2 invocations.
+; The unused address calculation keeps this one pointer operand away from varying_base.
+OpCapability Shader
+OpCapability Int64
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint GLCompute %main "main" %lid
+OpExecutionMode %main LocalSize 2 2 1
+OpDecorate %lid BuiltIn LocalInvocationId
+OpDecorate %array ArrayStride 4
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%ulong = OpTypeInt 64 0
+%vec = OpTypeVector %uint 3
+%input = OpTypePointer Input %vec
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%two = OpConstant %uint 2
+%start = OpConstant %ulong 4096
+%stride = OpConstant %ulong 64
+%array = OpTypeArray %uint %two
+%block = OpTypeStruct %array
+%buffer = OpTypePointer PhysicalStorageBuffer %block
+%element = OpTypePointer PhysicalStorageBuffer %uint
+%lid = OpVariable %input Input
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%ids = OpLoad %vec %lid
+%x = OpCompositeExtract %uint %ids 0
+%y = OpCompositeExtract %uint %ids 1
+%x64 = OpUConvert %ulong %x
+%offset = OpIMul %ulong %x64 %stride
+%address = OpIAdd %ulong %start %offset
+%base = OpConvertUToPtr %buffer %start
+%dst = OpAccessChain %element %base %zero %y
+OpStore %dst %one Aligned 4
+OpReturn
+OpFunctionEnd

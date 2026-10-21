@@ -1,0 +1,34 @@
+; Control: out[LocalInvocationId.x + 0] = 1; two invocations, two uints.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %lid
+OpExecutionMode %main LocalSize 2 1 1
+OpDecorate %lid BuiltIn LocalInvocationId
+OpDecorate %array ArrayStride 4
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+OpDecorate %out DescriptorSet 0
+OpDecorate %out Binding 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%vec = OpTypeVector %uint 3
+%input = OpTypePointer Input %vec
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%two = OpConstant %uint 2
+%array = OpTypeArray %uint %two
+%block = OpTypeStruct %array
+%buffer = OpTypePointer StorageBuffer %block
+%element = OpTypePointer StorageBuffer %uint
+%lid = OpVariable %input Input
+%out = OpVariable %buffer StorageBuffer
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%ids = OpLoad %vec %lid
+%x = OpCompositeExtract %uint %ids 0
+%index = OpIAdd %uint %x %zero
+%dst = OpAccessChain %element %out %zero %index
+OpStore %dst %one
+OpReturn
+OpFunctionEnd

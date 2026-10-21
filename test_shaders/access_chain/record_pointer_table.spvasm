@@ -1,0 +1,40 @@
+; table[x].pointer: one pointer per record, packed, varying index is non-final.
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint GLCompute %main "main" %lid
+OpExecutionMode %main LocalSize 2 1 1
+OpDecorate %lid BuiltIn LocalInvocationId
+OpMemberDecorate %payload 0 Offset 0
+OpDecorate %payload Block
+OpMemberDecorate %record 0 Offset 0
+OpDecorate %array ArrayStride 8
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+OpDecorate %table DescriptorSet 0
+OpDecorate %table Binding 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%vec = OpTypeVector %uint 3
+%input = OpTypePointer Input %vec
+%zero = OpConstant %uint 0
+%two = OpConstant %uint 2
+%payload = OpTypeStruct %uint
+%physical = OpTypePointer PhysicalStorageBuffer %payload
+%record = OpTypeStruct %physical
+%array = OpTypeArray %record %two
+%block = OpTypeStruct %array
+%buffer = OpTypePointer StorageBuffer %block
+%slot = OpTypePointer StorageBuffer %physical
+%lid = OpVariable %input Input
+%table = OpVariable %buffer StorageBuffer
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%ids = OpLoad %vec %lid
+%x = OpCompositeExtract %uint %ids 0
+%location = OpAccessChain %slot %table %zero %x %zero
+%pointer = OpLoad %physical %location
+OpReturn
+OpFunctionEnd

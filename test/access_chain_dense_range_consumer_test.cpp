@@ -5,11 +5,18 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <set>
+#include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "spirv-tools/libspirv.hpp"
 #include "spirv_simulator.hpp"
 #include "testing_common.hpp"
 
@@ -498,3 +505,153 @@ TEST_F(AccessChainReadSidePointerConsumerTests, ThreadSpecificFallbackReadFailur
     EXPECT_TRUE(ReadSidePointerCoverageIncomplete());
     EXPECT_EQ(QueuedPointerPairCount(), 0u);
 }
+
+// Shader integration cases use the real simulator rather than the opcode mocks above.
+// Build: cmake --build build --target access_chain_dense_range_consumer_test -j 4
+// Run: ctest --test-dir build --output-on-failure -R '^AccessChainShaderTests\.'
+// CTest isolates each case, so a simulator assertion does not hide other failures.
+namespace
+{
+class AccessChainShaderTests : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        simulation_data_.bindings[0][0] = backing_.data();
+        simulation_data_.physical_address_buffers[4096] = { sizeof(backing_), backing_.data() };
+    }
+
+    void RunShader(const char* shader_name)
+    {
+        const std::string path = std::string(TEST_SHADER_DIR) + "/access_chain/" + shader_name + ".spvasm";
+        std::ifstream file(path);
+        ASSERT_TRUE(file.is_open()) << path;
+        const std::string source{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
+
+        std::ostringstream diagnostics;
+        spvtools::SpirvTools tools(SPV_ENV_UNIVERSAL_1_3);
+        tools.SetMessageConsumer([&](spv_message_level_t, const char*, const spv_position_t& position, const char* message) {
+            diagnostics << position.line << ": " << message << '\n';
+        });
+        std::vector<uint32_t> words;
+        ASSERT_TRUE(tools.Assemble(source, &words)) << diagnostics.str();
+        ASSERT_TRUE(tools.Validate(words)) << diagnostics.str();
+
+        SPIRVSimulator::SPIRVSimulator simulator(
+            words, &memory_tracker_, &simulation_data_, &simulation_results_);
+        simulator.Run();
+    }
+
+    void ExpectWriteCoverage(std::initializer_list<uint64_t> byte_offsets)
+    {
+        // Verify that the shader reached its store, even when fallback is used.
+        ASSERT_EQ(backing_[0], 1u);
+        if (simulation_results_.full_dispatch_needed)
+        {
+            return;
+        }
+
+        // Exact handling is also valid: every invocation's complete uint write
+        // must be covered. Checking only the representative address misses the
+        // varying-base case's second row at offsets 64 and 68.
+        const uint64_t base_address = reinterpret_cast<uint64_t>(backing_.data());
+        for (uint64_t offset : byte_offsets)
+        {
+            SCOPED_TRACE("write byte offset " + std::to_string(offset));
+            const uint64_t address = base_address + offset;
+            const auto range = memory_tracker_.queryUniformDerivedRange(address);
+            ASSERT_TRUE(range.has_value()) << "Missing write coverage and no full-dispatch fallback";
+            EXPECT_LE(range->start, address);
+            EXPECT_GE(range->end, address + sizeof(uint32_t));
+            EXPECT_EQ(range->element_size, sizeof(uint32_t));
+        }
+    }
+
+    void BindPointerTable()
+    {
+        simulation_data_.bindings[0][0] = pointer_table_.data();
+        simulation_data_.physical_address_buffers.clear();
+        simulation_data_.physical_address_buffers[4096] = { sizeof(first_payload_), &first_payload_ };
+        simulation_data_.physical_address_buffers[8192] = { sizeof(second_payload_), &second_payload_ };
+    }
+
+    void ExpectPointerSlotCoverage(std::initializer_list<uint64_t> byte_offsets)
+    {
+        std::set<uint64_t> observed_offsets;
+        for (const auto& pointer : simulation_results_.physical_address_data)
+        {
+            for (const auto& source : pointer.bit_components)
+            {
+                if (source.source_ptr == pointer_table_.data())
+                {
+                    EXPECT_EQ(source.bitcount, 64u);
+                    observed_offsets.insert(source.byte_offset);
+                }
+            }
+        }
+
+        // Require the representative slot to have been visited. If enumeration
+        // cannot cover both slots, the public incomplete-coverage flag must say so.
+        EXPECT_EQ(observed_offsets.count(0), 1u);
+        if (!simulation_results_.read_side_pointer_coverage_incomplete)
+        {
+            EXPECT_EQ(observed_offsets, std::set<uint64_t>(byte_offsets));
+        }
+    }
+
+    alignas(16) std::array<uint32_t, 32> backing_{};
+    // Packed slots use elements 0 and 1; stride-16 slots use elements 0 and 2.
+    std::array<uint64_t, 4> pointer_table_{ 4096, 8192, 8192, 0 };
+    uint32_t first_payload_ = 1;
+    uint32_t second_payload_ = 2;
+    SPIRVSimulator::MemoryFlagTracker memory_tracker_;
+    SPIRVSimulator::SimulationData simulation_data_;
+    SPIRVSimulator::SimulationResults simulation_results_;
+};
+
+TEST_F(AccessChainShaderTests, MaskedIndexCoversBothWritesOrRequestsFullDispatch)
+{
+    ASSERT_NO_FATAL_FAILURE(RunShader("masked_index"));
+    ExpectWriteCoverage({ 0, 4 });
+}
+
+TEST_F(AccessChainShaderTests, VaryingBaseAndIndexCoverBothRowsOrRequestFullDispatch)
+{
+    ASSERT_NO_FATAL_FAILURE(RunShader("varying_base"));
+    ExpectWriteCoverage({ 0, 4, 64, 68 });
+}
+
+TEST_F(AccessChainShaderTests, StridedPointerTableEnumeratesSlotsOrReportsIncompleteCoverage)
+{
+    BindPointerTable();
+    ASSERT_NO_FATAL_FAILURE(RunShader("strided_pointer_table"));
+    ExpectPointerSlotCoverage({ 0, 16 });
+}
+
+TEST_F(AccessChainShaderTests, NonFinalVaryingIndexEnumeratesSlotsOrReportsIncompleteCoverage)
+{
+    BindPointerTable();
+    ASSERT_NO_FATAL_FAILURE(RunShader("record_pointer_table"));
+    ExpectPointerSlotCoverage({ 0, 8 });
+}
+
+// Controls differ from the regressions by one operation or layout choice.
+TEST_F(AccessChainShaderTests, DirectIndexCoversBothWrites)
+{
+    ASSERT_NO_FATAL_FAILURE(RunShader("direct_index"));
+    ExpectWriteCoverage({ 0, 4 });
+}
+
+TEST_F(AccessChainShaderTests, FixedBaseCoversOneRow)
+{
+    ASSERT_NO_FATAL_FAILURE(RunShader("fixed_base"));
+    ExpectWriteCoverage({ 0, 4 });
+}
+
+TEST_F(AccessChainShaderTests, PackedPointerTableEnumeratesSlots)
+{
+    BindPointerTable();
+    ASSERT_NO_FATAL_FAILURE(RunShader("packed_pointer_table"));
+    ExpectPointerSlotCoverage({ 0, 8 });
+}
+} // namespace
