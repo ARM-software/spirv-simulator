@@ -3,10 +3,13 @@
 #ifndef ARM_SPIRV_SIMULATOR_MEMORY_FLAG_TRACKER_HPP
 #define ARM_SPIRV_SIMULATOR_MEMORY_FLAG_TRACKER_HPP
 
+#include "checked_arithmetic.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -26,6 +29,7 @@ public:
     using Offset = std::uint64_t;
     using Flags = std::uint64_t;
     using FragmentId = std::uint64_t;
+    using UniformDerivedClassId = std::uint64_t;
 
     struct Range {
         Address start;
@@ -49,8 +53,7 @@ public:
         Copy,
         MarkLocal,
         MarkLineage,
-        MarkUniformDerivedRange,
-        PromoteUniformDerivedRange
+        MarkUniformDerivedClass
     };
 
     enum class MappingOrigin {
@@ -76,21 +79,6 @@ public:
     enum class MemoryPatternKind {
         Unknown,
         UniformDerivedElements
-    };
-
-    struct UniformDerivedRange {
-        Address start = 0;
-        Address end = 0; // exclusive
-        Size element_size = 0;
-        Flags flags = 0;
-        Flags promoted_flags = 0;
-        FragmentId class_id = 0;
-        MemoryPatternKind kind = MemoryPatternKind::Unknown;
-
-        bool contains(Address addr) const { return addr >= start && addr < end; }
-        bool elementCompatible(Address addr, Size elem_size) const {
-            return elem_size == element_size && element_size != 0 && contains(addr) && ((addr - start) % element_size) == 0;
-        }
     };
 
     struct DetailedFlagSpan {
@@ -228,64 +216,6 @@ public:
                 piece.fragment_offset + (piece.abs_end - piece.abs_start),
                 flags);
         }
-    }
-
-    // Mark a dense range of equal-sized elements whose values were produced by the
-    // same thread-dependent expression family.  This deliberately does not mark
-    // the range as a pbuffer pointer yet; it records that all elements in the
-    // range should be promoted together if one compatible element is later proven.
-    FragmentId markUniformDerivedRange(Address addr, Size size, Size element_size, Flags flags) {
-        if (size == 0 || element_size == 0) {
-            return 0;
-        }
-        if ((size % element_size) != 0) {
-            return 0;
-        }
-
-        const Address end = checkedEnd(addr, size);
-        FragmentId class_id = next_fragment_id_++;
-        UniformDerivedRange range;
-        range.start = addr;
-        range.end = end;
-        range.element_size = element_size;
-        range.flags = flags;
-        range.class_id = class_id;
-        range.kind = MemoryPatternKind::UniformDerivedElements;
-        uniform_derived_ranges_.push_back(range);
-#if ENABLE_HISTORY
-        history_.emplace_back(OpKind::MarkUniformDerivedRange, addr, size, flags, 0);
-#endif
-        return class_id;
-    }
-
-    // If addr is one element inside a previously marked uniform-derived range,
-    // promote the whole compatible range. Returns the promoted range when this
-    // proves a class of elements, otherwise nullopt.
-    std::optional<UniformDerivedRange> promoteUniformDerivedRangeContaining(Address addr, Size element_size, Flags flags) {
-        if (element_size == 0 || flags == 0) {
-            return std::nullopt;
-        }
-        for (UniformDerivedRange& range : uniform_derived_ranges_) {
-            if (!range.elementCompatible(addr, element_size)) {
-                continue;
-            }
-            range.promoted_flags |= flags;
-            markLineage(range.start, range.end - range.start, flags);
-#if ENABLE_HISTORY
-            history_.emplace_back(OpKind::PromoteUniformDerivedRange, range.start, range.end - range.start, flags, addr);
-#endif
-            return range;
-        }
-        return std::nullopt;
-    }
-
-    std::optional<UniformDerivedRange> queryUniformDerivedRange(Address addr) const {
-        for (const UniformDerivedRange& range : uniform_derived_ranges_) {
-            if (range.contains(addr)) {
-                return range;
-            }
-        }
-        return std::nullopt;
     }
 
     // Effective flags at a single address, or nullopt if unmapped.
@@ -442,6 +372,830 @@ public:
     // Returns an empty vector if ENABLE_HISTORY is 0
     const std::vector<HistoryEntry>& history() const {
         return history_;
+    }
+
+private:
+    // Dormant persistent classification support for MemoryFlagTracker's broader memory type/taint tracking role.
+    //
+    // SPIRVSimulator's current physical-address path intentionally uses ElementwiseSource directly and
+    // does not publish, query, or promote these classes.
+    // The implementation is retained for future cross-memory and cross-dispatch payload classification.
+    //
+    // Before reconnecting it, callers must provide complete publication, external-write invalidation,
+    // backing-allocation lifetime and generation tracking.
+
+    // Ordered affine view over uniform-derived class ordinals. This type contains
+    // only ordinal-set geometry.
+    class ClassOrdinalSpan {
+    public:
+        enum class MergeResult {
+            NotMergeable,
+            Merged,
+            Invalid,
+        };
+
+        Size first_class_ordinal = 0;
+        int64_t class_ordinal_stride = 0;
+        Size element_count = 0;
+
+        bool operator==(const ClassOrdinalSpan&) const = default;
+
+        // Returns whether every ordinal in other belongs to this span.
+        bool contains(const ClassOrdinalSpan& other) const {
+            ClassOrdinalSpan containing;
+            ClassOrdinalSpan contained;
+            if (!canonicalize(containing) ||
+                !other.canonicalize(contained) ||
+                containing.element_count < contained.element_count ||
+                contained.first_class_ordinal < containing.first_class_ordinal) {
+                return false;
+            }
+
+            const Size containing_stride = static_cast<Size>(containing.class_ordinal_stride);
+            const Size delta = contained.first_class_ordinal - containing.first_class_ordinal;
+            if ((delta % containing_stride) != 0) {
+                return false;
+            }
+
+            const Size first_index = delta / containing_stride;
+            if (first_index >= containing.element_count) {
+                return false;
+            }
+
+            if (contained.element_count == 1) {
+                return true;
+            }
+
+            const Size contained_stride = static_cast<Size>(contained.class_ordinal_stride);
+            if ((contained_stride % containing_stride) != 0) {
+                return false;
+            }
+
+            const Size index_stride = contained_stride / containing_stride;
+            return contained.element_count - 1 <= (containing.element_count - 1 - first_index) / index_stride;
+        }
+
+        // Returns whether this span is in the unique canonical representation.
+        bool isCanonical() const {
+            if (element_count == 0 || class_ordinal_stride <= 0) {
+                return false;
+            }
+
+            if (element_count == 1) {
+                return class_ordinal_stride == 1;
+            }
+
+            const Size stride = static_cast<Size>(class_ordinal_stride);
+            const Size step_count = element_count - 1;
+            return step_count <= (std::numeric_limits<Size>::max() - first_class_ordinal) / stride;
+        }
+
+        // Converts this span to the canonical representation. On false, the out parameter is unchanged.
+        bool canonicalize(ClassOrdinalSpan& canonical_span) const {
+            if (element_count == 0) {
+                return false;
+            }
+
+            ClassOrdinalSpan candidate = *this;
+            if (element_count == 1) {
+                candidate.class_ordinal_stride = 1;
+                canonical_span = candidate;
+                return true;
+            }
+
+            if (class_ordinal_stride == 0) {
+                return false;
+            }
+
+            const Size step_count = element_count - 1;
+            if (class_ordinal_stride > 0) {
+                const Size stride = static_cast<Size>(class_ordinal_stride);
+                if (step_count > (std::numeric_limits<Size>::max() - first_class_ordinal) / stride) {
+                    return false;
+                }
+            } else {
+                const Size stride_magnitude = Size{0} - static_cast<Size>(class_ordinal_stride);
+                if (stride_magnitude > static_cast<Size>(std::numeric_limits<int64_t>::max()) ||
+                    step_count > first_class_ordinal / stride_magnitude) {
+                    return false;
+                }
+
+                const Size offset = step_count * stride_magnitude;
+                candidate.first_class_ordinal = first_class_ordinal - offset;
+                candidate.class_ordinal_stride = static_cast<int64_t>(stride_magnitude);
+            }
+
+            canonical_span = candidate;
+            return true;
+        }
+
+        // Defines the stable lexicographical order used for canonical storage.
+        // Both spans must be canonical.
+        bool lessByCanonicalGeometry(const ClassOrdinalSpan& other) const {
+            if (first_class_ordinal != other.first_class_ordinal) {
+                return first_class_ordinal < other.first_class_ordinal;
+            }
+
+            if (class_ordinal_stride != other.class_ordinal_stride) {
+                return class_ordinal_stride < other.class_ordinal_stride;
+            }
+
+            return element_count < other.element_count;
+        }
+
+        // Attempts to represent the exact union of two canonical,
+        // non-containing spans by one canonical span.
+        MergeResult tryMergeCanonicalUnion(const ClassOrdinalSpan& other, ClassOrdinalSpan& merged) const {
+            if (!isCanonical() || !other.isCanonical()) {
+                return MergeResult::Invalid;
+            }
+
+            if (element_count == 1 && other.element_count == 1) {
+                return tryMergeTwoSingletons(other, merged);
+            }
+
+            if (element_count == 1) {
+                return other.tryExtendWithSingleton(*this, merged);
+            }
+
+            if (other.element_count == 1) {
+                return tryExtendWithSingleton(other, merged);
+            }
+
+            return tryMergeSameLattice(other, merged);
+        }
+
+    private:
+        // Both operands must be canonical singletons. Equality is normally removed by the caller's containment check.
+        MergeResult tryMergeTwoSingletons(const ClassOrdinalSpan& singleton, ClassOrdinalSpan& merged) const {
+            const Size first = std::min(first_class_ordinal, singleton.first_class_ordinal);
+            const Size last = std::max(first_class_ordinal, singleton.first_class_ordinal);
+            if (last - first != 1) {
+                return MergeResult::NotMergeable;
+            }
+
+            ClassOrdinalSpan candidate;
+            candidate.first_class_ordinal = first;
+            candidate.class_ordinal_stride = 1;
+            candidate.element_count = 2;
+            merged = candidate;
+            return MergeResult::Merged;
+        }
+
+        // This span must be canonical and multi-element. Containment is handled by the caller.
+        MergeResult tryExtendWithSingleton(const ClassOrdinalSpan& singleton, ClassOrdinalSpan& merged) const {
+            const Size stride = static_cast<Size>(class_ordinal_stride);
+            const Size last = first_class_ordinal + (element_count - 1) * stride;
+            const Size singleton_ordinal = singleton.first_class_ordinal;
+
+            Size merged_first = first_class_ordinal;
+            if (singleton_ordinal < first_class_ordinal) {
+                if (first_class_ordinal - singleton_ordinal != stride) {
+                    return MergeResult::NotMergeable;
+                }
+
+                merged_first = singleton_ordinal;
+            } else {
+                if (singleton_ordinal <= last) {
+                    return MergeResult::NotMergeable;
+                }
+
+                if (singleton_ordinal - last != stride) {
+                    return MergeResult::NotMergeable;
+                }
+            }
+
+            if (element_count == std::numeric_limits<Size>::max()) {
+                return MergeResult::Invalid;
+            }
+
+            ClassOrdinalSpan candidate;
+            candidate.first_class_ordinal = merged_first;
+            candidate.class_ordinal_stride = class_ordinal_stride;
+            candidate.element_count = element_count + 1;
+            merged = candidate;
+            return MergeResult::Merged;
+        }
+
+        // Both operands must be canonical multi-element spans. Containment is
+        // handled by the caller; this function checks same-lattice compatibility.
+        MergeResult tryMergeSameLattice(const ClassOrdinalSpan& other, ClassOrdinalSpan& merged) const {
+            if (class_ordinal_stride != other.class_ordinal_stride) {
+                return MergeResult::NotMergeable;
+            }
+
+            const ClassOrdinalSpan& left = first_class_ordinal <= other.first_class_ordinal ? *this : other;
+            const ClassOrdinalSpan& right = first_class_ordinal <= other.first_class_ordinal ? other : *this;
+
+            const Size stride = static_cast<Size>(left.class_ordinal_stride);
+            const Size first_delta = right.first_class_ordinal - left.first_class_ordinal;
+            if ((first_delta % stride) != 0) {
+                return MergeResult::NotMergeable;
+            }
+
+            const Size left_last = left.first_class_ordinal + (left.element_count - 1) * stride;
+            const Size right_last = right.first_class_ordinal + (right.element_count - 1) * stride;
+
+            if (right.first_class_ordinal > left_last && right.first_class_ordinal - left_last != stride) {
+                return MergeResult::NotMergeable;
+            }
+
+            const Size merged_last = std::max(left_last, right_last);
+            const Size merged_step_count = (merged_last - left.first_class_ordinal) / stride;
+            if (merged_step_count == std::numeric_limits<Size>::max()) {
+                return MergeResult::Invalid;
+            }
+
+            ClassOrdinalSpan candidate;
+            candidate.first_class_ordinal = left.first_class_ordinal;
+            candidate.class_ordinal_stride = left.class_ordinal_stride;
+            candidate.element_count = merged_step_count + 1;
+            merged = candidate;
+            return MergeResult::Merged;
+        }
+    };
+
+    struct PromotedOrdinalView {
+        ClassOrdinalSpan ordinals;
+        Flags flags = 0;
+    };
+
+    // Persistent geometry and promotion state for one uniform-derived class.
+    class UniformDerivedClass {
+    public:
+        UniformDerivedClassId class_id = 0;
+
+        // Immutable destination geometry copied from the publishing span.
+        Address first_address = 0;
+        int64_t byte_stride = 0;
+        Size element_count = 0;
+        Size element_size = 0;
+
+        // Properties proved for every element when the class is published.
+        Flags class_flags = 0;
+        MemoryPatternKind kind = MemoryPatternKind::Unknown;
+
+        // Properties proved after publication.
+        Flags whole_class_promoted_flags = 0;
+        std::vector<PromotedOrdinalView> partial_promotions;
+
+        // Existing views may retain an inactive record after registry removal.
+        bool active = true;
+
+        // Returns the ordered class-ordinal mapping when the complete load
+        // geometry is an affine view of this active class.
+        std::optional<ClassOrdinalSpan> queryOrdinalSpan(Address load_first_address,
+                                                         int64_t load_byte_stride,
+                                                         Size load_element_count,
+                                                         Size load_element_size) const {
+            if (!active ||
+                kind != MemoryPatternKind::UniformDerivedElements ||
+                load_element_count == 0 ||
+                load_element_size == 0 ||
+                load_element_size != element_size ||
+                load_element_count > element_count) {
+                return std::nullopt;
+            }
+
+            Size first_ordinal = 0;
+            if (!tryGetExactOrdinal(load_first_address, first_ordinal)) {
+                return std::nullopt;
+            }
+
+            int64_t ordinal_stride = 1;
+            if (load_element_count > 1 &&
+                (!CheckedExactDivideI64ByI64(load_byte_stride, byte_stride, ordinal_stride) ||
+                 ordinal_stride == 0)) {
+                return std::nullopt;
+            }
+
+            const ClassOrdinalSpan ordinal_span{
+                first_ordinal,
+                ordinal_stride,
+                load_element_count,
+            };
+
+            // Preserve the raw load order in the result; canonicalization is
+            // used only for endpoint and owning-class bounds validation.
+            ClassOrdinalSpan canonical_span;
+            if (!ordinal_span.canonicalize(canonical_span) ||
+                !containsOrdinalSpan(canonical_span)) {
+                return std::nullopt;
+            }
+
+            return ordinal_span;
+        }
+
+        // Promotes flags for the supplied ordinal view. Recoverable validation
+        // failure leaves all persistent state unchanged.
+        bool promoteOrdinalSpan(const ClassOrdinalSpan& span, Flags flags) {
+            if (span.element_count == 0 || flags == 0) {
+                return false;
+            }
+
+            ClassOrdinalSpan canonical_span;
+            if (!span.canonicalize(canonical_span) ||
+                !containsOrdinalSpan(canonical_span)) {
+                return false;
+            }
+
+            // A retained SSA view remains valid, but an inactive record no
+            // longer denotes current memory and must not be mutated.
+            if (!active) {
+                return true;
+            }
+
+            if (coversWholeClass(canonical_span)) {
+                whole_class_promoted_flags |= flags;
+                removePartialPromotionFlags(partial_promotions, flags);
+                return true;
+            }
+
+            flags &= ~whole_class_promoted_flags;
+            if (flags == 0) {
+                return true;
+            }
+
+            return mergePartialPromotion(canonical_span, flags);
+        }
+
+        // Recovers the exact class ordinal of one element start.
+        bool tryGetExactOrdinal(Address element_start, Size& ordinal) const {
+            if (element_count == 0) {
+                return false;
+            }
+
+            if (element_count == 1) {
+                if (element_start != first_address) {
+                    return false;
+                }
+
+                ordinal = 0;
+                return true;
+            }
+
+            if (byte_stride == 0) {
+                return false;
+            }
+
+            Address delta = 0;
+            Size step = 0;
+            if (byte_stride > 0) {
+                if (element_start < first_address) {
+                    return false;
+                }
+
+                delta = element_start - first_address;
+                step = static_cast<Size>(byte_stride);
+            } else {
+                if (element_start > first_address) {
+                    return false;
+                }
+
+                delta = first_address - element_start;
+                step = MagnitudeI64(byte_stride);
+            }
+
+            if ((delta % step) != 0) {
+                return false;
+            }
+
+            const Size candidate_ordinal = delta / step;
+            if (candidate_ordinal >= element_count) {
+                return false;
+            }
+
+            ordinal = candidate_ordinal;
+            return true;
+        }
+
+        // Returns whether a canonical span lies entirely within this class's ordinal bounds.
+        bool containsOrdinalSpan(const ClassOrdinalSpan& canonical_span) const {
+            if (element_count == 0 ||
+                !canonical_span.isCanonical() ||
+                canonical_span.first_class_ordinal >= element_count) {
+                return false;
+            }
+
+            const Size step_count = canonical_span.element_count - 1;
+            const Size stride = static_cast<Size>(canonical_span.class_ordinal_stride);
+            return step_count <= (element_count - 1 - canonical_span.first_class_ordinal) / stride;
+        }
+
+        // Returns whether span denotes exactly every class ordinal. The input
+        // may be either the forward or reverse full view.
+        bool coversWholeClass(const ClassOrdinalSpan& span) const {
+            if (span.element_count == 0 || span.element_count != element_count) {
+                return false;
+            }
+
+            if (element_count == 1) {
+                return span.first_class_ordinal == 0;
+            }
+
+            return (span.first_class_ordinal == 0 && span.class_ordinal_stride == 1) ||
+                   (span.first_class_ordinal == element_count - 1 &&
+                    span.class_ordinal_stride == -1);
+        }
+
+    private:
+        // Adds flags for canonical_span to partial_promotions and may upgrade
+        // them to whole_class_promoted_flags.
+        bool mergePartialPromotion(const ClassOrdinalSpan& canonical_span, Flags flags) {
+            Flags candidate_whole_flags = whole_class_promoted_flags;
+            std::vector<PromotedOrdinalView> candidate = partial_promotions;
+            std::vector<PromotedOrdinalView> normalized_entries;
+
+            for (Flags remaining = flags; remaining != 0; remaining &= remaining - 1) {
+                const Flags bit = remaining & (Flags{0} - remaining);
+                std::vector<ClassOrdinalSpan> spans;
+
+                for (PromotedOrdinalView& promotion : candidate) {
+                    if ((promotion.flags & bit) != 0) {
+                        spans.push_back(promotion.ordinals);
+                        promotion.flags &= ~bit;
+                    }
+                }
+
+                if (!insertAndNormalizeOrdinalSpan(spans, canonical_span)) {
+                    return false;
+                }
+
+                if (spans.size() == 1 && coversWholeClass(spans.front())) {
+                    candidate_whole_flags |= bit;
+                } else {
+                    for (const ClassOrdinalSpan& normalized_span : spans) {
+                        normalized_entries.push_back({ normalized_span, bit });
+                    }
+                }
+            }
+
+            candidate.insert(candidate.end(), normalized_entries.begin(), normalized_entries.end());
+
+            removePartialPromotionFlags(candidate, candidate_whole_flags);
+            sortPartialPromotionsByOrdinalSpan(candidate);
+            combineFlagsForIdenticalSpans(candidate);
+
+            partial_promotions.swap(candidate);
+            whole_class_promoted_flags = candidate_whole_flags;
+            return true;
+        }
+
+        static void removePartialPromotionFlags(std::vector<PromotedOrdinalView>& promotions, Flags flags) {
+            for (PromotedOrdinalView& promotion : promotions) {
+                promotion.flags &= ~flags;
+            }
+
+            promotions.erase(
+                std::remove_if(
+                    promotions.begin(),
+                    promotions.end(),
+                    [](const PromotedOrdinalView& promotion) {
+                        return promotion.flags == 0;
+                    }),
+                promotions.end());
+        }
+
+        static void sortPartialPromotionsByOrdinalSpan(std::vector<PromotedOrdinalView>& promotions) {
+            std::sort(
+                promotions.begin(),
+                promotions.end(),
+                [](const PromotedOrdinalView& lhs, const PromotedOrdinalView& rhs) {
+                    return lhs.ordinals.lessByCanonicalGeometry(rhs.ordinals);
+                });
+        }
+
+        static void combineFlagsForIdenticalSpans(std::vector<PromotedOrdinalView>& promotions) {
+            if (promotions.empty()) {
+                return;
+            }
+
+            auto output = promotions.begin();
+            for (auto input = std::next(promotions.begin()); input != promotions.end(); ++input) {
+                if (output->ordinals == input->ordinals) {
+                    output->flags |= input->flags;
+                    continue;
+                }
+
+                ++output;
+                if (output != input) {
+                    *output = std::move(*input);
+                }
+            }
+
+            promotions.erase(std::next(output), promotions.end());
+        }
+
+        // Normalizes canonical spans belonging to one flag bit. On a
+        // recoverable false return, spans is unchanged.
+        static bool normalizeOrdinalSpans(std::vector<ClassOrdinalSpan>& spans) {
+            std::vector<ClassOrdinalSpan> normalized;
+            normalized.reserve(spans.size());
+
+            for (const ClassOrdinalSpan& span : spans) {
+                if (!span.isCanonical() ||
+                    !insertAndNormalizeOrdinalSpan(normalized, span)) {
+                    return false;
+                }
+            }
+
+            spans.swap(normalized);
+            return true;
+        }
+
+        // Inserts canonical_span into an already normalized span set. On a
+        // recoverable false return, normalized is unchanged.
+        static bool insertAndNormalizeOrdinalSpan(
+            std::vector<ClassOrdinalSpan>& normalized,
+            const ClassOrdinalSpan& canonical_span) {
+            if (!canonical_span.isCanonical()) {
+                return false;
+            }
+
+            ClassOrdinalSpan candidate = canonical_span;
+            std::vector<uint8_t> removed(normalized.size(), false);
+            bool candidate_absorbed = false;
+
+            for (size_t index = 0; index < normalized.size();) {
+                if (removed[index]) {
+                    ++index;
+                    continue;
+                }
+
+                const ClassOrdinalSpan& existing = normalized[index];
+                if (existing.contains(candidate)) {
+                    candidate_absorbed = true;
+                    break;
+                }
+
+                if (candidate.contains(existing)) {
+                    removed[index] = true;
+                    ++index;
+                    continue;
+                }
+
+                ClassOrdinalSpan merged;
+                const ClassOrdinalSpan::MergeResult result =
+                    existing.tryMergeCanonicalUnion(candidate, merged);
+                if (result == ClassOrdinalSpan::MergeResult::Invalid) {
+                    return false;
+                }
+
+                if (result == ClassOrdinalSpan::MergeResult::Merged) {
+                    candidate = merged;
+                    removed[index] = true;
+                    index = 0;
+                    continue;
+                }
+
+                ++index;
+            }
+
+            std::vector<ClassOrdinalSpan> committed;
+            committed.reserve(normalized.size() + (candidate_absorbed ? 0 : 1));
+            for (size_t index = 0; index < normalized.size(); ++index) {
+                if (!removed[index]) {
+                    committed.push_back(normalized[index]);
+                }
+            }
+
+            if (!candidate_absorbed) {
+                committed.push_back(candidate);
+            }
+
+            sortCanonicalSpans(committed);
+            normalized.swap(committed);
+            return true;
+        }
+
+        static void sortCanonicalSpans(std::vector<ClassOrdinalSpan>& spans) {
+            std::sort(
+                spans.begin(),
+                spans.end(),
+                [](const ClassOrdinalSpan& lhs, const ClassOrdinalSpan& rhs) {
+                    return lhs.lessByCanonicalGeometry(rhs);
+                });
+        }
+
+        static bool isNormalizedOrdinalSpanSet(
+            const std::vector<ClassOrdinalSpan>& spans) {
+            for (size_t index = 0; index < spans.size(); ++index) {
+                const ClassOrdinalSpan& span = spans[index];
+                if (!span.isCanonical()) {
+                    return false;
+                }
+
+                if (index != 0 && span.lessByCanonicalGeometry(spans[index - 1])) {
+                    return false;
+                }
+
+                for (size_t previous_index = 0; previous_index < index; ++previous_index) {
+                    const ClassOrdinalSpan& previous = spans[previous_index];
+                    if (previous.contains(span) || span.contains(previous)) {
+                        return false;
+                    }
+
+                    ClassOrdinalSpan merged;
+                    const ClassOrdinalSpan::MergeResult result = previous.tryMergeCanonicalUnion(span, merged);
+                    if (result != ClassOrdinalSpan::MergeResult::NotMergeable) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+    };
+
+public:
+    bool hasActiveUniformDerivedClasses() const {
+        return !active_uniform_derived_classes_.empty();
+    }
+
+    // Retire every active class whose actual element bytes overlap the
+    // caller-provided destination geometry. Existing views keep the record
+    // alive, but registry queries can no longer match it.
+    template <typename OverlapPredicate>
+    void invalidateUniformDerivedClassesIf(OverlapPredicate&& overlaps) {
+        std::erase_if(
+            active_uniform_derived_classes_,
+            [&](const std::shared_ptr<UniformDerivedClass>& candidate) {
+                if (!candidate || !candidate->active) {
+                    return true;
+                }
+
+                if (!overlaps(candidate->first_address,
+                              candidate->byte_stride,
+                              candidate->element_count,
+                              candidate->element_size)) {
+                    return false;
+                }
+
+                candidate->active = false;
+                return true;
+            });
+    }
+
+    // Stable, opaque load-time relation between an SSA value and a
+    // uniform-derived class's ordered ordinal set.
+    class UniformDerivedClassView {
+    public:
+        UniformDerivedClassView() = default;
+
+        bool valid() const {
+            return class_record_ != nullptr && ordinals_.element_count != 0;
+        }
+
+        UniformDerivedClassId classId() const {
+            return valid() ? class_record_->class_id : 0;
+        }
+
+        Size elementCount() const {
+            return valid() ? ordinals_.element_count : 0;
+        }
+
+        Size elementSize() const {
+            return valid() ? class_record_->element_size : 0;
+        }
+
+        bool operator==(const UniformDerivedClassView&) const = default;
+
+    private:
+        friend class MemoryFlagTracker;
+
+        UniformDerivedClassView(std::shared_ptr<UniformDerivedClass> class_record, ClassOrdinalSpan ordinals)
+            : class_record_(std::move(class_record)),
+              ordinals_(std::move(ordinals)) {}
+
+        // Returns flags that hold for every ordinal in this view. Existing
+        // views remain queryable after their class record becomes inactive.
+        Flags query() const {
+            if (!valid()) {
+                return 0;
+            }
+
+            return class_record_->class_flags |
+                   class_record_->whole_class_promoted_flags |
+                   queryPartialPromotionFlags();
+        }
+
+        // Promotes flags for this complete view into its persistent class
+        // record, including the class's active/inactive semantics.
+        bool promote(Flags flags) const {
+            if (!valid()) {
+                return false;
+            }
+            return class_record_->promoteOrdinalSpan(ordinals_, flags);
+        }
+
+        Flags queryPartialPromotionFlags() const {
+            Flags flags = 0;
+            for (const PromotedOrdinalView& promotion : class_record_->partial_promotions) {
+                if (promotion.flags != 0 && promotion.ordinals.contains(ordinals_)) {
+                    flags |= promotion.flags;
+                }
+            }
+            return flags;
+        }
+
+        std::shared_ptr<UniformDerivedClass> class_record_;
+        ClassOrdinalSpan ordinals_;
+    };
+
+    // Return the unique active class whose complete element geometry contains
+    // the requested ordered affine load view.
+    std::optional<UniformDerivedClassView> queryUniformDerivedClassView(
+        Address load_first_address,
+        int64_t load_byte_stride,
+        Size load_element_count,
+        Size load_element_size) const
+    {
+        std::optional<UniformDerivedClassView> match;
+
+        for (const std::shared_ptr<UniformDerivedClass>& candidate : active_uniform_derived_classes_)
+        {
+            if (!candidate)
+            {
+                continue;
+            }
+
+            const std::optional<ClassOrdinalSpan> ordinals = candidate->queryOrdinalSpan(
+                load_first_address, load_byte_stride, load_element_count, load_element_size);
+            if (!ordinals)
+            {
+                continue;
+            }
+
+            if (match)
+            {
+                // Ambiguous active classification must not depend on registry order.
+                return std::nullopt;
+            }
+
+            match = UniformDerivedClassView(candidate, *ordinals);
+        }
+
+        return match;
+    }
+
+    // Recover flags that hold for every ordinal represented by view.
+    Flags query(const UniformDerivedClassView& view) const
+    {
+        return view.query();
+    }
+
+    // Promote flags for every class ordinal represented by view.
+    bool promoteUniformDerivedClassView(const UniformDerivedClassView& view, Flags flags)
+    {
+        return view.promote(flags);
+    }
+
+    // Register a persistent strided class after the caller has proved and
+    // committed the complete destination element sequence.
+    bool markUniformDerivedClass(Address first_address,
+                                 int64_t byte_stride,
+                                 Size element_count,
+                                 Size element_size,
+                                 Flags flags)
+    {
+        if (first_address == 0 || element_count == 0 || element_size == 0 ||
+            (element_count > 1 && byte_stride == 0))
+        {
+            return false;
+        }
+
+        if (next_uniform_derived_class_id_ == 0 ||
+            next_uniform_derived_class_id_ == std::numeric_limits<UniformDerivedClassId>::max())
+        {
+            return false;
+        }
+
+        const UniformDerivedClassId class_id = next_uniform_derived_class_id_;
+        std::shared_ptr<UniformDerivedClass> candidate = std::make_shared<UniformDerivedClass>();
+        candidate->class_id = class_id;
+        candidate->first_address = first_address;
+        candidate->byte_stride = byte_stride;
+        candidate->element_count = element_count;
+        candidate->element_size = element_size;
+        candidate->class_flags = flags;
+        candidate->kind = MemoryPatternKind::UniformDerivedElements;
+        candidate->whole_class_promoted_flags = 0;
+        candidate->active = true;
+
+        // Commit only after the candidate is fully initialized.
+        active_uniform_derived_classes_.push_back(candidate);
+        ++next_uniform_derived_class_id_;
+
+#if ENABLE_HISTORY
+        history_.emplace_back(
+            OpKind::MarkUniformDerivedClass,
+            first_address,
+            element_count,
+            flags,
+            class_id);
+#endif
+
+        return true;
     }
 
 private:
@@ -666,9 +1420,10 @@ private:
 
     // History log.
     std::vector<HistoryEntry> history_;
-    std::vector<UniformDerivedRange> uniform_derived_ranges_;
+    std::vector<std::shared_ptr<UniformDerivedClass>> active_uniform_derived_classes_;
 
     FragmentId next_fragment_id_;
+    UniformDerivedClassId next_uniform_derived_class_id_ = 1;
 
     static void appendMerged(std::vector<DetailedFlagSpan>& out, const DetailedFlagSpan& span) {
         if (span.start >= span.end) {

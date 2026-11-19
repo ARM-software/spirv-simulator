@@ -193,3 +193,183 @@ TEST_F(MemoryFlagTrackerTest, CopyAndQuery) {
     ASSERT_TRUE(q_unmapped.has_value());
     EXPECT_EQ(q_unmapped.value(), 0);
 }
+
+TEST_F(MemoryFlagTrackerTest, QueryUniformDerivedClassViewMatchesOrderedAffineViews) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x1000, 16, 6, 8, FLAG_A));
+
+    struct TestCase {
+        const char* name;
+        MemoryFlagTracker::Address first_address;
+        int64_t byte_stride;
+        MemoryFlagTracker::Size element_count;
+    };
+
+    const TestCase test_cases[] = {
+        {"full forward", 0x1000, 16, 6},
+        {"full reverse", 0x1050, -16, 6},
+        {"contiguous subview", 0x1010, 16, 3},
+        {"skipping subview", 0x1010, 32, 3},
+    };
+
+    for (const TestCase& test_case : test_cases) {
+        SCOPED_TRACE(test_case.name);
+        const auto view = tracker.queryUniformDerivedClassView(
+            test_case.first_address,
+            test_case.byte_stride,
+            test_case.element_count,
+            8);
+        ASSERT_TRUE(view.has_value());
+        EXPECT_TRUE(view->valid());
+        EXPECT_EQ(tracker.query(*view), FLAG_A);
+    }
+}
+
+TEST_F(MemoryFlagTrackerTest, QueryUniformDerivedClassViewMatchesNegativeStrideClassInBothOrders) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x2050, -16, 6, 8, FLAG_B));
+
+    struct TestCase {
+        const char* name;
+        MemoryFlagTracker::Address first_address;
+        int64_t byte_stride;
+    };
+
+    const TestCase test_cases[] = {
+        {"class order", 0x2050, -16},
+        {"increasing address order", 0x2000, 16},
+    };
+
+    for (const TestCase& test_case : test_cases) {
+        SCOPED_TRACE(test_case.name);
+        const auto view = tracker.queryUniformDerivedClassView(
+            test_case.first_address,
+            test_case.byte_stride,
+            6,
+            8);
+        ASSERT_TRUE(view.has_value());
+        EXPECT_TRUE(view->valid());
+        EXPECT_EQ(tracker.query(*view), FLAG_B);
+    }
+}
+
+TEST_F(MemoryFlagTrackerTest, QueryUniformDerivedClassViewRejectsNonMatchingGeometry) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x1000, 16, 6, 8, FLAG_A));
+
+    struct TestCase {
+        const char* name;
+        MemoryFlagTracker::Address first_address;
+        int64_t byte_stride;
+        MemoryFlagTracker::Size element_count;
+        MemoryFlagTracker::Size element_size;
+    };
+
+    const TestCase test_cases[] = {
+        {"first address is off lattice", 0x1008, 16, 2, 8},
+        {"load stride is not divisible by class stride", 0x1000, 24, 2, 8},
+        {"upper ordinal is out of bounds", 0x1040, 16, 3, 8},
+        {"lower ordinal is out of bounds", 0x1010, -16, 3, 8},
+        {"element size does not match", 0x1000, 16, 2, 4},
+    };
+
+    for (const TestCase& test_case : test_cases) {
+        SCOPED_TRACE(test_case.name);
+        const auto view = tracker.queryUniformDerivedClassView(
+            test_case.first_address,
+            test_case.byte_stride,
+            test_case.element_count,
+            test_case.element_size);
+        EXPECT_FALSE(view.has_value());
+    }
+}
+
+TEST_F(MemoryFlagTrackerTest, QueryUniformDerivedClassViewDistinguishesInterleavedClassesAndRejectsAmbiguity) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x3000, 16, 4, 8, FLAG_A));
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x3008, 16, 4, 8, FLAG_B));
+
+    const auto first_view = tracker.queryUniformDerivedClassView(0x3000, 16, 4, 8);
+    ASSERT_TRUE(first_view.has_value());
+    EXPECT_TRUE(first_view->valid());
+    EXPECT_EQ(tracker.query(*first_view), FLAG_A);
+
+    const auto second_view = tracker.queryUniformDerivedClassView(0x3008, 16, 4, 8);
+    ASSERT_TRUE(second_view.has_value());
+    EXPECT_TRUE(second_view->valid());
+    EXPECT_EQ(tracker.query(*second_view), FLAG_B);
+
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x3008, 16, 4, 8, FLAG_C));
+    EXPECT_FALSE(tracker.queryUniformDerivedClassView(0x3008, 16, 4, 8).has_value());
+
+    const auto still_unique_first_view = tracker.queryUniformDerivedClassView(0x3000, 16, 4, 8);
+    ASSERT_TRUE(still_unique_first_view.has_value());
+    EXPECT_TRUE(still_unique_first_view->valid());
+    EXPECT_EQ(tracker.query(*still_unique_first_view), FLAG_A);
+}
+
+TEST_F(MemoryFlagTrackerTest, QueryUniformDerivedClassViewHandlesInvalidViewAndReturnsPublishedClassFlags) {
+    const MemoryFlagTracker::UniformDerivedClassView invalid_view;
+    EXPECT_FALSE(invalid_view.valid());
+    EXPECT_EQ(tracker.query(invalid_view), 0);
+
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x4000, 16, 5, 8, FLAG_A | FLAG_C));
+    const auto view = tracker.queryUniformDerivedClassView(0x4010, 32, 2, 8);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_TRUE(view->valid());
+    EXPECT_EQ(tracker.query(*view), FLAG_A | FLAG_C);
+}
+
+TEST_F(MemoryFlagTrackerTest, PromoteUniformDerivedClassViewAppliesWholeAndPartialFlags) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x5000, 16, 6, 8, FLAG_A));
+
+    const auto partial_view = tracker.queryUniformDerivedClassView(0x5010, 32, 3, 8);
+    const auto disjoint_view = tracker.queryUniformDerivedClassView(0x5000, 32, 3, 8);
+    const auto whole_view = tracker.queryUniformDerivedClassView(0x5000, 16, 6, 8);
+    ASSERT_TRUE(partial_view.has_value());
+    ASSERT_TRUE(disjoint_view.has_value());
+    ASSERT_TRUE(whole_view.has_value());
+
+    ASSERT_TRUE(tracker.promoteUniformDerivedClassView(*partial_view, FLAG_B));
+    EXPECT_EQ(tracker.query(*partial_view), FLAG_A | FLAG_B);
+    EXPECT_EQ(tracker.query(*disjoint_view), FLAG_A);
+    EXPECT_EQ(tracker.query(*whole_view), FLAG_A);
+
+    ASSERT_TRUE(tracker.promoteUniformDerivedClassView(*whole_view, FLAG_C));
+    EXPECT_EQ(tracker.query(*partial_view), FLAG_A | FLAG_B | FLAG_C);
+    EXPECT_EQ(tracker.query(*disjoint_view), FLAG_A | FLAG_C);
+    EXPECT_EQ(tracker.query(*whole_view), FLAG_A | FLAG_C);
+}
+
+TEST_F(MemoryFlagTrackerTest, PromoteUniformDerivedClassViewNormalizesPerBitAndUpgradesWholeClass) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x6000, 16, 6, 8, FLAG_A));
+
+    const auto first_half_view = tracker.queryUniformDerivedClassView(0x6000, 16, 3, 8);
+    const auto reverse_second_half_view = tracker.queryUniformDerivedClassView(0x6050, -16, 3, 8);
+    const auto whole_view = tracker.queryUniformDerivedClassView(0x6000, 16, 6, 8);
+    ASSERT_TRUE(first_half_view.has_value());
+    ASSERT_TRUE(reverse_second_half_view.has_value());
+    ASSERT_TRUE(whole_view.has_value());
+
+    ASSERT_TRUE(tracker.promoteUniformDerivedClassView(*first_half_view, FLAG_B | FLAG_C));
+    ASSERT_TRUE(tracker.promoteUniformDerivedClassView(*reverse_second_half_view, FLAG_B));
+    EXPECT_EQ(tracker.query(*whole_view), FLAG_A | FLAG_B);
+    EXPECT_EQ(tracker.query(*first_half_view), FLAG_A | FLAG_B | FLAG_C);
+    EXPECT_EQ(tracker.query(*reverse_second_half_view), FLAG_A | FLAG_B);
+}
+
+TEST_F(MemoryFlagTrackerTest, PromotionRequiresSingleLatticeContainment) {
+    ASSERT_TRUE(tracker.markUniformDerivedClass(0x7000, 16, 7, 8, FLAG_A));
+
+    const auto even_view = tracker.queryUniformDerivedClassView(0x7000, 32, 4, 8);
+    const auto odd_view = tracker.queryUniformDerivedClassView(0x7010, 32, 3, 8);
+    const auto whole_view = tracker.queryUniformDerivedClassView(0x7000, 16, 7, 8);
+    const auto incompatible_lattice_view = tracker.queryUniformDerivedClassView(0x7000, 48, 3, 8);
+    ASSERT_TRUE(even_view.has_value());
+    ASSERT_TRUE(odd_view.has_value());
+    ASSERT_TRUE(whole_view.has_value());
+    ASSERT_TRUE(incompatible_lattice_view.has_value());
+
+    ASSERT_TRUE(tracker.promoteUniformDerivedClassView(*even_view, FLAG_B));
+    ASSERT_TRUE(tracker.promoteUniformDerivedClassView(*odd_view, FLAG_B));
+    EXPECT_EQ(tracker.query(*even_view), FLAG_A | FLAG_B);
+    EXPECT_EQ(tracker.query(*odd_view), FLAG_A | FLAG_B);
+    EXPECT_EQ(tracker.query(*whole_view), FLAG_A);
+    EXPECT_EQ(tracker.query(*incompatible_lattice_view), FLAG_A);
+}

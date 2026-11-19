@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,6 +15,148 @@
 #include "testing_common.hpp"
 
 using namespace testing;
+
+class CanonicalInvocationCollapseTests : public SPIRVSimulatorMockBase, public Test
+{
+  protected:
+    static ::SPIRVSimulator::DenseValueRangeInfo MakeRange(
+        uint64_t                      min,
+        uint64_t                      max,
+        uint64_t                      stride,
+        int64_t                       origin,
+        const std::array<int64_t, 3>& workgroup_coefficients,
+        const std::array<int64_t, 3>& local_coefficients)
+    {
+        ::SPIRVSimulator::DenseValueRangeInfo range;
+        range.valid            = true;
+        range.thread_dependent = true;
+        range.dense_range      = true;
+        range.min              = min;
+        range.max              = max;
+        range.stride           = stride;
+        range.invocation_linearization.valid = true;
+        range.invocation_linearization.value_at_dispatch_origin = origin;
+        range.invocation_linearization.workgroup_coefficients = workgroup_coefficients;
+        range.invocation_linearization.local_coefficients = local_coefficients;
+        return range;
+    }
+
+    static std::optional<::SPIRVSimulator::CanonicalInvocationSequence> Collapse(
+        const ::SPIRVSimulator::DenseValueRangeInfo&       range,
+        const ::SPIRVSimulator::ComputeDispatchDimensions& num_workgroups,
+        const ::SPIRVSimulator::ComputeLocalSize&          local_size)
+    {
+        return TryCollapseToCanonicalInvocationSequence(range, num_workgroups, local_size);
+    }
+
+    static void ExpectSequence(
+        const std::optional<::SPIRVSimulator::CanonicalInvocationSequence>& actual,
+        int64_t                                                            first,
+        int64_t                                                            signed_step,
+        uint64_t                                                           count,
+        bool                                                               one_to_one)
+    {
+        ASSERT_TRUE(actual.has_value());
+        EXPECT_EQ(actual->first_value, first);
+        EXPECT_EQ(actual->signed_step, signed_step);
+        EXPECT_EQ(actual->count, count);
+        EXPECT_EQ(actual->one_to_one, one_to_one);
+    }
+};
+
+TEST_F(CanonicalInvocationCollapseTests, OneDimensionalForwardSequence)
+{
+    const auto range = MakeRange(0, 7, 1, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    ExpectSequence(Collapse(range, { 2, 1, 1 }, { 4, 1, 1, true }), 0, 1, 8, true);
+}
+
+TEST_F(CanonicalInvocationCollapseTests, OneDimensionalReverseSequence)
+{
+    const auto range = MakeRange(0, 7, 1, 7, { -4, 0, 0 }, { -1, 0, 0 });
+    ExpectSequence(Collapse(range, { 2, 1, 1 }, { 4, 1, 1, true }), 7, -1, 8, true);
+}
+
+TEST_F(CanonicalInvocationCollapseTests, TwoDimensionalCanonicalSequence)
+{
+    const auto range = MakeRange(0, 119, 1, 0, { 4, 40, 0 }, { 1, 8, 0 });
+    ExpectSequence(Collapse(range, { 2, 3, 1 }, { 4, 5, 1, true }), 0, 1, 120, true);
+}
+
+TEST_F(CanonicalInvocationCollapseTests, TwoDimensionalGlobalXOnlyDoesNotCollapse)
+{
+    const auto range = MakeRange(0, 7, 1, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_FALSE(Collapse(range, { 2, 3, 1 }, { 4, 5, 1, true }).has_value());
+}
+
+TEST_F(CanonicalInvocationCollapseTests, UnitLocalXDerivesStepFromLaterAxis)
+{
+    const auto range = MakeRange(0, 7, 1, 0, { 0, 4, 0 }, { 0, 1, 0 });
+    ExpectSequence(Collapse(range, { 1, 2, 1 }, { 1, 4, 1, true }), 0, 1, 8, true);
+}
+
+TEST_F(CanonicalInvocationCollapseTests, CoefficientMismatchDoesNotCollapse)
+{
+    const auto range = MakeRange(0, 7, 1, 0, { 5, 0, 0 }, { 1, 0, 0 });
+    EXPECT_FALSE(Collapse(range, { 2, 1, 1 }, { 4, 1, 1, true }).has_value());
+}
+
+TEST_F(CanonicalInvocationCollapseTests, RangeEnvelopeMismatchDoesNotCollapse)
+{
+    const auto range = MakeRange(1, 7, 1, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_FALSE(Collapse(range, { 2, 1, 1 }, { 4, 1, 1, true }).has_value());
+}
+
+TEST_F(CanonicalInvocationCollapseTests, RangeStrideMismatchDoesNotCollapse)
+{
+    const auto range = MakeRange(0, 14, 1, 0, { 8, 0, 0 }, { 2, 0, 0 });
+    EXPECT_FALSE(Collapse(range, { 2, 1, 1 }, { 4, 1, 1, true }).has_value());
+}
+
+TEST_F(CanonicalInvocationCollapseTests, DispatchGeometryOverflowDoesNotCollapse)
+{
+    const auto range = MakeRange(0, 0, 1, 0, { 2, 0, 0 }, { 1, 0, 0 });
+    EXPECT_FALSE(Collapse(range,
+                          { std::numeric_limits<uint64_t>::max(), 1, 1 },
+                          { 2, 1, 1, true })
+                     .has_value());
+}
+
+TEST_F(CanonicalInvocationCollapseTests, SingleInvocationIsOneToOneWithZeroStep)
+{
+    const auto range = MakeRange(3, 3, 1, 3, { 0, 0, 0 }, { 0, 0, 0 });
+    ExpectSequence(Collapse(range, { 1, 1, 1 }, { 1, 1, 1, true }), 3, 0, 1, true);
+}
+
+TEST_F(CanonicalInvocationCollapseTests, MultiInvocationConstantIsNotOneToOne)
+{
+    const auto range = MakeRange(3, 3, 1, 3, { 0, 0, 0 }, { 0, 0, 0 });
+    ExpectSequence(Collapse(range, { 2, 1, 1 }, { 4, 1, 1, true }), 3, 0, 8, false);
+}
+
+TEST_F(CanonicalInvocationCollapseTests, SignedStepBoundaryIsChecked)
+{
+    const int64_t max_i64 = std::numeric_limits<int64_t>::max();
+
+    const auto positive_range = MakeRange(0,
+                                          static_cast<uint64_t>(max_i64),
+                                          static_cast<uint64_t>(max_i64),
+                                          0,
+                                          { 0, 0, 0 },
+                                          { max_i64, 0, 0 });
+    ExpectSequence(Collapse(positive_range, { 1, 1, 1 }, { 2, 1, 1, true }),
+                   0,
+                   max_i64,
+                   2,
+                   true);
+
+    const auto negative_range = MakeRange(0,
+                                          static_cast<uint64_t>(max_i64),
+                                          static_cast<uint64_t>(max_i64),
+                                          max_i64,
+                                          { 0, 0, 0 },
+                                          { std::numeric_limits<int64_t>::min(), 0, 0 });
+    EXPECT_FALSE(Collapse(negative_range, { 1, 1, 1 }, { 2, 1, 1, true }).has_value());
+}
 
 class AccessChainAddressRangeTests : public SPIRVSimulatorMockBase, public Test
 {
@@ -47,6 +190,34 @@ class AccessChainAddressRangeTests : public SPIRVSimulatorMockBase, public Test
             ::SPIRVSimulator::InvocationDependence::Varying;
     }
 
+    void SetDynamicIndexAffine(
+        uint32_t                      result_id,
+        uint64_t                      min,
+        uint64_t                      max,
+        uint64_t                      stride,
+        int64_t                       origin,
+        const std::array<int64_t, 3>& workgroup_coefficients,
+        const std::array<int64_t, 3>& local_coefficients)
+    {
+        SetDynamicIndexRange(result_id, min, max, stride);
+        ::SPIRVSimulator::InvocationLinearizationInfo& affine =
+            value_meta_[result_id].value_range.invocation_linearization;
+        affine.valid = true;
+        affine.value_at_dispatch_origin = origin;
+        affine.workgroup_coefficients = workgroup_coefficients;
+        affine.local_coefficients = local_coefficients;
+    }
+
+    void SetDispatchDomain(
+        const ::SPIRVSimulator::ComputeDispatchDimensions& num_workgroups,
+        const ::SPIRVSimulator::ComputeLocalSize&          local_size)
+    {
+        simulation_data_storage_.has_compute_num_workgroups = true;
+        simulation_data_storage_.compute_num_workgroups = num_workgroups;
+        simulation_data_storage_.compute_local_size = local_size;
+        active_compute_local_size_ = local_size;
+    }
+
     void SetBaseInvariant(uint32_t result_id)
     {
         value_meta_.resize(std::max<size_t>(value_meta_.size(), result_id + 1));
@@ -77,6 +248,60 @@ class AccessChainAddressRangeTests : public SPIRVSimulatorMockBase, public Test
         return value_meta_[result_id];
     }
 
+    bool TrySetSpan(uint32_t result_id,
+                    const ::SPIRVSimulator::CanonicalInvocationSequence& sequence)
+    {
+        return TrySetCanonicalStridedElementSpan(result_id, sequence);
+    }
+
+    bool TrySetSimpleRuntimeArrayRange(uint32_t result_id,
+                                       uint32_t base_id,
+                                       uint32_t dynamic_index_id,
+                                       uint32_t representative_index,
+                                       size_t runtime_array_length)
+    {
+        constexpr uint32_t result_type_id       = 5800;
+        constexpr uint32_t container_type_id    = 5801;
+        constexpr uint32_t base_pointer_type_id = 5802;
+
+        const ::SPIRVSimulator::Type result_type = ::SPIRVSimulator::Type::Pointer(
+            spv::StorageClassPhysicalStorageBuffer, CommonTypes::u64);
+        const ::SPIRVSimulator::Type container_type =
+            ::SPIRVSimulator::Type::RuntimeArray(CommonTypes::u64);
+        const ::SPIRVSimulator::Type base_pointer_type = ::SPIRVSimulator::Type::Pointer(
+            spv::StorageClassPhysicalStorageBuffer, container_type_id);
+
+        EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillRepeatedly(ReturnRef(result_type));
+        EXPECT_CALL(*this, GetTypeByTypeId(base_pointer_type_id))
+            .WillRepeatedly(ReturnRef(base_pointer_type));
+        EXPECT_CALL(*this, GetTypeByTypeId(container_type_id))
+            .WillRepeatedly(ReturnRef(container_type));
+        EXPECT_CALL(*this, GetBitsizeOfType(CommonTypes::u64)).WillOnce(Return(64));
+        EXPECT_CALL(*this, ResolvePointerV(_))
+            .WillRepeatedly([this](const ::SPIRVSimulator::PointerV& pointer) {
+                return std::pair<std::byte*, uint64_t>{ backing_.data(),
+                                                        pointer.idx_path.back() * 8 };
+            });
+
+        SetBaseInvariant(base_id);
+        std::vector<uint32_t> words = {
+            0, result_type_id, result_id, base_id, dynamic_index_id
+        };
+        const ::SPIRVSimulator::Instruction instruction{
+            .opcode = spv::Op::OpAccessChain,
+            .word_count = static_cast<uint16_t>(words.size()),
+            .words = words,
+        };
+        const ::SPIRVSimulator::PointerV result_pointer{
+            .pointer_handle = ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data()),
+            .base_type_id = base_pointer_type_id,
+            .storage_class = spv::StorageClassPhysicalStorageBuffer,
+            .idx_path = { representative_index },
+        };
+        SetRuntimeArrayLength(result_pointer, 0, runtime_array_length);
+        return TrySetDenseAccessChainAddressRange(instruction, result_pointer);
+    }
+
     void ExpectPointerDependence(
         uint32_t result_id,
         ::SPIRVSimulator::InvocationDependence expected_dependence,
@@ -99,6 +324,7 @@ class AccessChainAddressRangeTests : public SPIRVSimulatorMockBase, public Test
         EXPECT_EQ(metadata.address_range_max, 0u);
         EXPECT_EQ(metadata.address_range_stride, 1u);
         EXPECT_EQ(metadata.address_element_size, 0u);
+        EXPECT_FALSE(metadata.strided_element_span.valid);
         ExpectPointerDependence(
             result_id, expected_dependence, expect_legacy_thread_specific);
     }
@@ -146,6 +372,191 @@ TEST(InternalPersistentDataDiagnostics, ReportsEachInvocationDependenceFallbackO
         spv::Op::OpShiftLeftLogical));
 }
 #endif
+
+TEST_F(AccessChainAddressRangeTests, CanonicalForwardAccessPublishesPositiveSpan)
+{
+    constexpr uint32_t result_id = 5810;
+    constexpr uint32_t base_id   = 5811;
+    constexpr uint32_t index_id  = 5812;
+
+    SetDispatchDomain({ 2, 1, 1 }, { 4, 1, 1, true });
+    SetDynamicIndexAffine(index_id, 0, 7, 1, 0, { 4, 0, 0 }, { 1, 0, 0 });
+
+    ASSERT_TRUE(TrySetSimpleRuntimeArrayRange(result_id, base_id, index_id, 0, 8));
+
+    const uint64_t base_address = ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data());
+    const ::SPIRVSimulator::ValueMetadata& metadata = GetMetadata(result_id);
+    ASSERT_TRUE(metadata.address_range_valid);
+    ASSERT_TRUE(metadata.strided_element_span.valid);
+    EXPECT_EQ(metadata.strided_element_span.first_address, base_address);
+    EXPECT_EQ(metadata.strided_element_span.byte_stride, 8);
+    EXPECT_EQ(metadata.strided_element_span.count, 8u);
+    EXPECT_EQ(metadata.strided_element_span.element_size, 8u);
+}
+
+TEST_F(AccessChainAddressRangeTests, CanonicalReverseAccessPublishesNegativeSpan)
+{
+    constexpr uint32_t result_id = 5820;
+    constexpr uint32_t base_id   = 5821;
+    constexpr uint32_t index_id  = 5822;
+
+    SetDispatchDomain({ 2, 1, 1 }, { 4, 1, 1, true });
+    SetDynamicIndexAffine(index_id, 0, 7, 1, 7, { -4, 0, 0 }, { -1, 0, 0 });
+
+    ASSERT_TRUE(TrySetSimpleRuntimeArrayRange(result_id, base_id, index_id, 7, 8));
+
+    const uint64_t base_address = ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data());
+    const ::SPIRVSimulator::ValueMetadata& metadata = GetMetadata(result_id);
+    ASSERT_TRUE(metadata.address_range_valid);
+    ASSERT_TRUE(metadata.strided_element_span.valid);
+    EXPECT_EQ(metadata.strided_element_span.first_address, base_address + 56);
+    EXPECT_EQ(metadata.strided_element_span.byte_stride, -8);
+    EXPECT_EQ(metadata.strided_element_span.count, 8u);
+    EXPECT_EQ(metadata.strided_element_span.element_size, 8u);
+}
+
+TEST_F(AccessChainAddressRangeTests, NonCanonicalIndexKeepsAddressRangeWithoutSpan)
+{
+    constexpr uint32_t result_id = 5830;
+    constexpr uint32_t base_id   = 5831;
+    constexpr uint32_t index_id  = 5832;
+
+    SetDispatchDomain({ 1, 2, 1 }, { 4, 1, 1, true });
+    SetDynamicIndexAffine(index_id, 0, 3, 1, 0, { 0, 0, 0 }, { 1, 0, 0 });
+
+    ASSERT_TRUE(TrySetSimpleRuntimeArrayRange(result_id, base_id, index_id, 0, 4));
+
+    const ::SPIRVSimulator::ValueMetadata& metadata = GetMetadata(result_id);
+    EXPECT_TRUE(metadata.address_range_valid);
+    EXPECT_FALSE(metadata.strided_element_span.valid);
+}
+
+TEST_F(AccessChainAddressRangeTests, SingleInvocationPublishesZeroStrideSpan)
+{
+    constexpr uint32_t result_id = 5840;
+    constexpr uint32_t base_id   = 5841;
+    constexpr uint32_t index_id  = 5842;
+
+    SetDispatchDomain({ 1, 1, 1 }, { 1, 1, 1, true });
+    SetDynamicIndexAffine(index_id, 2, 2, 1, 2, { 0, 0, 0 }, { 0, 0, 0 });
+
+    ASSERT_TRUE(TrySetSimpleRuntimeArrayRange(result_id, base_id, index_id, 2, 3));
+
+    const uint64_t base_address = ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data());
+    const ::SPIRVSimulator::ValueMetadata& metadata = GetMetadata(result_id);
+    ASSERT_TRUE(metadata.strided_element_span.valid);
+    EXPECT_EQ(metadata.strided_element_span.first_address, base_address + 16);
+    EXPECT_EQ(metadata.strided_element_span.byte_stride, 0);
+    EXPECT_EQ(metadata.strided_element_span.count, 1u);
+    EXPECT_EQ(metadata.strided_element_span.element_size, 8u);
+}
+
+TEST_F(AccessChainAddressRangeTests, ConstantSequenceDoesNotPublishSpan)
+{
+    constexpr uint32_t result_id = 5850;
+    constexpr uint32_t base_id   = 5851;
+    constexpr uint32_t index_id  = 5852;
+
+    SetDispatchDomain({ 2, 1, 1 }, { 4, 1, 1, true });
+    SetDynamicIndexAffine(index_id, 2, 2, 1, 2, { 0, 0, 0 }, { 0, 0, 0 });
+
+    ASSERT_TRUE(TrySetSimpleRuntimeArrayRange(result_id, base_id, index_id, 2, 3));
+
+    const ::SPIRVSimulator::ValueMetadata& metadata = GetMetadata(result_id);
+    EXPECT_TRUE(metadata.address_range_valid);
+    EXPECT_FALSE(metadata.strided_element_span.valid);
+}
+
+TEST_F(AccessChainAddressRangeTests, FailedProofClearsStaleSpan)
+{
+    constexpr uint32_t result_type_id = 5860;
+    constexpr uint32_t result_id      = 5861;
+    constexpr uint32_t base_id        = 5862;
+
+    const ::SPIRVSimulator::Type result_type = ::SPIRVSimulator::Type::Pointer(
+        spv::StorageClassPhysicalStorageBuffer, CommonTypes::u64);
+    EXPECT_CALL(*this, GetTypeByTypeId(result_type_id)).WillOnce(ReturnRef(result_type));
+
+    value_meta_.resize(result_id + 1);
+    value_meta_[result_id].strided_element_span = {
+        true, ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data()), 8, 4, 8
+    };
+
+    std::vector<uint32_t> words = { 0, result_type_id, result_id, base_id };
+    const ::SPIRVSimulator::Instruction instruction{
+        .opcode = spv::Op::OpAccessChain,
+        .word_count = static_cast<uint16_t>(words.size()),
+        .words = words,
+    };
+    const ::SPIRVSimulator::PointerV result_pointer{
+        .storage_class = spv::StorageClassPhysicalStorageBuffer,
+    };
+
+    EXPECT_FALSE(TrySetDenseAccessChainAddressRange(instruction, result_pointer));
+    ExpectResetAddressRangeMetadata(
+        result_id, ::SPIRVSimulator::InvocationDependence::Unknown, false);
+}
+
+TEST_F(AccessChainAddressRangeTests, MissingDispatchGeometryKeepsAddressRangeWithoutSpan)
+{
+    constexpr uint32_t result_id = 5870;
+    constexpr uint32_t base_id   = 5871;
+    constexpr uint32_t index_id  = 5872;
+
+    SetDynamicIndexAffine(index_id, 0, 3, 1, 0, { 0, 0, 0 }, { 1, 0, 0 });
+
+    ASSERT_TRUE(TrySetSimpleRuntimeArrayRange(result_id, base_id, index_id, 0, 4));
+
+    const ::SPIRVSimulator::ValueMetadata& metadata = GetMetadata(result_id);
+    EXPECT_TRUE(metadata.address_range_valid);
+    EXPECT_FALSE(metadata.strided_element_span.valid);
+}
+
+TEST_F(AccessChainAddressRangeTests, UnrepresentableByteStrideDoesNotPublishSpan)
+{
+    constexpr uint32_t result_id = 5880;
+    const uint64_t unrepresentable_stride =
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1;
+
+    SetAddressRange(result_id, 0x1000, 0x2000, unrepresentable_stride, 8);
+    const ::SPIRVSimulator::CanonicalInvocationSequence sequence{
+        .first_value = 0,
+        .signed_step = 1,
+        .count = 2,
+        .one_to_one = true,
+    };
+
+    EXPECT_FALSE(TrySetSpan(result_id, sequence));
+    EXPECT_TRUE(GetMetadata(result_id).address_range_valid);
+    EXPECT_FALSE(GetMetadata(result_id).strided_element_span.valid);
+}
+
+TEST_F(AccessChainAddressRangeTests, UnrepresentableSignedByteOffsetDoesNotPublishSpan)
+{
+    constexpr uint32_t result_id = 5881;
+    constexpr uint64_t byte_stride = (uint64_t{ 1 } << 62) + 1;
+    constexpr uint64_t range_min = 0x1000;
+    constexpr uint64_t range_max = range_min + 2 * byte_stride;
+
+    for (const int64_t signed_step : { int64_t{ 1 }, int64_t{ -1 } })
+    {
+        SCOPED_TRACE(signed_step);
+
+        value_meta_.resize(result_id + 1);
+        value_meta_[result_id] = {};
+        SetAddressRange(result_id, range_min, range_max, byte_stride, 8);
+        const ::SPIRVSimulator::CanonicalInvocationSequence sequence{
+            .first_value = signed_step > 0 ? int64_t{ 0 } : int64_t{ 2 },
+            .signed_step = signed_step,
+            .count = 3,
+            .one_to_one = true,
+        };
+
+        EXPECT_FALSE(TrySetSpan(result_id, sequence));
+        EXPECT_TRUE(GetMetadata(result_id).address_range_valid);
+        EXPECT_FALSE(GetMetadata(result_id).strided_element_span.valid);
+    }
+}
 
 TEST_F(AccessChainAddressRangeTests, UnknownIndexWithLegacyFlagFallsBackWithoutBecomingDynamic)
 {

@@ -37,6 +37,20 @@ static bool match(const char* in, const char* short_form, const char* long_form,
     return false;
 }
 
+static const char* get_elementwise_source_storage_kind_string(SPIRVSimulator::ElementwiseSourceStorageKind kind)
+{
+    switch (kind)
+    {
+        case SPIRVSimulator::ElementwiseSourceStorageKind::LazyHostShadow:
+            return "LazyHostShadow";
+        case SPIRVSimulator::ElementwiseSourceStorageKind::PackedSnapshot:
+            return "PackedSnapshot";
+        case SPIRVSimulator::ElementwiseSourceStorageKind::Unavailable:
+            return "Unavailable";
+    }
+    return "Unknown";
+}
+
 int main(int argc, char** argv)
 {
     int remaining = argc - 1; // zeroth is name of program
@@ -72,11 +86,23 @@ int main(int argc, char** argv)
     if (physical_address_data.size() > 0) std::cout << "Pointers to pbuffers:" << std::endl;
     for (const auto& pointer_t : physical_address_data)
     {
-        std::cout << "  Found pointer with address: 0x" << std::hex << pointer_t.raw_pointer_value << std::dec;
-
-        if (pointer_t.range_valid)
+        if (!pointer_t.physical_address_range.has_value())
         {
-            std::cout << "  Which covers byte range: [" << pointer_t.range_start << ", " << pointer_t.range_end << ")";
+            std::cout << "  Found pointer with address: 0x" << std::hex << pointer_t.raw_pointer_value << std::dec;
+        }
+        else if (!pointer_t.HasValidPhysicalAddressRange())
+        {
+            std::cout << "  Found invalid compressed physical-address range";
+        }
+        else
+        {
+            const SPIRVSimulator::PhysicalAddressRange& range = *pointer_t.physical_address_range;
+            const SPIRVSimulator::ElementwiseSourceState& source = *range.elementwise_source;
+            const SPIRVSimulator::StridedElementSpan& slots = source.slots;
+            std::cout << "  Found compressed pointer range with first address: 0x" << std::hex << slots.first_address
+                      << std::dec << ", byte stride: " << slots.byte_stride << ", count: " << slots.count
+                      << ", element size: " << slots.element_size
+                      << ", source state: " << get_elementwise_source_storage_kind_string(source.kind);
         }
 
         std::cout << " made from input bit components:" << std::endl;

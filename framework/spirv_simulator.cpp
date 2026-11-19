@@ -1,4 +1,5 @@
 #include "spirv_simulator.hpp"
+#include "checked_arithmetic.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -1699,6 +1700,25 @@ void SPIRVSimulator::ExecuteSpeculativeFork(size_t   control_instruction_index,
     }
 }
 
+static bool IsSamePhysicalAddressResult(const PhysicalAddressData& lhs, const PhysicalAddressData& rhs)
+{
+    const bool lhs_has_range = lhs.physical_address_range.has_value();
+    const bool rhs_has_range = rhs.physical_address_range.has_value();
+    if (lhs_has_range != rhs_has_range)
+    {
+        return false;
+    }
+    if (!lhs_has_range)
+    {
+        return lhs.raw_pointer_value == rhs.raw_pointer_value && lhs.bit_components == rhs.bit_components;
+    }
+    if (!lhs.HasValidPhysicalAddressRange() || !rhs.HasValidPhysicalAddressRange())
+    {
+        return false;
+    }
+    return lhs.physical_address_range->elementwise_source == rhs.physical_address_range->elementwise_source;
+}
+
 void SPIRVSimulator::MergeSimulationResults(const SimulationResults& fork_results)
 {
     assert(simulation_results_ != nullptr);
@@ -1709,12 +1729,7 @@ void SPIRVSimulator::MergeSimulationResults(const SimulationResults& fork_result
             simulation_results_->physical_address_data.begin(),
             simulation_results_->physical_address_data.end(),
             [&candidate](const PhysicalAddressData& existing) {
-                return existing.raw_pointer_value == candidate.raw_pointer_value &&
-                       existing.range_valid == candidate.range_valid &&
-                       existing.range_start == candidate.range_start &&
-                       existing.range_end == candidate.range_end &&
-                       existing.range_element_size == candidate.range_element_size &&
-                       existing.bit_components == candidate.bit_components;
+                return IsSamePhysicalAddressResult(existing, candidate);
             });
 
         if (duplicate == simulation_results_->physical_address_data.end())
@@ -3830,35 +3845,6 @@ static PointerLocationKey MakePointerLocationKey(const PointerV& pointer, uint64
     };
 }
 
-static uint64_t SaturatingMul64(uint64_t a, uint64_t b)
-{
-    if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a)
-    {
-        return std::numeric_limits<uint64_t>::max();
-    }
-    return a * b;
-}
-
-static bool CheckedAddU64(uint64_t lhs, uint64_t rhs, uint64_t& out)
-{
-    if (lhs > std::numeric_limits<uint64_t>::max() - rhs)
-    {
-        return false;
-    }
-    out = lhs + rhs;
-    return true;
-}
-
-static bool CheckedMulU64(uint64_t lhs, uint64_t rhs, uint64_t& out)
-{
-    if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
-    {
-        return false;
-    }
-    out = lhs * rhs;
-    return true;
-}
-
 static inline bool IsExactSingletonRange(const DenseValueRangeInfo& range)
 {
     return range.valid && range.min == range.max;
@@ -3949,6 +3935,75 @@ static bool TryGetExactRangeCount(const DenseValueRangeInfo& range, uint64_t& ou
     return true;
 }
 
+static bool TryGetSpanElementAddress(const StridedElementSpan& span,
+                                     uint64_t                  element_index,
+                                     uint64_t&                 out)
+{
+    if (!span.valid || element_index >= span.count)
+    {
+        return false;
+    }
+
+    int64_t byte_offset = 0;
+    if (!CheckedMulI64ByU64(span.byte_stride, element_index, byte_offset))
+    {
+        return false;
+    }
+
+    if (byte_offset >= 0)
+    {
+        return CheckedAddU64(span.first_address, static_cast<uint64_t>(byte_offset), out);
+    }
+
+    return CheckedSubU64(span.first_address, MagnitudeI64(byte_offset), out);
+}
+
+static bool ResizeChecked(std::vector<std::byte>& bytes, uint64_t requested_size)
+{
+    if (requested_size > static_cast<uint64_t>(bytes.max_size()))
+    {
+        return false;
+    }
+
+    bytes.resize(static_cast<size_t>(requested_size));
+    return true;
+}
+
+static bool TryScaleInvocationAffine(const InvocationLinearizationInfo& affine,
+                                     uint64_t                           factor,
+                                     InvocationLinearizationInfo&       out)
+{
+    if (!affine.valid)
+    {
+        return false;
+    }
+
+    InvocationLinearizationInfo candidate = {};
+    if (!CheckedMulI64ByU64(affine.value_at_dispatch_origin,
+                            factor,
+                            candidate.value_at_dispatch_origin))
+    {
+        return false;
+    }
+
+    for (uint32_t axis = 0; axis < 3; ++axis)
+    {
+        if (!CheckedMulI64ByU64(affine.workgroup_coefficients[axis],
+                                factor,
+                                candidate.workgroup_coefficients[axis]) ||
+            !CheckedMulI64ByU64(affine.local_coefficients[axis],
+                                factor,
+                                candidate.local_coefficients[axis]))
+        {
+            return false;
+        }
+    }
+
+    candidate.valid = true;
+    out = candidate;
+    return true;
+}
+
 // Prove that the additive value set of two ranges is one exact dense arithmetic progression.
 // Singletons act as translations;
 // Two non-singleton ranges require independent invocation axes and exact mixed-radix tiling.
@@ -3997,14 +4052,9 @@ static bool TryCombineIndependentInvocationRanges(const DenseValueRangeInfo& lhs
         candidate.min = result_min;
         candidate.max = result_max;
         candidate.stride = result_stride;
-        candidate.invocation_linearization.workgroup_id_component_mask =
-            lhs_linearization.workgroup_id_component_mask |
-            rhs_linearization.workgroup_id_component_mask;
-        candidate.invocation_linearization.local_invocation_id_component_mask =
-            lhs_linearization.local_invocation_id_component_mask |
-            rhs_linearization.local_invocation_id_component_mask;
-
         out = candidate;
+        // Affine metadata is computed independently by the opcode-specific
+        // propagation helper before the caller's final metadata commit.
         return true;
     };
 
@@ -4038,18 +4088,23 @@ static bool TryCombineIndependentInvocationRanges(const DenseValueRangeInfo& lhs
 
     // Two varying ranges must derive from disjoint workgroup and local axes;
     // otherwise their Cartesian-product cardinality cannot be established.
-    const bool lhs_has_provenance =
-        lhs_linearization.workgroup_id_component_mask != 0 ||
-        lhs_linearization.local_invocation_id_component_mask != 0;
-    const bool rhs_has_provenance =
-        rhs_linearization.workgroup_id_component_mask != 0 ||
-        rhs_linearization.local_invocation_id_component_mask != 0;
-    const bool workgroup_axes_overlap =
-        (lhs_linearization.workgroup_id_component_mask &
-         rhs_linearization.workgroup_id_component_mask) != 0;
-    const bool local_axes_overlap =
-        (lhs_linearization.local_invocation_id_component_mask &
-         rhs_linearization.local_invocation_id_component_mask) != 0;
+    const uint8_t lhs_workgroup_mask = lhs_linearization.valid
+                                       ? GetInvocationAxisMask(lhs_linearization.workgroup_coefficients)
+                                       : 0;
+    const uint8_t lhs_local_mask = lhs_linearization.valid
+                                   ? GetInvocationAxisMask(lhs_linearization.local_coefficients)
+                                   : 0;
+    const uint8_t rhs_workgroup_mask = rhs_linearization.valid
+                                       ? GetInvocationAxisMask(rhs_linearization.workgroup_coefficients)
+                                       : 0;
+    const uint8_t rhs_local_mask = rhs_linearization.valid
+                                   ? GetInvocationAxisMask(rhs_linearization.local_coefficients)
+                                   : 0;
+
+    const bool lhs_has_provenance = lhs_workgroup_mask != 0 || lhs_local_mask != 0;
+    const bool rhs_has_provenance = rhs_workgroup_mask != 0 || rhs_local_mask != 0;
+    const bool workgroup_axes_overlap = (lhs_workgroup_mask & rhs_workgroup_mask) != 0;
+    const bool local_axes_overlap = (lhs_local_mask & rhs_local_mask) != 0;
 
     if (!lhs_has_provenance || !rhs_has_provenance ||
         workgroup_axes_overlap || local_axes_overlap)
@@ -4139,6 +4194,321 @@ bool SPIRVSimulator::TryGetFixedNonNegativeIntegerScalar(uint32_t result_id, uin
     }
 
     return false;
+}
+
+bool SPIRVSimulator::TryGetInvocationAffineOperand(uint32_t operand_id,
+                                                   InvocationLinearizationInfo& out) const
+{
+    const DenseValueRangeInfo& range = value_meta_[operand_id].value_range;
+
+    if (range.valid && range.invocation_linearization.valid)
+    {
+        out = range.invocation_linearization;
+        return true;
+    }
+
+    // Normalize an exact singleton range or a proven fixed scalar into a temporary constant affine operand.
+    // This lets arithmetic combine constants with invocation-varying affine expressions without globally
+    // publishing DenseValueRangeInfo for every constant value.
+    uint64_t constant = 0;
+    if (range.valid && range.min == range.max)
+    {
+        constant = range.min;
+    }
+    else if (!TryGetFixedNonNegativeIntegerScalar(operand_id, constant))
+    {
+        return false;
+    }
+
+    if (constant > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    {
+        return false;
+    }
+
+    InvocationLinearizationInfo candidate = {};
+    candidate.valid = true;
+    candidate.value_at_dispatch_origin = static_cast<int64_t>(constant);
+    out = candidate;
+    return true;
+}
+
+bool SPIRVSimulator::TryPropagateBinaryInvocationAffineAdd(
+    uint32_t lhs_id,
+    uint32_t rhs_id,
+    InvocationLinearizationInfo& out) const
+{
+    InvocationLinearizationInfo lhs = {};
+    InvocationLinearizationInfo rhs = {};
+    if (!TryGetInvocationAffineOperand(lhs_id, lhs) || !TryGetInvocationAffineOperand(rhs_id, rhs))
+    {
+        return false;
+    }
+
+    InvocationLinearizationInfo candidate = {};
+    if (!CheckedAddI64(lhs.value_at_dispatch_origin,
+                       rhs.value_at_dispatch_origin,
+                       candidate.value_at_dispatch_origin))
+    {
+        return false;
+    }
+
+    for (uint32_t axis = 0; axis < 3; ++axis)
+    {
+        if (!CheckedAddI64(lhs.workgroup_coefficients[axis],
+                           rhs.workgroup_coefficients[axis],
+                           candidate.workgroup_coefficients[axis]) ||
+            !CheckedAddI64(lhs.local_coefficients[axis],
+                           rhs.local_coefficients[axis],
+                           candidate.local_coefficients[axis]))
+        {
+            return false;
+        }
+    }
+
+    candidate.valid = true;
+    out = candidate;
+    return true;
+}
+
+bool SPIRVSimulator::TryPropagateBinaryInvocationAffineSub(
+    uint32_t lhs_id,
+    uint32_t rhs_id,
+    InvocationLinearizationInfo& out) const
+{
+    InvocationLinearizationInfo lhs = {};
+    InvocationLinearizationInfo rhs = {};
+    if (!TryGetInvocationAffineOperand(lhs_id, lhs) || !TryGetInvocationAffineOperand(rhs_id, rhs))
+    {
+        return false;
+    }
+
+    InvocationLinearizationInfo candidate = {};
+    if (!CheckedSubI64(lhs.value_at_dispatch_origin,
+                       rhs.value_at_dispatch_origin,
+                       candidate.value_at_dispatch_origin))
+    {
+        return false;
+    }
+
+    for (uint32_t axis = 0; axis < 3; ++axis)
+    {
+        if (!CheckedSubI64(lhs.workgroup_coefficients[axis],
+                           rhs.workgroup_coefficients[axis],
+                           candidate.workgroup_coefficients[axis]) ||
+            !CheckedSubI64(lhs.local_coefficients[axis],
+                           rhs.local_coefficients[axis],
+                           candidate.local_coefficients[axis]))
+        {
+            return false;
+        }
+    }
+
+    candidate.valid = true;
+    out = candidate;
+    return true;
+}
+
+bool SPIRVSimulator::TryBuildRangeFromInvocationAffine(
+    const InvocationLinearizationInfo& affine,
+    const Type&                        result_type,
+    bool                               thread_dependent,
+    DenseValueRangeInfo&               out_range) const
+{
+    if (!affine.valid || simulation_data_ == nullptr ||
+        !simulation_data_->has_compute_num_workgroups ||
+        !active_compute_local_size_.valid)
+    {
+        return false;
+    }
+
+    const std::array<uint64_t, 3> workgroup_extents = {
+        simulation_data_->compute_num_workgroups.x,
+        simulation_data_->compute_num_workgroups.y,
+        simulation_data_->compute_num_workgroups.z
+    };
+    const std::array<uint64_t, 3> local_extents = {
+        active_compute_local_size_.x,
+        active_compute_local_size_.y,
+        active_compute_local_size_.z
+    };
+
+    struct ActiveCoordinate
+    {
+        uint64_t step  = 0;
+        uint64_t count = 0;
+    };
+
+    std::array<ActiveCoordinate, 6> active_coordinates = {};
+    size_t                          active_count = 0;
+    int64_t                         min_value = affine.value_at_dispatch_origin;
+    int64_t                         max_value = affine.value_at_dispatch_origin;
+
+    auto accumulate_coordinate = [&](int64_t coefficient, uint64_t extent) {
+        // An empty dispatch has no represented invocation value set.
+        if (extent == 0)
+        {
+            return false;
+        }
+
+        int64_t delta = 0;
+        if (!CheckedMulI64ByU64(coefficient, extent - 1, delta))
+        {
+            return false;
+        }
+
+        if (delta < 0)
+        {
+            if (!CheckedAddI64(min_value, delta, min_value))
+            {
+                return false;
+            }
+        }
+        else if (!CheckedAddI64(max_value, delta, max_value))
+        {
+            return false;
+        }
+
+        // extent==1 and coefficient==0 introduce no distinct value dimension.
+        if (extent > 1 && coefficient != 0)
+        {
+            active_coordinates[active_count++] = { MagnitudeI64(coefficient), extent };
+        }
+        return true;
+    };
+
+    // Evaluate all six coordinate contributions to obtain the exact min/max of this affine expression
+    // over the current rectangular dispatch domain.
+    for (uint32_t axis = 0; axis < 3; ++axis)
+    {
+        if (!accumulate_coordinate(affine.workgroup_coefficients[axis], workgroup_extents[axis]) ||
+            !accumulate_coordinate(affine.local_coefficients[axis], local_extents[axis]))
+        {
+            return false;
+        }
+    }
+
+    uint64_t result_type_max = 0;
+    if (min_value < 0 || max_value < min_value ||
+        !TryGetNonNegativeIntegerTypeMax(result_type, result_type_max))
+    {
+        return false;
+    }
+
+    const uint64_t min_u64 = static_cast<uint64_t>(min_value);
+    const uint64_t max_u64 = static_cast<uint64_t>(max_value);
+    if (min_u64 > result_type_max || max_u64 > result_type_max)
+    {
+        return false;
+    }
+
+    // Publish the exact affine bounds first as a conservative non-dense range.
+    // The following mixed-radix proof may upgrade this candidate to dense.
+    DenseValueRangeInfo candidate = {};
+    candidate.valid = true;
+    candidate.thread_dependent = thread_dependent;
+    candidate.dense_range = false;
+    candidate.min = min_u64;
+    candidate.max = max_u64;
+    candidate.stride = 1;
+
+    if (active_count == 0)
+    {
+        // Every coordinate either has extent one or has a zero coefficient,
+        // so the affine expression is a singleton over this domain.
+        candidate.dense_range = true;
+        candidate.stride = 1;
+        out_range = candidate;
+        return true;
+    }
+
+    std::sort(
+        active_coordinates.begin(),
+        active_coordinates.begin() + active_count,
+        [](const ActiveCoordinate& lhs, const ActiveCoordinate& rhs) {
+            return lhs.step < rhs.step;
+        });
+
+    const uint64_t base_stride = active_coordinates[0].step;
+    uint64_t accumulated_count = active_coordinates[0].count;
+    bool dense_proved = base_stride != 0;
+
+    for (size_t i = 1; dense_proved && i < active_count; ++i)
+    {
+        uint64_t expected_step = 0;
+        uint64_t next_count = 0;
+        if (!CheckedMulU64(base_stride, accumulated_count, expected_step) ||
+            expected_step != active_coordinates[i].step ||
+            !CheckedMulU64(accumulated_count, active_coordinates[i].count, next_count))
+        {
+            dense_proved = false;
+            break;
+        }
+        accumulated_count = next_count;
+    }
+
+    if (dense_proved)
+    {
+        uint64_t expected_span = 0;
+        dense_proved = CheckedMulU64(accumulated_count - 1, base_stride, expected_span) &&
+                       expected_span == candidate.max - candidate.min;
+    }
+
+    if (dense_proved)
+    {
+        candidate.dense_range = true;
+        candidate.stride = base_stride;
+    }
+
+    out_range = candidate;
+    return true;
+}
+
+bool SPIRVSimulator::TryPropagateBinaryInvocationAffineMul(
+    uint32_t lhs_id,
+    uint32_t rhs_id,
+    InvocationLinearizationInfo& out) const
+{
+    InvocationLinearizationInfo lhs = {};
+    InvocationLinearizationInfo rhs = {};
+    if (!TryGetInvocationAffineOperand(lhs_id, lhs) || !TryGetInvocationAffineOperand(rhs_id, rhs))
+    {
+        return false;
+    }
+
+    auto is_invocation_invariant_affine = [](const InvocationLinearizationInfo& candidate) {
+        if (!candidate.valid)
+        {
+            return false;
+        }
+
+        for (uint32_t axis = 0; axis < 3; ++axis)
+        {
+            if (candidate.workgroup_coefficients[axis] != 0 || candidate.local_coefficients[axis] != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    const bool lhs_invariant = is_invocation_invariant_affine(lhs);
+    const bool rhs_invariant = is_invocation_invariant_affine(rhs);
+    if (!lhs_invariant && !rhs_invariant)
+    {
+        // The product of two varying affine expressions is generally quadratic.
+        return false;
+    }
+
+    const InvocationLinearizationInfo& affine = lhs_invariant ? rhs : lhs;
+    const InvocationLinearizationInfo& invariant = lhs_invariant ? lhs : rhs;
+    if (invariant.value_at_dispatch_origin < 0)
+    {
+        // V1 uses the existing non-negative numeric-range contract.
+        return false;
+    }
+
+    return TryScaleInvocationAffine(affine, static_cast<uint64_t>(invariant.value_at_dispatch_origin), out);
 }
 
 void SPIRVSimulator::SetConstantInvocationDependence(uint32_t result_id)
@@ -4377,6 +4747,16 @@ void SPIRVSimulator::CopyNonFlagValueMetadata(uint32_t target_rid, uint32_t sour
     dst.address_element_size = src.address_element_size;
 }
 
+void SPIRVSimulator::CopyWholeObjectStridedElementSpan(uint32_t target_rid, uint32_t source_rid)
+{
+    value_meta_[target_rid].strided_element_span = value_meta_[source_rid].strided_element_span;
+}
+
+void SPIRVSimulator::CopyWholeObjectElementwiseRelation(uint32_t target_rid, uint32_t source_rid)
+{
+    value_meta_[target_rid].elementwise_relation = value_meta_[source_rid].elementwise_relation;
+}
+
 void SPIRVSimulator::CopyInvocationDependenceMetadata(uint32_t target_rid, uint32_t source_rid)
 {
     ValueMetadata& dst = value_meta_[target_rid];
@@ -4386,17 +4766,19 @@ void SPIRVSimulator::CopyInvocationDependenceMetadata(uint32_t target_rid, uint3
     dst.subobject_invocation_dependence = src.subobject_invocation_dependence;
 }
 
-void SPIRVSimulator::PropagateExternalLoadInvocationDependence(uint32_t result_id,
-                                                               uint32_t pointer_id)
+void SPIRVSimulator::FinalizeExternalLoadInvocationDependence(uint32_t result_id,
+                                                              uint32_t pointer_id)
 {
     const ValueMetadata& pointer_meta = value_meta_[pointer_id];
     ValueMetadata&       result_meta  = value_meta_[result_id];
 
-    if (pointer_meta.invocation_dependence == InvocationDependence::Varying)
+    if (pointer_meta.strided_element_span.valid ||
+        pointer_meta.invocation_dependence == InvocationDependence::Varying)
     {
-        // A varying external address is sufficient to classify the loaded
-        // whole value as potentially varying. Keep the legacy signal for
-        // consumers which have not migrated to the tri-state metadata yet.
+        // Either an exact invocation-to-slot mapping or an explicitly varying
+        // external address is sufficient to classify the loaded whole value
+        // as potentially varying. Keep the legacy signal for consumers which
+        // have not migrated to the tri-state metadata yet.
         result_meta.invocation_dependence = InvocationDependence::Varying;
         result_meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
     }
@@ -4836,10 +5218,12 @@ StoredValueMetadataSnapshot SPIRVSimulator::MakeStoredValueMetadataSnapshot(uint
     out.address_range_max = src.address_range_max;
     out.address_range_stride = src.address_range_stride;
     out.address_element_size = src.address_element_size;
+    out.strided_element_span = src.strided_element_span;
 
     out.invocation_dependence = src.invocation_dependence;
     out.component_invocation_dependence = src.component_invocation_dependence;
     out.subobject_invocation_dependence = src.subobject_invocation_dependence;
+    out.elementwise_relation = src.elementwise_relation;
     return out;
 }
 
@@ -5322,29 +5706,60 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, co
     {
         uint64_t min;
         uint64_t max;
-        uint8_t workgroup_id_component_mask = 0;
-        uint8_t local_invocation_id_component_mask = 0;
+        InvocationLinearizationInfo affine;
+    };
+
+    auto make_affine = [](uint64_t                       origin,
+                          const std::array<uint64_t, 3>& workgroup_coefficients,
+                          const std::array<uint64_t, 3>& local_coefficients) {
+        InvocationLinearizationInfo affine = {};
+        if (origin > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        {
+            return affine;
+        }
+
+        affine.value_at_dispatch_origin = static_cast<int64_t>(origin);
+        for (uint32_t axis = 0; axis < 3; ++axis)
+        {
+            if (workgroup_coefficients[axis] > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+                local_coefficients[axis] > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+            {
+                return InvocationLinearizationInfo{};
+            }
+
+            affine.workgroup_coefficients[axis] = static_cast<int64_t>(workgroup_coefficients[axis]);
+            affine.local_coefficients[axis] = static_cast<int64_t>(local_coefficients[axis]);
+        }
+        affine.valid = true;
+        return affine;
+    };
+
+    auto make_axis_affine = [&](uint64_t origin,
+                                uint32_t axis,
+                                uint64_t workgroup_coefficient,
+                                uint64_t local_coefficient) {
+        std::array<uint64_t, 3> workgroup_coefficients = { 0, 0, 0 };
+        std::array<uint64_t, 3> local_coefficients = { 0, 0, 0 };
+        workgroup_coefficients[axis] = workgroup_coefficient;
+        local_coefficients[axis] = local_coefficient;
+        return make_affine(origin, workgroup_coefficients, local_coefficients);
     };
 
     auto make_dense_range = [](uint64_t min_val,
                                uint64_t max_val,
-                               uint8_t  workgroup_id_component_mask = 0,
-                               uint8_t  local_invocation_id_component_mask = 0) {
+                               const InvocationLinearizationInfo& affine = {}) {
         DenseValueRangeInfo range = { true, true, true, min_val, max_val, 1 };
-        range.invocation_linearization.workgroup_id_component_mask = workgroup_id_component_mask;
-        range.invocation_linearization.local_invocation_id_component_mask = local_invocation_id_component_mask;
+        range.invocation_linearization = affine;
         return range;
     };
 
     auto set_scalar_range = [&](uint64_t min_val,
                                 uint64_t max_val,
-                                uint8_t  workgroup_id_component_mask = 0,
-                                uint8_t  local_invocation_id_component_mask = 0) {
+                                const InvocationLinearizationInfo& affine = {}) {
         ValueMetadata& meta = value_meta_[result_id];
         meta.flags |= SPS_FLAG_THREAD_SPECIFIC;
         meta.invocation_dependence = InvocationDependence::Varying;
-        meta.value_range = make_dense_range(
-            min_val, max_val, workgroup_id_component_mask, local_invocation_id_component_mask);
+        meta.value_range = make_dense_range(min_val, max_val, affine);
     };
 
     auto set_vector_linear_range = [&](uint64_t max_linear) {
@@ -5363,8 +5778,7 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, co
         {
             meta.component_ranges.push_back(make_dense_range(range.min,
                                                              range.max,
-                                                             range.workgroup_id_component_mask,
-                                                             range.local_invocation_id_component_mask));
+                                                             range.affine));
         }
     };
 
@@ -5420,19 +5834,19 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, co
             {
                 SetValue(result_id, make_uvec3(base_x, base_y, base_z));
                 set_component_ranges({
-                    { base_x, base_x + nx - 1, kInvocationComponentX },
-                    { base_y, base_y + ny - 1, kInvocationComponentY },
-                    { base_z, base_z + nz - 1, kInvocationComponentZ },
+                    { base_x, base_x + nx - 1, make_axis_affine(base_x, 0, 1, 0) },
+                    { base_y, base_y + ny - 1, make_axis_affine(base_y, 1, 1, 0) },
+                    { base_z, base_z + nz - 1, make_axis_affine(base_z, 2, 1, 0) },
                 });
-                set_vector_linear_range(SaturatingMul64(SaturatingMul64(nx, ny), nz) - 1);
+                set_vector_linear_range(SaturatingMulU64(SaturatingMulU64(nx, ny), nz) - 1);
                 return true;
             }
             if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
             {
                 const uint32_t c = pointer.idx_path[0];
-                if (c == 0) { SetValue(result_id, uint64_t(base_x)); set_scalar_range(base_x, base_x + nx - 1, kInvocationComponentX); return true; }
-                if (c == 1) { SetValue(result_id, uint64_t(base_y)); set_scalar_range(base_y, base_y + ny - 1, kInvocationComponentY); return true; }
-                if (c == 2) { SetValue(result_id, uint64_t(base_z)); set_scalar_range(base_z, base_z + nz - 1, kInvocationComponentZ); return true; }
+                if (c == 0) { SetValue(result_id, uint64_t(base_x)); set_scalar_range(base_x, base_x + nx - 1, make_axis_affine(base_x, 0, 1, 0)); return true; }
+                if (c == 1) { SetValue(result_id, uint64_t(base_y)); set_scalar_range(base_y, base_y + ny - 1, make_axis_affine(base_y, 1, 1, 0)); return true; }
+                if (c == 2) { SetValue(result_id, uint64_t(base_z)); set_scalar_range(base_z, base_z + nz - 1, make_axis_affine(base_z, 2, 1, 0)); return true; }
             }
             break;
         case spv::BuiltIn::BuiltInLocalInvocationId:
@@ -5444,19 +5858,19 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, co
             {
                 SetValue(result_id, make_uvec3(0, 0, 0));
                 set_component_ranges({
-                    { 0, lx - 1, 0, kInvocationComponentX },
-                    { 0, ly - 1, 0, kInvocationComponentY },
-                    { 0, lz - 1, 0, kInvocationComponentZ },
+                    { 0, lx - 1, make_axis_affine(0, 0, 0, 1) },
+                    { 0, ly - 1, make_axis_affine(0, 1, 0, 1) },
+                    { 0, lz - 1, make_axis_affine(0, 2, 0, 1) },
                 });
-                set_vector_linear_range(SaturatingMul64(SaturatingMul64(lx, ly), lz) - 1);
+                set_vector_linear_range(SaturatingMulU64(SaturatingMulU64(lx, ly), lz) - 1);
                 return true;
             }
             if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
             {
                 const uint32_t c = pointer.idx_path[0];
-                if (c == 0) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lx - 1, 0, kInvocationComponentX); return true; }
-                if (c == 1) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, ly - 1, 0, kInvocationComponentY); return true; }
-                if (c == 2) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lz - 1, 0, kInvocationComponentZ); return true; }
+                if (c == 0) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lx - 1, make_axis_affine(0, 0, 0, 1)); return true; }
+                if (c == 1) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, ly - 1, make_axis_affine(0, 1, 0, 1)); return true; }
+                if (c == 2) { SetValue(result_id, uint64_t(0)); set_scalar_range(0, lz - 1, make_axis_affine(0, 2, 0, 1)); return true; }
             }
             break;
         case spv::BuiltIn::BuiltInGlobalInvocationId:
@@ -5466,24 +5880,27 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, co
             }
             if (result_type.kind == Type::Kind::Vector)
             {
-                SetValue(result_id, make_uvec3(SaturatingMul64(base_x, lx), SaturatingMul64(base_y, ly), SaturatingMul64(base_z, lz)));
+                const uint64_t origin_x = SaturatingMulU64(base_x, lx);
+                const uint64_t origin_y = SaturatingMulU64(base_y, ly);
+                const uint64_t origin_z = SaturatingMulU64(base_z, lz);
+                SetValue(result_id, make_uvec3(origin_x, origin_y, origin_z));
                 set_component_ranges({
-                    { SaturatingMul64(base_x, lx), SaturatingMul64(base_x + nx, lx) - 1, kInvocationComponentX, kInvocationComponentX },
-                    { SaturatingMul64(base_y, ly), SaturatingMul64(base_y + ny, ly) - 1, kInvocationComponentY, kInvocationComponentY },
-                    { SaturatingMul64(base_z, lz), SaturatingMul64(base_z + nz, lz) - 1, kInvocationComponentZ, kInvocationComponentZ },
+                    { origin_x, SaturatingMulU64(base_x + nx, lx) - 1, make_axis_affine(origin_x, 0, lx, 1) },
+                    { origin_y, SaturatingMulU64(base_y + ny, ly) - 1, make_axis_affine(origin_y, 1, ly, 1) },
+                    { origin_z, SaturatingMulU64(base_z + nz, lz) - 1, make_axis_affine(origin_z, 2, lz, 1) },
                 });
-                const uint64_t gx = SaturatingMul64(nx, lx);
-                const uint64_t gy = SaturatingMul64(ny, ly);
-                const uint64_t gz = SaturatingMul64(nz, lz);
-                set_vector_linear_range(SaturatingMul64(SaturatingMul64(gx, gy), gz) - 1);
+                const uint64_t gx = SaturatingMulU64(nx, lx);
+                const uint64_t gy = SaturatingMulU64(ny, ly);
+                const uint64_t gz = SaturatingMulU64(nz, lz);
+                set_vector_linear_range(SaturatingMulU64(SaturatingMulU64(gx, gy), gz) - 1);
                 return true;
             }
             if (result_type.kind == Type::Kind::Int && pointer.idx_path.size() == 1)
             {
                 const uint32_t c = pointer.idx_path[0];
-                if (c == 0) { uint64_t min_v = SaturatingMul64(base_x, lx); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_x + nx, lx) - 1, kInvocationComponentX, kInvocationComponentX); return true; }
-                if (c == 1) { uint64_t min_v = SaturatingMul64(base_y, ly); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_y + ny, ly) - 1, kInvocationComponentY, kInvocationComponentY); return true; }
-                if (c == 2) { uint64_t min_v = SaturatingMul64(base_z, lz); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMul64(base_z + nz, lz) - 1, kInvocationComponentZ, kInvocationComponentZ); return true; }
+                if (c == 0) { uint64_t min_v = SaturatingMulU64(base_x, lx); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMulU64(base_x + nx, lx) - 1, make_axis_affine(min_v, 0, lx, 1)); return true; }
+                if (c == 1) { uint64_t min_v = SaturatingMulU64(base_y, ly); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMulU64(base_y + ny, ly) - 1, make_axis_affine(min_v, 1, ly, 1)); return true; }
+                if (c == 2) { uint64_t min_v = SaturatingMulU64(base_z, lz); SetValue(result_id, min_v); set_scalar_range(min_v, SaturatingMulU64(base_z + nz, lz) - 1, make_axis_affine(min_v, 2, lz, 1)); return true; }
             }
             break;
         case spv::BuiltIn::BuiltInLocalInvocationIndex:
@@ -5492,12 +5909,12 @@ bool SPIRVSimulator::TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, co
             {
                 return false;
             }
-            const uint64_t total = SaturatingMul64(SaturatingMul64(lx, ly), lz);
+            const uint64_t total = SaturatingMulU64(SaturatingMulU64(lx, ly), lz);
+            const uint64_t local_z_coefficient = SaturatingMulU64(lx, ly);
             SetValue(result_id, uint64_t(0));
             set_scalar_range(0,
                              total ? total - 1 : 0,
-                             0,
-                             kInvocationComponentX | kInvocationComponentY | kInvocationComponentZ);
+                             make_affine(0, { 0, 0, 0 }, { 1, lx, local_z_coefficient }));
             return true;
         }
         default:
@@ -5692,64 +6109,76 @@ void SPIRVSimulator::PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id
         return;
     }
 
-    uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
-    uint64_t a_max = a_range.valid ? a_range.max : a_min;
-    uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
-    uint64_t b_max = b_range.valid ? b_range.max : b_min;
-
     DenseValueRangeInfo out_range = {};
-    out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
-    out_range.dense_range = false;
-    out_range.stride = 1;
-    if (!CheckedAddForType(a_min, b_min, result_type, out_range.min) ||
-        !CheckedAddForType(a_max, b_max, result_type, out_range.max))
-    {
-        return;
-    }
-    out_range.valid = true;
+    InvocationLinearizationInfo affine = {};
+    const bool affine_valid = TryPropagateBinaryInvocationAffineAdd(lhs_id, rhs_id, affine);
+    const bool affine_range_proved = affine_valid &&
+                                     TryBuildRangeFromInvocationAffine(affine,
+                                                                    result_type,
+                                                                    a_range.thread_dependent || b_range.thread_dependent,
+                                                                    out_range);
 
-    if (a_range.valid && b_is_fixed)
+    if (!affine_range_proved)
     {
-        // Adding a fixed scalar is an exact translation.
-        if (IsExactSingletonRange(a_range))
+        uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
+        uint64_t a_max = a_range.valid ? a_range.max : a_min;
+        uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
+        uint64_t b_max = b_range.valid ? b_range.max : b_min;
+
+        out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
+        out_range.dense_range = false;
+        out_range.stride = 1;
+        if (!CheckedAddForType(a_min, b_min, result_type, out_range.min) ||
+            !CheckedAddForType(a_max, b_max, result_type, out_range.max))
         {
-            out_range.dense_range = true;
-            out_range.stride = 1;
-            out_range.invocation_linearization = a_range.invocation_linearization;
+            return;
         }
-        else if (a_range.dense_range)
+        out_range.valid = true;
+
+        if (a_range.valid && b_is_fixed)
         {
-            out_range.dense_range = true;
-            out_range.stride = a_range.stride;
-            out_range.invocation_linearization = a_range.invocation_linearization;
+            // Adding a fixed scalar is an exact translation.
+            if (IsExactSingletonRange(a_range))
+            {
+                out_range.dense_range = true;
+                out_range.stride = 1;
+            }
+            else if (a_range.dense_range)
+            {
+                out_range.dense_range = true;
+                out_range.stride = a_range.stride;
+            }
+        }
+        else if (a_is_fixed && b_range.valid)
+        {
+            // Addition is commutative; preserve the ranged rhs metadata.
+            if (IsExactSingletonRange(b_range))
+            {
+                out_range.dense_range = true;
+                out_range.stride = 1;
+            }
+            else if (b_range.dense_range)
+            {
+                out_range.dense_range = true;
+                out_range.stride = b_range.stride;
+            }
+        }
+        else if (a_range.valid && b_range.valid)
+        {
+            DenseValueRangeInfo combined_range = {};
+            if (TryCombineIndependentInvocationRanges(a_range, b_range, combined_range))
+            {
+                // The helper returns the complete exact numeric range proof.
+                out_range = combined_range;
+            }
+            // Otherwise keep the checked min/max envelope already stored in
+            // out_range, with dense=false and stride=1.
         }
     }
-    else if (a_is_fixed && b_range.valid)
+
+    if (affine_valid && out_range.valid)
     {
-        // Addition is commutative; preserve the ranged rhs metadata.
-        if (IsExactSingletonRange(b_range))
-        {
-            out_range.dense_range = true;
-            out_range.stride = 1;
-            out_range.invocation_linearization = b_range.invocation_linearization;
-        }
-        else if (b_range.dense_range)
-        {
-            out_range.dense_range = true;
-            out_range.stride = b_range.stride;
-            out_range.invocation_linearization = b_range.invocation_linearization;
-        }
-    }
-    else if (a_range.valid && b_range.valid)
-    {
-        DenseValueRangeInfo combined_range = {};
-        if (TryCombineIndependentInvocationRanges(a_range, b_range, combined_range))
-        {
-            // The helper returns the complete exact min/max/stride/dense/mask result.
-            out_range = combined_range;
-        }
-        // Otherwise keep the checked min/max envelope already stored in
-        // out_range, with dense=false, stride=1, and an empty axis mask.
+        out_range.invocation_linearization = affine;
     }
 
     ValueMetadata& out = value_meta_[result_id];
@@ -5784,78 +6213,89 @@ void SPIRVSimulator::PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id
         return;
     }
 
-    uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
-    uint64_t a_max = a_range.valid ? a_range.max : a_min;
-    uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
-    uint64_t b_max = b_range.valid ? b_range.max : b_min;
-
     DenseValueRangeInfo out_range = {};
-    out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
-    out_range.dense_range = false;
-    out_range.stride = 1;
-    if (!CheckedSubForType(a_min, b_max, result_type, out_range.min) ||
-        !CheckedSubForType(a_max, b_min, result_type, out_range.max))
-    {
-        return;
-    }
-    out_range.valid = true;
+    InvocationLinearizationInfo affine = {};
+    const bool affine_valid = TryPropagateBinaryInvocationAffineSub(lhs_id, rhs_id, affine);
+    const bool affine_range_proved = affine_valid &&
+                                     TryBuildRangeFromInvocationAffine(affine,
+                                                                    result_type,
+                                                                    a_range.thread_dependent || b_range.thread_dependent,
+                                                                    out_range);
 
-    if (a_range.valid && b_is_fixed)
+    if (!affine_range_proved)
     {
-        // Subtracting a fixed scalar is an exact downward translation.
-        if (IsExactSingletonRange(a_range))
-        {
-            out_range.dense_range = true;
-            out_range.stride = 1;
-            out_range.invocation_linearization = a_range.invocation_linearization;
-        }
-        else if (a_range.dense_range)
-        {
-            out_range.dense_range = true;
-            out_range.stride = a_range.stride;
-            out_range.invocation_linearization = a_range.invocation_linearization;
-        }
-    }
-    else if (a_is_fixed && b_range.valid)
-    {
-        // A fixed lhs reflects the ranged rhs without changing its stride.
-        if (IsExactSingletonRange(b_range))
-        {
-            out_range.dense_range = true;
-            out_range.stride = 1;
-            out_range.invocation_linearization = b_range.invocation_linearization;
-        }
-        else if (b_range.dense_range)
-        {
-            out_range.dense_range = true;
-            out_range.stride = b_range.stride;
-            out_range.invocation_linearization = b_range.invocation_linearization;
-        }
-    }
-    else if (a_range.valid && b_range.valid)
-    {
-        DenseValueRangeInfo normalized_lhs = a_range;
-        DenseValueRangeInfo normalized_rhs = b_range;
+        uint64_t a_min = a_range.valid ? a_range.min : a_fixed_value;
+        uint64_t a_max = a_range.valid ? a_range.max : a_min;
+        uint64_t b_min = b_range.valid ? b_range.min : b_fixed_value;
+        uint64_t b_max = b_range.valid ? b_range.max : b_min;
 
-        uint64_t normalized_lhs_max = 0;
-        uint64_t normalized_rhs_max = 0;
-        if (CheckedSubForType(a_max, b_max, result_type, normalized_lhs_max) &&
-            CheckedSubForType(b_max, b_min, result_type, normalized_rhs_max))
+        out_range.thread_dependent = a_range.thread_dependent || b_range.thread_dependent;
+        out_range.dense_range = false;
+        out_range.stride = 1;
+        if (!CheckedSubForType(a_min, b_max, result_type, out_range.min) ||
+            !CheckedSubForType(a_max, b_min, result_type, out_range.max))
         {
-            normalized_lhs.min = out_range.min;
-            normalized_lhs.max = normalized_lhs_max;
-            normalized_rhs.min = 0;
-            normalized_rhs.max = normalized_rhs_max;
+            return;
+        }
+        out_range.valid = true;
 
-            DenseValueRangeInfo combined_range = {};
-            if (TryCombineIndependentInvocationRanges(normalized_lhs, normalized_rhs, combined_range))
+        if (a_range.valid && b_is_fixed)
+        {
+            // Subtracting a fixed scalar is an exact downward translation.
+            if (IsExactSingletonRange(a_range))
             {
-                out_range = combined_range;
+                out_range.dense_range = true;
+                out_range.stride = 1;
+            }
+            else if (a_range.dense_range)
+            {
+                out_range.dense_range = true;
+                out_range.stride = a_range.stride;
             }
         }
-        // If exact combination cannot be proved, keep the checked min/max
-        // envelope already stored in out_range, with dense=false, stride=1,
-        // and empty axis masks.
+        else if (a_is_fixed && b_range.valid)
+        {
+            // A fixed lhs reflects the ranged rhs without changing its stride.
+            if (IsExactSingletonRange(b_range))
+            {
+                out_range.dense_range = true;
+                out_range.stride = 1;
+            }
+            else if (b_range.dense_range)
+            {
+                out_range.dense_range = true;
+                out_range.stride = b_range.stride;
+            }
+        }
+        else if (a_range.valid && b_range.valid)
+        {
+            DenseValueRangeInfo normalized_lhs = a_range;
+            DenseValueRangeInfo normalized_rhs = b_range;
+
+            uint64_t normalized_lhs_max = 0;
+            uint64_t normalized_rhs_max = 0;
+            if (CheckedSubForType(a_max, b_max, result_type, normalized_lhs_max) &&
+                CheckedSubForType(b_max, b_min, result_type, normalized_rhs_max))
+            {
+                normalized_lhs.min = out_range.min;
+                normalized_lhs.max = normalized_lhs_max;
+                normalized_rhs.min = 0;
+                normalized_rhs.max = normalized_rhs_max;
+
+                DenseValueRangeInfo combined_range = {};
+                if (TryCombineIndependentInvocationRanges(normalized_lhs, normalized_rhs, combined_range))
+                {
+                    out_range = combined_range;
+                }
+            }
+            // If exact combination cannot be proved, keep the checked min/max
+            // envelope already stored in out_range, with dense=false and stride=1.
+        }
+    }
+
+    if (affine_valid && out_range.valid)
+    {
+        out_range.invocation_linearization = affine;
     }
 
     ValueMetadata& out = value_meta_[result_id];
@@ -5903,7 +6343,12 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
         out_range.min = 0;
         out_range.max = 0;
         out_range.stride = 1;
-        out_range.invocation_linearization = source_range.invocation_linearization;
+
+        InvocationLinearizationInfo affine = {};
+        if (TryPropagateBinaryInvocationAffineMul(lhs_id, rhs_id, affine))
+        {
+            out_range.invocation_linearization = affine;
+        }
 
         value_meta_[result_id].value_range = out_range;
         return;
@@ -5934,13 +6379,11 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
         {
             out_range.dense_range = true;
             out_range.stride = 1;
-            out_range.invocation_linearization = a_range.invocation_linearization;
         }
         else if (a_range.dense_range &&
                  CheckedMulForType(a_range.stride, b_fixed_value, result_type, out_range.stride))
         {
             out_range.dense_range = true;
-            out_range.invocation_linearization = a_range.invocation_linearization;
         }
     }
     else if (a_is_fixed && b_range.valid)
@@ -5949,25 +6392,15 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
         {
             out_range.dense_range = true;
             out_range.stride = 1;
-            out_range.invocation_linearization = b_range.invocation_linearization;
         }
         else if (b_range.dense_range &&
                  CheckedMulForType(b_range.stride, a_fixed_value, result_type, out_range.stride))
         {
             out_range.dense_range = true;
-            out_range.invocation_linearization = b_range.invocation_linearization;
         }
     }
     else if (a_range.valid && b_range.valid)
     {
-        InvocationLinearizationInfo combined_linearization = {};
-        combined_linearization.workgroup_id_component_mask =
-            a_range.invocation_linearization.workgroup_id_component_mask |
-            b_range.invocation_linearization.workgroup_id_component_mask;
-        combined_linearization.local_invocation_id_component_mask =
-            a_range.invocation_linearization.local_invocation_id_component_mask |
-            b_range.invocation_linearization.local_invocation_id_component_mask;
-
         // Only singleton cases below can prove an exact dense product. Two
         // non-singleton ranges generally do not multiply into an exact
         // arithmetic progression, so their checked envelope remains non-dense.
@@ -5975,7 +6408,6 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
         {
             out_range.dense_range = true;
             out_range.stride = 1;
-            out_range.invocation_linearization = combined_linearization;
         }
         else if (a_is_singleton_range)
         {
@@ -5983,13 +6415,11 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
             {
                 out_range.dense_range = true;
                 out_range.stride = 1;
-                out_range.invocation_linearization = combined_linearization;
             }
             else if (b_range.dense_range &&
                      CheckedMulForType(b_range.stride, a_range.min, result_type, out_range.stride))
             {
                 out_range.dense_range = true;
-                out_range.invocation_linearization = combined_linearization;
             }
         }
         else if (b_is_singleton_range)
@@ -5998,15 +6428,19 @@ void SPIRVSimulator::PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id
             {
                 out_range.dense_range = true;
                 out_range.stride = 1;
-                out_range.invocation_linearization = combined_linearization;
             }
             else if (a_range.dense_range &&
                      CheckedMulForType(a_range.stride, b_range.min, result_type, out_range.stride))
             {
                 out_range.dense_range = true;
-                out_range.invocation_linearization = combined_linearization;
             }
         }
+    }
+
+    InvocationLinearizationInfo affine = {};
+    if (TryPropagateBinaryInvocationAffineMul(lhs_id, rhs_id, affine))
+    {
+        out_range.invocation_linearization = affine;
     }
 
     ValueMetadata& out = value_meta_[result_id];
@@ -6113,53 +6547,6 @@ bool SPIRVSimulator::CanWriteValueTypeCarryHandlePayload(const Type& type) const
         default:
             return false;
     }
-}
-
-bool SPIRVSimulator::TryGetDenseStoreRange(const PointerV& pointer, uint32_t pointer_id, uint32_t result_id, uint64_t& dst_start, uint64_t& byte_size, uint64_t& element_size)
-{
-    if (pointer.storage_class == spv::StorageClass::StorageClassFunction ||
-        pointer.storage_class == spv::StorageClass::StorageClassImage)
-    {
-        return false;
-    }
-    if (!memory_flag_tracker_ || !value_meta_[pointer_id].address_range_valid)
-    {
-        return false;
-    }
-
-    const ValueMetadata& ptr_meta = value_meta_[pointer_id];
-    element_size = ptr_meta.address_element_size;
-    if (element_size == 0 || ptr_meta.address_range_stride != element_size)
-    {
-        return false;
-    }
-
-    std::pair<std::byte*, uint64_t> resolved_pointer = ResolvePointerV(pointer);
-    uint64_t base = bit_cast<uint64_t>(resolved_pointer.first);
-    if (base == 0)
-    {
-        return false;
-    }
-
-    dst_start = ptr_meta.address_range_min;
-    uint64_t last = ptr_meta.address_range_max;
-    if (dst_start == 0 || last < dst_start)
-    {
-        return false;
-    }
-    const uint64_t address_span = last - dst_start;
-    if (address_span > std::numeric_limits<uint64_t>::max() - element_size)
-    {
-        return false;
-    }
-    byte_size = address_span + element_size;
-    if ((byte_size % element_size) != 0)
-    {
-        return false;
-    }
-
-    (void)result_id;
-    return true;
 }
 
 bool SPIRVSimulator::TryGetRuntimeArrayLength(const PointerV& runtime_array_pointer,
@@ -6663,6 +7050,12 @@ bool SPIRVSimulator::TryBuildDenseAccessChainAddressRange(
         }
     }
 
+    uint64_t range_end = 0;
+    if (!CheckedAddU64(max_address, element_size, range_end))
+    {
+        return false;
+    }
+
     out_range = DenseAccessChainAddressRange{
         min_address,
         max_address,
@@ -6718,6 +7111,878 @@ bool SPIRVSimulator::HasUniquePhysicalAddressBacking(uint64_t min_address,
     return matching_allocation_count == 1;
 }
 
+std::optional<CanonicalInvocationSequence>
+SPIRVSimulator::TryCollapseToCanonicalInvocationSequence(
+    const DenseValueRangeInfo&       range,
+    const ComputeDispatchDimensions& num_workgroups,
+    const ComputeLocalSize&          local_size)
+{
+    // Step 1: Require one exact dense numeric range, an exact invocation-affine
+    // expression, and a non-empty rectangular compute dispatch domain.
+    const InvocationLinearizationInfo& affine = range.invocation_linearization;
+
+    uint64_t exact_range_count = 0;
+    if (!affine.valid || !TryGetExactRangeCount(range, exact_range_count) ||
+        !local_size.valid || local_size.x == 0 || local_size.y == 0 || local_size.z == 0 ||
+        num_workgroups.x == 0 || num_workgroups.y == 0 || num_workgroups.z == 0)
+    {
+        return std::nullopt;
+    }
+
+    const uint64_t nx = num_workgroups.x;
+    const uint64_t ny = num_workgroups.y;
+    const uint64_t nz = num_workgroups.z;
+    const uint64_t lx = local_size.x;
+    const uint64_t ly = local_size.y;
+    const uint64_t lz = local_size.z;
+
+    // Step 2: Compute the global extents and total invocation count with exact
+    // arithmetic. Saturation would make the following proof unsound.
+    uint64_t gx = 0;
+    uint64_t gy = 0;
+    uint64_t gz = 0;
+    uint64_t gxy = 0;
+    uint64_t invocation_count = 0;
+    if (!CheckedMulU64(nx, lx, gx) ||
+        !CheckedMulU64(ny, ly, gy) ||
+        !CheckedMulU64(nz, lz, gz) ||
+        !CheckedMulU64(gx, gy, gxy) ||
+        !CheckedMulU64(gxy, gz, invocation_count) ||
+        invocation_count == 0)
+    {
+        return std::nullopt;
+    }
+
+    struct CanonicalAxisConstraint
+    {
+        uint64_t extent            = 1;
+        uint64_t ordinal_weight    = 0;
+        int64_t  value_coefficient = 0;
+    };
+
+    // Step 3: Associate each workgroup/local coordinate with its extent, its
+    // canonical x-fastest ordinal weight, and the affine value coefficient.
+    uint64_t workgroup_y_weight = 0;
+    uint64_t workgroup_z_weight = 0;
+    if (!CheckedMulU64(gx, ly, workgroup_y_weight) || !CheckedMulU64(gxy, lz, workgroup_z_weight))
+    {
+        return std::nullopt;
+    }
+
+    const std::array<CanonicalAxisConstraint, 6> axes = {{
+        { lx, 1, affine.local_coefficients[0] },
+        { nx, lx, affine.workgroup_coefficients[0] },
+        { ly, gx, affine.local_coefficients[1] },
+        { ny, workgroup_y_weight, affine.workgroup_coefficients[1] },
+        { lz, gxy, affine.local_coefficients[2] },
+        { nz, workgroup_z_weight, affine.workgroup_coefficients[2] },
+    }};
+
+    // Step 4: Derive the candidate value step from the first coordinate that
+    // actually varies in this dispatch. A one-invocation domain has no
+    // observable adjacent step and therefore uses zero.
+    int64_t signed_step = 0;
+    if (invocation_count > 1)
+    {
+        const CanonicalAxisConstraint* candidate_axis = nullptr;
+        for (const CanonicalAxisConstraint& axis : axes)
+        {
+            if (axis.extent > 1)
+            {
+                candidate_axis = &axis;
+                break;
+            }
+        }
+
+        if (candidate_axis == nullptr || !CheckedExactDivideI64ByU64(candidate_axis->value_coefficient,
+                                                                     candidate_axis->ordinal_weight,
+                                                                     signed_step))
+        {
+            return std::nullopt;
+        }
+    }
+
+    // Step 5: Every varying coordinate must have exactly the coefficient
+    // implied by the same canonical signed step and its ordinal weight.
+    for (const CanonicalAxisConstraint& axis : axes)
+    {
+        if (axis.extent == 1)
+        {
+            continue;
+        }
+
+        int64_t expected_coefficient = 0;
+        if (!CheckedMulI64ByU64(signed_step, axis.ordinal_weight, expected_coefficient) ||
+            expected_coefficient != axis.value_coefficient)
+        {
+            return std::nullopt;
+        }
+    }
+
+    // Step 6: Compute the canonical first and last values, then require their
+    // envelope to describe the same endpoints as the numeric range proof.
+    const int64_t first       = affine.value_at_dispatch_origin;
+    int64_t       value_delta = 0;
+    int64_t       last        = 0;
+    if (!CheckedMulI64ByU64(signed_step, invocation_count - 1, value_delta) ||
+        !CheckedAddI64(first, value_delta, last) ||
+        first < 0 || last < 0)
+    {
+        return std::nullopt;
+    }
+
+    const uint64_t first_u64    = static_cast<uint64_t>(first);
+    const uint64_t last_u64     = static_cast<uint64_t>(last);
+    const uint64_t sequence_min = std::min(first_u64, last_u64);
+    const uint64_t sequence_max = std::max(first_u64, last_u64);
+    if (sequence_min != range.min || sequence_max != range.max)
+    {
+        return std::nullopt;
+    }
+
+    // Step 7: Cross-check numeric cardinality and stride before publishing the
+    // sequence. A singleton domain is one-to-one; a constant sequence over
+    // multiple invocations is valid but cannot address distinct slots.
+    if (invocation_count == 1)
+    {
+        if (exact_range_count != 1)
+        {
+            return std::nullopt;
+        }
+        return CanonicalInvocationSequence{ first, 0, 1, true };
+    }
+
+    if (signed_step == 0)
+    {
+        if (exact_range_count != 1 || range.min != range.max)
+        {
+            return std::nullopt;
+        }
+        return CanonicalInvocationSequence{ first, 0, invocation_count, false };
+    }
+
+    if (MagnitudeI64(signed_step) != range.stride || exact_range_count != invocation_count)
+    {
+        return std::nullopt;
+    }
+
+    return CanonicalInvocationSequence{ first, signed_step, invocation_count, true };
+}
+
+bool SPIRVSimulator::TrySetCanonicalStridedElementSpan(uint32_t result_id, const CanonicalInvocationSequence& sequence)
+{
+    ValueMetadata& result_meta = value_meta_[result_id];
+
+    if (!result_meta.address_range_valid || result_meta.strided_element_span.valid ||
+        !sequence.one_to_one || sequence.count == 0 ||
+        (sequence.count > 1 && sequence.signed_step == 0))
+    {
+        return false;
+    }
+
+    uint64_t first_address = result_meta.address_range_min;
+    int64_t  signed_byte_stride = 0;
+    if (sequence.count > 1)
+    {
+        if (result_meta.address_range_stride > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        {
+            return false;
+        }
+
+        const int64_t byte_stride = static_cast<int64_t>(result_meta.address_range_stride);
+        if (sequence.signed_step > 0)
+        {
+            signed_byte_stride = byte_stride;
+        }
+        else
+        {
+            first_address      = result_meta.address_range_max;
+            signed_byte_stride = -byte_stride;
+        }
+    }
+
+    StridedElementSpan candidate;
+    candidate.first_address = first_address;
+    candidate.byte_stride   = signed_byte_stride;
+    candidate.count         = sequence.count;
+    candidate.element_size  = result_meta.address_element_size;
+    candidate.valid         = true;
+
+    // Complete the span proof with the same signed-offset arithmetic used by downstream consumers.
+    // The address-range proof uses uint64_t arithmetic, so a valid range can still have a total byte offset
+    // that is not representable by TryGetSpanElementAddress().
+    uint64_t last_address = 0;
+    if (!TryGetSpanElementAddress(candidate, candidate.count - 1, last_address))
+    {
+        return false;
+    }
+
+    const uint64_t expected_last_address = candidate.byte_stride < 0 ? result_meta.address_range_min : result_meta.address_range_max;
+    if (last_address != expected_last_address)
+    {
+        return false;
+    }
+
+    result_meta.strided_element_span = candidate;
+    return true;
+}
+
+bool SPIRVSimulator::TryCreateLazyElementwiseSource(uint32_t result_id, const StridedElementSpan& slots)
+{
+    if (!slots.valid)
+    {
+        return false;
+    }
+
+    // Each dynamic external load owns a distinct temporal state, even when
+    // another load happens to use the same source slots. Geometry and mutable
+    // CoW state are published as one indivisible relation.
+    std::shared_ptr<ElementwiseSourceState> source = std::make_shared<ElementwiseSourceState>(slots);
+
+    active_elementwise_sources_.push_back(source);
+
+    // Keep the new weak entry alive while opportunistic compaction scans the
+    // registry, then publish the complete relation atomically.
+    MaybeCompactElementwiseSourceRegistry();
+    value_meta_[result_id].elementwise_relation.source = std::move(source);
+    return true;
+}
+
+void SPIRVSimulator::RecomputeElementwiseSourceCompactionThreshold()
+{
+    constexpr size_t kMinimumCompactionSize = 64;
+
+    const size_t live_count = active_elementwise_sources_.size();
+    if (live_count > std::numeric_limits<size_t>::max() / 2)
+    {
+        next_elementwise_source_compaction_size_ = std::numeric_limits<size_t>::max();
+    }
+    else
+    {
+        next_elementwise_source_compaction_size_ = std::max(kMinimumCompactionSize, live_count * 2);
+    }
+}
+
+void SPIRVSimulator::MaybeCompactElementwiseSourceRegistry()
+{
+    // Avoid an O(registry size) scan for every external load.
+    if (active_elementwise_sources_.size() < next_elementwise_source_compaction_size_)
+    {
+        return;
+    }
+
+    // Expired entries have no metadata owner. Unavailable relations no longer
+    // need write watching; lazy and packed states remain active.
+    std::erase_if(active_elementwise_sources_,
+                  [](const std::weak_ptr<ElementwiseSourceState>& entry)
+                  {
+                      const std::shared_ptr<ElementwiseSourceState> source = entry.lock();
+                      return !source || source->kind == ElementwiseSourceStorageKind::Unavailable;
+                  });
+
+    // Space complete scans geometrically when most registered sources remain
+    // live, while stale-heavy loops return to the minimum trigger.
+    RecomputeElementwiseSourceCompactionThreshold();
+}
+
+ExternalWriteFootprint SPIRVSimulator::BuildExternalWriteFootprint(uint32_t pointer_id, const PointerV& pointer) const
+{
+    ExternalWriteFootprint footprint;
+
+    const StridedElementSpan& span = value_meta_[pointer_id].strided_element_span;
+    if (span.valid)
+    {
+        footprint.kind = ExternalWriteFootprint::Kind::ExactSpan;
+        footprint.span = span;
+        return footprint;
+    }
+
+    const std::pair<std::byte*, uint64_t> resolved_pointer = ResolvePointerV(pointer);
+    if (resolved_pointer.first == nullptr)
+    {
+        // WritePointer treats a missing optional external backing as a no-op.
+        return footprint;
+    }
+
+    const Type& target_type = GetTypeByTypeId(GetTargetPointerType(pointer));
+    if (target_type.kind != Type::Kind::BoolT &&
+        target_type.kind != Type::Kind::Int &&
+        target_type.kind != Type::Kind::Float &&
+        target_type.kind != Type::Kind::Pointer &&
+        target_type.kind != Type::Kind::Vector)
+    {
+        // Aggregate layout can contain padding that GetBitsizeOfType does not
+        // describe as one conservative concrete write interval.
+        return footprint;
+    }
+
+    const size_t target_bit_size = GetBitsizeOfTargetType(pointer);
+    const uint64_t concrete_size = static_cast<uint64_t>(target_bit_size / 8);
+    uint64_t       concrete_address = 0;
+    if (!CheckedAddU64(bit_cast<uint64_t>(resolved_pointer.first), resolved_pointer.second, concrete_address))
+    {
+        return footprint;
+    }
+
+    uint64_t concrete_end = 0;
+    if (!CheckedAddU64(concrete_address, concrete_size, concrete_end))
+    {
+        return footprint;
+    }
+
+    footprint.kind = ExternalWriteFootprint::Kind::ExactSpan;
+    footprint.span.valid = true;
+    footprint.span.first_address = concrete_address;
+    footprint.span.byte_stride = 0;
+    footprint.span.count = 1;
+    footprint.span.element_size = concrete_size;
+    return footprint;
+}
+
+bool SPIRVSimulator::ActualElementBytesOverlap(const StridedElementSpan& lhs, const StridedElementSpan& rhs)
+{
+    // Normalize either stride direction to the half-open envelope
+    // [minimum element start, maximum element end).
+    auto get_envelope = [](const StridedElementSpan& span,
+                           uint64_t& minimum_start,
+                           uint64_t& envelope_end) {
+        uint64_t last_start = 0;
+        (void)TryGetSpanElementAddress(span, span.count - 1, last_start);
+        minimum_start = std::min(span.first_address, last_start);
+        envelope_end = std::max(span.first_address, last_start) + span.element_size;
+    };
+
+    uint64_t lhs_min = 0;
+    uint64_t lhs_max = 0;
+    const uint64_t lhs_step = MagnitudeI64(lhs.byte_stride);
+    get_envelope(lhs, lhs_min, lhs_max);
+
+    uint64_t rhs_min = 0;
+    uint64_t rhs_max = 0;
+    const uint64_t rhs_step = MagnitudeI64(rhs.byte_stride);
+    get_envelope(rhs, rhs_min, rhs_max);
+
+    // Disjoint envelopes prove that no concrete element pair can overlap.
+    if (lhs_max <= rhs_min || rhs_max <= lhs_min)
+    {
+        return false;
+    }
+
+    // Find the first sequence element whose end lies after the singleton start.
+    // Envelope overlap guarantees that this candidate is in range.
+    auto singleton_overlaps_sequence = [](uint64_t singleton_min,
+                                          uint64_t singleton_max,
+                                          uint64_t sequence_min,
+                                          uint64_t sequence_step,
+                                          uint64_t sequence_element_size) {
+        const uint64_t first_element_end = sequence_min + sequence_element_size;
+
+        uint64_t candidate_index = 0;
+        if (first_element_end <= singleton_min)
+        {
+            const uint64_t gap = singleton_min - first_element_end;
+            candidate_index = gap / sequence_step + 1;
+        }
+
+        const uint64_t candidate_start = sequence_min + candidate_index * sequence_step;
+        return singleton_max > candidate_start;
+    };
+
+    // Two singleton envelopes that reach here overlap directly.
+    if (lhs.count == 1 && rhs.count == 1)
+    {
+        return true;
+    }
+
+    // A singleton needs only one arithmetic lookup in the other sequence.
+    if (lhs.count == 1)
+    {
+        return singleton_overlaps_sequence(lhs_min, lhs_max, rhs_min, rhs_step, rhs.element_size);
+    }
+
+    if (rhs.count == 1)
+    {
+        return singleton_overlaps_sequence(rhs_min, rhs_max, lhs_min, lhs_step, lhs.element_size);
+    }
+
+    // With equal stride magnitudes, translate any overlapping element pair
+    // towards the earlier sequence start. The later start then overlaps some
+    // element of the earlier sequence exactly when the two sequences overlap.
+    // This also covers unequal element sizes and sizes on either side of the
+    // stride magnitude.
+    if (lhs_step == rhs_step)
+    {
+        if (lhs_min <= rhs_min)
+        {
+            const uint64_t rhs_first_end = rhs_min + rhs.element_size;
+            return singleton_overlaps_sequence(rhs_min, rhs_first_end, lhs_min, lhs_step, lhs.element_size);
+        }
+
+        const uint64_t lhs_first_end = lhs_min + lhs.element_size;
+        return singleton_overlaps_sequence(lhs_min, lhs_first_end, rhs_min, rhs_step, rhs.element_size);
+    }
+
+    // For unequal strides, walk the ascending sequences and arithmetically
+    // skip every element that must end before the current opposing element.
+    uint64_t lhs_index = 0;
+    uint64_t rhs_index = 0;
+    uint64_t lhs_element_start = lhs_min;
+    uint64_t rhs_element_start = rhs_min;
+
+    while (true)
+    {
+        uint64_t lhs_element_end = 0;
+        uint64_t rhs_element_end = 0;
+        if (!CheckedAddU64(lhs_element_start, lhs.element_size, lhs_element_end) ||
+            !CheckedAddU64(rhs_element_start, rhs.element_size, rhs_element_end))
+        {
+            return true;
+        }
+
+        // Test the current pair as half-open byte intervals.
+        if (lhs_element_start < rhs_element_end && rhs_element_start < lhs_element_end)
+        {
+            return true;
+        }
+
+        if (lhs_element_end <= rhs_element_start)
+        {
+            // Jump to the first lhs element that could cross the current rhs start.
+            const uint64_t gap = rhs_element_start - lhs_element_end;
+            const uint64_t advance = gap / lhs_step + 1;
+            const uint64_t remaining = lhs.count - 1 - lhs_index;
+            if (advance > remaining)
+            {
+                return false;
+            }
+
+            uint64_t advance_bytes = 0;
+            if (!CheckedMulU64(advance, lhs_step, advance_bytes) ||
+                !CheckedAddU64(lhs_element_start, advance_bytes, lhs_element_start))
+            {
+                return true;
+            }
+            lhs_index += advance;
+        }
+        else
+        {
+            // The intervals are disjoint and lhs did not end first, so jump
+            // past rhs elements that must end before the current lhs element.
+            const uint64_t gap = lhs_element_start - rhs_element_end;
+            const uint64_t advance = gap / rhs_step + 1;
+            const uint64_t remaining = rhs.count - 1 - rhs_index;
+            if (advance > remaining)
+            {
+                return false;
+            }
+
+            uint64_t advance_bytes = 0;
+            if (!CheckedMulU64(advance, rhs_step, advance_bytes) ||
+                !CheckedAddU64(rhs_element_start, advance_bytes, rhs_element_start))
+            {
+                return true;
+            }
+            rhs_index += advance;
+        }
+    }
+}
+
+void SPIRVSimulator::InvalidateUniformDerivedClasses(const ExternalWriteFootprint& destination)
+{
+    if (!memory_flag_tracker_)
+    {
+        return;
+    }
+
+    memory_flag_tracker_->invalidateUniformDerivedClassesIf(
+        [&destination](uint64_t first_address,
+                       int64_t  byte_stride,
+                       uint64_t element_count,
+                       uint64_t element_size) {
+            if (destination.kind == ExternalWriteFootprint::Kind::Unknown)
+            {
+                return true;
+            }
+
+            const StridedElementSpan class_span{
+                true,
+                first_address,
+                byte_stride,
+                element_count,
+                element_size,
+            };
+            return ActualElementBytesOverlap(class_span, destination.span);
+        });
+}
+
+void SPIRVSimulator::InvalidateElementwiseSourceState(ElementwiseSourceState& source)
+{
+    source.kind = ElementwiseSourceStorageKind::Unavailable;
+    std::vector<std::byte>().swap(source.packed_snapshot);
+}
+
+bool SPIRVSimulator::MaterializeElementwiseSource(ElementwiseSourceState& source)
+{
+    const StridedElementSpan& slots = source.slots;
+
+    if (source.kind != ElementwiseSourceStorageKind::LazyHostShadow)
+    {
+        return false;
+    }
+
+    // Pack only the actual element bytes. Padding between strided source slots
+    // is intentionally omitted from the snapshot.
+    uint64_t packed_size = 0;
+    if (!CheckedMulU64(slots.count, slots.element_size, packed_size))
+    {
+        return false;
+    }
+
+    std::vector<std::byte> candidate;
+    // Unlike ordinary vector sizes already expressed as size_t, packed_size
+    // comes from uint64_t metadata and may exceed the container's limits.
+    if (!ResizeChecked(candidate, packed_size))
+    {
+        return false;
+    }
+
+    // Gather into a temporary first. A failure must leave the shared state
+    // lazy so that the caller can invalidate it without publishing a partial
+    // load-time snapshot to other metadata copies.
+    for (uint64_t i = 0; i < slots.count; ++i)
+    {
+        uint64_t source_address = 0;
+        (void)TryGetSpanElementAddress(slots, i, source_address);
+
+        const uint64_t packed_offset = i * slots.element_size;
+        std::memcpy(candidate.data() + static_cast<size_t>(packed_offset),
+                    bit_cast<const std::byte*>(source_address),
+                    static_cast<size_t>(slots.element_size));
+    }
+
+    // Publish only after every slot has been gathered. All ElementwiseSource
+    // metadata sharing this state then observes the complete snapshot.
+    source.packed_snapshot = std::move(candidate);
+    source.kind = ElementwiseSourceStorageKind::PackedSnapshot;
+    return true;
+}
+
+void SPIRVSimulator::PrepareElementwiseSourcesBeforeExternalWrite(const ExternalWriteFootprint& write)
+{
+    // Scan every registered load-time version before any external bytes are
+    // changed. Exact same-slot writes require temporal preservation, while a
+    // non-exact overlap makes the compressed relation unsafe. Do not return
+    // early: other lazy sources may still need snapshots before this write.
+    for (auto it = active_elementwise_sources_.begin(); it != active_elementwise_sources_.end(); )
+    {
+        std::shared_ptr<ElementwiseSourceState> source = it->lock();
+
+        // The registry is non-owning. Remove relations with no metadata owner,
+        // and relations already made unavailable by another shared copy.
+        if (!source || source->kind == ElementwiseSourceStorageKind::Unavailable)
+        {
+            it = active_elementwise_sources_.erase(it);
+            continue;
+        }
+
+        // Unknown write geometry may overlap any active source.
+        if (write.kind == ExternalWriteFootprint::Kind::Unknown)
+        {
+            InvalidateElementwiseSourceState(*source);
+            it = active_elementwise_sources_.erase(it);
+            continue;
+        }
+
+        // A disjoint write cannot change this source's load-time bytes.
+        if (!ActualElementBytesOverlap(source->slots, write.span))
+        {
+            ++it;
+            continue;
+        }
+
+        // An overlapping write is safe only with the exact same slot mapping.
+        if (source->slots != write.span)
+        {
+            InvalidateElementwiseSourceState(*source);
+            it = active_elementwise_sources_.erase(it);
+            continue;
+        }
+
+        if (source->kind == ElementwiseSourceStorageKind::LazyHostShadow && !MaterializeElementwiseSource(*source))
+        {
+            // No compressed consumer may use a partially or unsuccessfully
+            // preserved load-time value.
+            InvalidateElementwiseSourceState(*source);
+            it = active_elementwise_sources_.erase(it);
+            continue;
+        }
+
+        // Keep packed sources registered: a later non-exact overlapping write
+        // must still invalidate them rather than consume a race-masking copy.
+        ++it;
+    }
+
+    // A full scan may have removed many stale or unsafe entries; keep the
+    // amortized compaction threshold proportional to the remaining registry.
+    RecomputeElementwiseSourceCompactionThreshold();
+}
+
+SPIRVSimulator::CompressedOperationResult SPIRVSimulator::TryCompressedElementwiseExternalStore(uint32_t pointer_id, uint32_t object_id)
+{
+    const StridedElementSpan& destination = value_meta_[pointer_id].strided_element_span;
+    const std::shared_ptr<ElementwiseSourceState>& source = value_meta_[object_id].elementwise_relation.source;
+
+    if (!source || !destination.valid)
+    {
+        return CompressedOperationResult::NotApplicable;
+    }
+    if (source->kind == ElementwiseSourceStorageKind::Unavailable)
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+    if (destination.count != source->slots.count ||
+        destination.element_size != source->slots.element_size)
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    const bool exact_same_slot_mapping = source->slots == destination;
+    if (!exact_same_slot_mapping && ActualElementBytesOverlap(source->slots, destination))
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    uint64_t packed_size = 0;
+    if (!CheckedMulU64(destination.count, destination.element_size, packed_size))
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    std::vector<std::byte> gathered_source;
+    const std::byte*       packed_source = nullptr;
+    if (source->kind == ElementwiseSourceStorageKind::PackedSnapshot)
+    {
+        if (source->packed_snapshot.size() != packed_size)
+        {
+            return CompressedOperationResult::Incomplete;
+        }
+        packed_source = source->packed_snapshot.data();
+    }
+    else
+    {
+        if (source->kind != ElementwiseSourceStorageKind::LazyHostShadow)
+        {
+            return CompressedOperationResult::Incomplete;
+        }
+
+        // packed_size comes from uint64_t metadata arithmetic rather than a
+        // container size, so validate its representability before resize().
+        if (!ResizeChecked(gathered_source, packed_size))
+        {
+            return CompressedOperationResult::Incomplete;
+        }
+
+        // Gather the complete source sequence before scattering. This both
+        // preserves canonical invocation order and prevents host-copy
+        // self-clobber if future eligibility rules admit more alias patterns.
+        for (uint64_t i = 0; i < source->slots.count; ++i)
+        {
+            uint64_t source_address = 0;
+            (void)TryGetSpanElementAddress(source->slots, i, source_address);
+
+            const uint64_t packed_offset = i * source->slots.element_size;
+            std::memcpy(gathered_source.data() + static_cast<size_t>(packed_offset),
+                        bit_cast<const std::byte*>(source_address),
+                        static_cast<size_t>(source->slots.element_size));
+        }
+        packed_source = gathered_source.data();
+    }
+
+    for (uint64_t i = 0; i < destination.count; ++i)
+    {
+        uint64_t destination_address = 0;
+        (void)TryGetSpanElementAddress(destination, i, destination_address);
+
+        const uint64_t packed_offset = i * destination.element_size;
+        std::memcpy(bit_cast<std::byte*>(destination_address),
+                    packed_source + static_cast<size_t>(packed_offset),
+                    static_cast<size_t>(destination.element_size));
+    }
+
+    return CompressedOperationResult::Complete;
+}
+
+SPIRVSimulator::CompressedOperationResult SPIRVSimulator::TryCompressedFixedValueExternalStore(
+    uint32_t pointer_id,
+    uint32_t object_id)
+{
+    const StridedElementSpan& destination = value_meta_[pointer_id].strided_element_span;
+    const ValueMetadata&      object_meta = value_meta_[object_id];
+
+    // A destination without a canonical invocation-to-slot mapping is not a
+    // compressed-store consumer. Likewise, a value without a whole-object
+    // invariant proof does not belong to the fixed broadcast mode.
+    if (!destination.valid ||
+        object_meta.invocation_dependence != InvocationDependence::Invariant)
+    {
+        return CompressedOperationResult::NotApplicable;
+    }
+
+    // Once the fixed relation and destination mapping are both present, any
+    // unsupported or inconsistent state requires the ordinary full-dispatch
+    // fallback rather than a representative-only broadcast.
+    if ((object_meta.flags & (SPS_FLAG_IS_ARBITRARY | SPS_FLAG_UNINITIALIZED)) != 0)
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    const uint32_t object_type_id = GetTypeID(object_id);
+    const Type&    object_type    = GetTypeByTypeId(object_type_id);
+
+    bool supported_type = object_type.kind == Type::Kind::Int ||
+                          object_type.kind == Type::Kind::Float;
+    if (object_type.kind == Type::Kind::Vector)
+    {
+        const Type& component_type = GetTypeByTypeId(object_type.vector.elem_type_id);
+        supported_type = component_type.kind == Type::Kind::Int ||
+                         component_type.kind == Type::Kind::Float;
+    }
+    if (!supported_type)
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    std::vector<std::byte> packed_value;
+    if (!ResizeChecked(packed_value, destination.element_size))
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+    WriteValue(packed_value.data(), object_type_id, GetValue(object_id));
+
+    for (uint64_t i = 0; i < destination.count; ++i)
+    {
+        uint64_t destination_address = 0;
+        (void)TryGetSpanElementAddress(destination, i, destination_address);
+
+        std::memcpy(bit_cast<std::byte*>(destination_address),
+                    packed_value.data(),
+                    static_cast<size_t>(destination.element_size));
+    }
+
+    return CompressedOperationResult::Complete;
+}
+
+SPIRVSimulator::CompressedOperationResult SPIRVSimulator::TryPublishElementwisePhysicalAddressResult(
+    uint32_t operand_id,
+    uint64_t expected_element_size)
+{
+    const ValueMetadata& operand_meta = value_meta_[operand_id];
+    const ElementwiseRelationMetadata& relation = operand_meta.elementwise_relation;
+    const std::shared_ptr<ElementwiseSourceState>& source = relation.source;
+
+    if (!source)
+    {
+        // No complete source exists for this operand. The caller separately
+        // decides whether other metadata still proves incomplete coverage.
+        return CompressedOperationResult::NotApplicable;
+    }
+
+    // Publishing the complete invocation-ordered pointer values depends only
+    // on the elementwise source. A class view is optional persistent metadata
+    // and is promoted independently below.
+    if (expected_element_size == 0 || !source->slots.valid ||
+        source->kind == ElementwiseSourceStorageKind::Unavailable ||
+        source->slots.element_size != expected_element_size)
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    PhysicalAddressData physical_address_data;
+    physical_address_data.raw_pointer_value = 0;
+    physical_address_data.physical_address_range.emplace();
+    const MemoryFlagTracker::UniformDerivedClassView& view = relation.uniform_derived_class_view;
+    if (view.valid() &&
+        source->slots.count == view.elementCount() &&
+        source->slots.element_size == view.elementSize())
+    {
+        physical_address_data.physical_address_range->class_id = view.classId();
+    }
+    physical_address_data.physical_address_range->elementwise_source = source;
+    simulation_results_->physical_address_data.push_back(std::move(physical_address_data));
+    return CompressedOperationResult::Complete;
+}
+
+SPIRVSimulator::CompressedOperationResult SPIRVSimulator::MaybePromoteUniformDerivedPointerView(
+    uint32_t operand_id,
+    uint64_t expected_element_size)
+{
+    const ElementwiseRelationMetadata& relation = value_meta_[operand_id].elementwise_relation;
+    const MemoryFlagTracker::UniformDerivedClassView& view = relation.uniform_derived_class_view;
+
+    if (!view.valid())
+    {
+        return CompressedOperationResult::NotApplicable;
+    }
+
+    // Promotion is a persistent class operation. It depends on the view's
+    // pointer-width geometry, not on whether an elementwise source can be
+    // published for this particular result.
+    if (expected_element_size == 0 || view.elementSize() != expected_element_size)
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    if (!memory_flag_tracker_ ||
+        !memory_flag_tracker_->promoteUniformDerivedClassView(view, SPS_FLAG_IS_PBUFFER_PTR))
+    {
+        return CompressedOperationResult::Incomplete;
+    }
+
+    return CompressedOperationResult::Complete;
+}
+
+bool SPIRVSimulator::HasKnownMultiInvocationCoverage(const ValueMetadata& metadata) const
+{
+    const std::shared_ptr<ElementwiseSourceState>& source = metadata.elementwise_relation.source;
+
+    if (source && (!source->slots.valid || source->slots.count > 1))
+    {
+        return true;
+    }
+
+    if (metadata.strided_element_span.valid && metadata.strided_element_span.count > 1)
+    {
+        return true;
+    }
+
+    if (metadata.invocation_dependence == InvocationDependence::Varying)
+    {
+        return true;
+    }
+
+    // Preserve the legacy thread-specific signal only when tri-state metadata
+    // has no stronger conclusion. An Invariant proof must not be overridden by
+    // a conservatively accumulated legacy flag.
+    return metadata.invocation_dependence == InvocationDependence::Unknown &&
+           (metadata.flags & SPS_FLAG_THREAD_SPECIFIC) != 0;
+}
+
+void SPIRVSimulator::HandleElementwisePhysicalAddressResult(uint32_t operand_id, uint64_t expected_element_size)
+{
+    const CompressedOperationResult publish_result =
+        TryPublishElementwisePhysicalAddressResult(operand_id, expected_element_size);
+    const CompressedOperationResult promotion_result =
+        MaybePromoteUniformDerivedPointerView(operand_id, expected_element_size);
+
+    if (publish_result == CompressedOperationResult::Incomplete ||
+        (publish_result == CompressedOperationResult::NotApplicable &&
+         HasKnownMultiInvocationCoverage(value_meta_[operand_id])) ||
+        promotion_result == CompressedOperationResult::Incomplete)
+    {
+        simulation_results_->read_side_pointer_coverage_incomplete = true;
+    }
+}
+
 bool SPIRVSimulator::TrySetDenseAccessChainAddressRange(
     const Instruction&              instruction,
     const PointerV&                 result_pointer,
@@ -6740,6 +8005,7 @@ bool SPIRVSimulator::TrySetDenseAccessChainAddressRange(
     out_meta.address_range_max     = 0;
     out_meta.address_range_stride  = 1;
     out_meta.address_element_size  = 0;
+    out_meta.strided_element_span  = {};
 
     if (instruction.word_count <= 4 || result_type.kind != Type::Kind::Pointer)
     {
@@ -6871,6 +8137,22 @@ bool SPIRVSimulator::TrySetDenseAccessChainAddressRange(
     {
         *out_dynamic_index_selection = dynamic_index;
     }
+
+    // When complete dispatch geometry is available, try to publish the pointer
+    // slots in canonical invocation order without affecting the address range.
+    if (simulation_data_ != nullptr &&
+        simulation_data_->has_compute_num_workgroups &&
+        active_compute_local_size_.valid)
+    {
+        const std::optional<CanonicalInvocationSequence> sequence =
+            TryCollapseToCanonicalInvocationSequence(dynamic_index.dynamic_index_range,
+                                                     simulation_data_->compute_num_workgroups,
+                                                     active_compute_local_size_);
+        if (sequence.has_value() && sequence->one_to_one)
+        {
+            (void)TrySetCanonicalStridedElementSpan(result_id, *sequence);
+        }
+    }
     return true;
 }
 
@@ -6942,28 +8224,6 @@ bool SPIRVSimulator::TryQueueDenseReadSidePbufferPointers(
     pointers_to_physical_address_pointers_.insert(
         pointers_to_physical_address_pointers_.end(), pending_pairs.begin(), pending_pairs.end());
     return true;
-}
-
-void SPIRVSimulator::PromoteUniformDerivedRangeForPointerValue(uint64_t source_addr, uint64_t element_size)
-{
-    if (!memory_flag_tracker_ || source_addr == 0 || element_size == 0)
-    {
-        return;
-    }
-
-    auto promoted = memory_flag_tracker_->promoteUniformDerivedRangeContaining(source_addr, element_size, SPS_FLAG_IS_PBUFFER_PTR);
-    if (!promoted)
-    {
-        return;
-    }
-
-    PhysicalAddressData range_data;
-    range_data.raw_pointer_value = 0;
-    range_data.range_valid = true;
-    range_data.range_start = promoted->start;
-    range_data.range_end = promoted->end;
-    range_data.range_element_size = promoted->element_size;
-    simulation_results_->physical_address_data.push_back(std::move(range_data));
 }
 
 void SPIRVSimulator::InvalidateDataSourceTraceCache()
@@ -11580,6 +12840,49 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
         SetValue(result_id, *pointee_value);
     }
 
+    if (!is_compute_builtin_load &&
+        (pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
+         pointer.storage_class == spv::StorageClass::StorageClassUniform ||
+         pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
+         pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
+         pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer))
+    {
+        ValueMetadata& result_meta = value_meta_[result_id];
+        result_meta.elementwise_relation = {};
+
+        // Address dependence is independent of whether the optional
+        // elementwise source allocation and class lookup below succeed.
+        FinalizeExternalLoadInvocationDependence(result_id, pointer_id);
+
+        const StridedElementSpan& load_slots = value_meta_[pointer_id].strided_element_span;
+        if (load_slots.valid)
+        {
+            // AccessChain already proved the whole-element layout, backing, and bounds represented by this span.
+            if (TryCreateLazyElementwiseSource(result_id, load_slots))
+            {
+                if (memory_flag_tracker_ != nullptr)
+                {
+                    const StridedElementSpan& source_slots = result_meta.elementwise_relation.source->slots;
+                    const auto class_view = memory_flag_tracker_->queryUniformDerivedClassView(
+                        source_slots.first_address,
+                        source_slots.byte_stride,
+                        source_slots.count,
+                        source_slots.element_size);
+                    if (class_view)
+                    {
+                        result_meta.elementwise_relation.uniform_derived_class_view = *class_view;
+                        SetFlags(result_id, memory_flag_tracker_->query(*class_view));
+                    }
+                }
+            }
+            else
+            {
+                // Concrete execution remains valid when the optional full-dispatch relation cannot be allocated.
+                result_meta.elementwise_relation = {};
+            }
+        }
+    }
+
     // Restore non-flag metadata from the most recent internal-memory store in
     // the current representative execution, projecting aggregate metadata
     // when this load selects a stored subobject.
@@ -11609,9 +12912,23 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
                     meta.invocation_dependence = store_record.stored_meta.invocation_dependence;
                     meta.component_invocation_dependence = store_record.stored_meta.component_invocation_dependence;
                     meta.subobject_invocation_dependence = store_record.stored_meta.subobject_invocation_dependence;
+
+                    // Function and Private storage preserve the same
+                    // invocation-to-value mapping for an exact whole-object
+                    // store/load pair. Shared storage classes require a
+                    // writer/reader mapping proof and remain unsupported.
+                    if (pointer.storage_class == spv::StorageClass::StorageClassFunction ||
+                        pointer.storage_class == spv::StorageClass::StorageClassPrivate)
+                    {
+                        meta.strided_element_span = store_record.stored_meta.strided_element_span;
+                        meta.elementwise_relation = store_record.stored_meta.elementwise_relation;
+                    }
                 }
                 else
                 {
+                    // TODO: Support Function/Private subobject sources by projecting stored_meta.elementwise_relation
+                    // through this suffix_path with TryProjectAggregateSubobjectElementwiseSource(). The existing
+                    // range and invocation-dependence projections below do not establish an ElementwiseSource.
                     TryProjectAggregateSubobjectValueRange(result_id,
                                                            store_record.stored_meta.component_ranges,
                                                            store_record.stored_meta.subobject_scalar_ranges,
@@ -11640,11 +12957,6 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
             {
                 SetHoldsPbufferPtr(result_id);
             }
-            auto uniform_range = memory_flag_tracker_->queryUniformDerivedRange(source_addr);
-            if (uniform_range)
-            {
-                SetFlags(result_id, uniform_range->flags | uniform_range->promoted_flags);
-            }
         }
     }
 
@@ -11655,20 +12967,6 @@ void SPIRVSimulator::Op_Load(const Instruction& instruction)
     }
 
     TransferFlagsFromPointee(result_id, pointer);
-
-    // External memory has no authoritative reaching-store snapshot. A
-    // varying load address is nevertheless sufficient to conservatively mark
-    // the loaded whole value as varying. Internal memory and compute builtins
-    // keep their dedicated metadata producers above.
-    if (!is_compute_builtin_load &&
-        (pointer.storage_class == spv::StorageClass::StorageClassPushConstant ||
-         pointer.storage_class == spv::StorageClass::StorageClassUniform ||
-         pointer.storage_class == spv::StorageClass::StorageClassUniformConstant ||
-         pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
-         pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer))
-    {
-        PropagateExternalLoadInvocationDependence(result_id, pointer_id);
-    }
 }
 
 void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
@@ -11696,6 +12994,8 @@ void SPIRVSimulator::Op_CopyObject(const Instruction& instruction)
     TransferFlags(result_id, object_id);
     CopyNonFlagValueMetadata(result_id, object_id);
     CopyInvocationDependenceMetadata(result_id, object_id);
+    CopyWholeObjectStridedElementSpan(result_id, object_id);
+    CopyWholeObjectElementwiseRelation(result_id, object_id);
 
     bool changed_trace_state = false;
     auto stored_it = values_stored_.find(object_id);
@@ -11739,6 +13039,8 @@ void SPIRVSimulator::Op_CopyLogical(const Instruction& instruction)
     TransferFlags(result_id, object_id);
     CopyNonFlagValueMetadata(result_id, object_id);
     CopyInvocationDependenceMetadata(result_id, object_id);
+    CopyWholeObjectStridedElementSpan(result_id, object_id);
+    CopyWholeObjectElementwiseRelation(result_id, object_id);
 
     bool changed_trace_state = false;
     auto stored_it = values_stored_.find(object_id);
@@ -11870,7 +13172,74 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         }
     }
 
-    if (!WritePointer(pointer, GetValue(result_id)))
+    const bool can_write_pointer = !(is_execution_fork && (pointer.pointee_flags & SPS_FLAG_HAS_NEGATIVE_INDEX)) &&
+                                   pointer.pointer_handle != 0;
+
+    bool is_legacy_storage_buffer = false;
+    if (pointer.storage_class == spv::StorageClass::StorageClassUniform)
+    {
+        const Type& base_pointer_type = GetTypeByTypeId(pointer.base_type_id);
+        if (base_pointer_type.kind == Type::Kind::Pointer)
+        {
+            const uint32_t root_type_id = base_pointer_type.pointer.pointee_type_id;
+            const Type&    root_type    = GetTypeByTypeId(root_type_id);
+            is_legacy_storage_buffer = root_type.kind == Type::Kind::Struct &&
+                                       HasDecorator(root_type_id, spv::Decoration::DecorationBufferBlock);
+        }
+    }
+
+    const bool is_external_linear_store = pointer.storage_class == spv::StorageClass::StorageClassStorageBuffer ||
+                                          pointer.storage_class == spv::StorageClass::StorageClassPhysicalStorageBuffer ||
+                                          is_legacy_storage_buffer;
+    bool compressed_writeback_done = false;
+    if (is_external_linear_store && can_write_pointer)
+    {
+        if (!active_elementwise_sources_.empty() ||
+            (memory_flag_tracker_ && memory_flag_tracker_->hasActiveUniformDerivedClasses()))
+        {
+            // Build the destination geometry once for both pre-write registries.
+            const ExternalWriteFootprint footprint = BuildExternalWriteFootprint(pointer_id, pointer);
+
+            // Preserve or invalidate load-time sources before byte mutation.
+            PrepareElementwiseSourcesBeforeExternalWrite(footprint);
+
+            // Retire persistent classifications invalidated by this write.
+            InvalidateUniformDerivedClasses(footprint);
+        }
+
+        CompressedOperationResult compressed_result = TryCompressedElementwiseExternalStore(pointer_id, result_id);
+        if (compressed_result == CompressedOperationResult::NotApplicable)
+        {
+            compressed_result = TryCompressedFixedValueExternalStore(pointer_id, result_id);
+        }
+
+        switch (compressed_result)
+        {
+            case CompressedOperationResult::Complete:
+                compressed_writeback_done = true;
+                break;
+            case CompressedOperationResult::NotApplicable:
+                // Neither compressed mode applies. If metadata still proves
+                // that the object or destination covers multiple invocations,
+                // the representative write cannot provide complete coverage.
+                if (CanWriteValueTypeCarryHandlePayload(GetTypeByTypeId(GetTypeID(result_id))) &&
+                    (HasKnownMultiInvocationCoverage(value_meta_[result_id]) ||
+                     HasKnownMultiInvocationCoverage(value_meta_[pointer_id])))
+                {
+                    simulation_results_->full_dispatch_needed = true;
+                }
+                break;
+            case CompressedOperationResult::Incomplete:
+                // An applicable compressed mode could not reconstruct this store safely.
+                // Map the shared Incomplete outcome to this write-side caller's
+                // full-dispatch fallback. Pointer promotion maps the same outcome
+                // to read_side_pointer_coverage_incomplete instead.
+                simulation_results_->full_dispatch_needed = true;
+                break;
+        }
+    }
+
+    if (!compressed_writeback_done && !WritePointer(pointer, GetValue(result_id)))
     {
         return;
     }
@@ -11930,40 +13299,19 @@ void SPIRVSimulator::Op_Store(const Instruction& instruction)
         std::cout << "Memory tracking skipped for result with id: " << result_id << " writeout to pointer with handle: " << pointer.pointer_handle << " due to incompatible data chain." << std::endl;
     }
 
-    // Only externally visible linear-memory stores should trigger dense-range
-    // writeback tracking or fall back to a full dispatch.
-    const bool should_track_dense_store_fallback =
-        pointer.storage_class != spv::StorageClass::StorageClassFunction &&
-        pointer.storage_class != spv::StorageClass::StorageClassPrivate &&
-        pointer.storage_class != spv::StorageClass::StorageClassWorkgroup &&
-        pointer.storage_class != spv::StorageClass::StorageClassTaskPayloadWorkgroupEXT &&
-        pointer.storage_class != spv::StorageClass::StorageClassImage;
-    const bool has_varying_invocation_dependence =
-        value_meta_[result_id].invocation_dependence == InvocationDependence::Varying ||
-        value_meta_[pointer_id].invocation_dependence == InvocationDependence::Varying;
-    // Preserve the legacy thread-specific signal only as a fallback for values
-    // whose tri-state invocation dependence has not yet been classified.
-    const bool has_legacy_thread_specific_flag =
-        (value_meta_[result_id].invocation_dependence == InvocationDependence::Unknown &&
-         (value_meta_[result_id].flags & SPS_FLAG_THREAD_SPECIFIC) != 0) ||
-        (value_meta_[pointer_id].invocation_dependence == InvocationDependence::Unknown &&
-         (value_meta_[pointer_id].flags & SPS_FLAG_THREAD_SPECIFIC) != 0);
-    if (memory_flag_tracker_ && should_track_dense_store_fallback &&
-        (has_varying_invocation_dependence || has_legacy_thread_specific_flag) &&
-        CanWriteValueTypeCarryHandlePayload(GetTypeByResultId(result_id)))
+    if (compressed_writeback_done &&
+        memory_flag_tracker_ &&
+        CanWriteValueTypeCarryHandlePayload(GetTypeByTypeId(GetTypeID(result_id))))
     {
-        uint64_t dense_dst_start = 0;
-        uint64_t dense_byte_size = 0;
-        uint64_t dense_element_size = 0;
-        if (TryGetDenseStoreRange(pointer, pointer_id, result_id, dense_dst_start, dense_byte_size, dense_element_size))
-        {
-            memory_flag_tracker_->markUniformDerivedRange(
-                dense_dst_start,
-                dense_byte_size,
-                dense_element_size,
-                value_meta_[result_id].flags | SPS_FLAG_UNIFORM_DERIVED_RANGE);
-        }
-        else
+        const StridedElementSpan& destination = value_meta_[pointer_id].strided_element_span;
+        assertmc(destination.valid, "Completed compressed store has no valid destination span");
+
+        if (!memory_flag_tracker_->markUniformDerivedClass(
+                destination.first_address,
+                destination.byte_stride,
+                destination.count,
+                destination.element_size,
+                value_meta_[result_id].flags | SPS_FLAG_UNIFORM_DERIVED_RANGE))
         {
             simulation_results_->full_dispatch_needed = true;
         }
@@ -15261,6 +16609,9 @@ void SPIRVSimulator::Op_CompositeExtract(const Instruction& instruction)
                                                composite_meta.subobject_scalar_ranges,
                                                selected_path);
         ProjectAggregateSubobjectInvocationDependence(result_id, composite_meta, selected_path);
+        // TODO: Support direct SSA component sources by projecting composite_meta.elementwise_relation through this
+        // selected_path with TryProjectAggregateSubobjectElementwiseSource(). The projections above currently cover
+        // only range and invocation dependence.
     }
 
     TransferFlags(result_id, instruction.words[3]);
@@ -15575,14 +16926,7 @@ void SPIRVSimulator::Op_Bitcast(const Instruction& instruction)
         pointer_data.bit_components    = FindDataSourcesFromResultID(operand_id);
         pointer_data.raw_pointer_value = pointer_value;
         simulation_results_->physical_address_data.push_back(std::move(pointer_data));
-        {
-            std::vector<DataSourceBits> source_bits = FindDataSourcesFromResultID(operand_id);
-            for (const DataSourceBits& source : source_bits)
-            {
-                uint64_t source_addr = bit_cast<uint64_t>(source.source_ptr) + source.byte_offset + source.bit_offset / 8;
-                PromoteUniformDerivedRangeForPointerValue(source_addr, 8);
-            }
-        }
+        HandleElementwisePhysicalAddressResult(operand_id, sizeof(uint64_t));
         holds_pbuffer_ptr = true;
     }
     else
@@ -15783,18 +17127,15 @@ void SPIRVSimulator::Op_ConvertUToPtr(const Instruction& instruction)
     pointer_data.bit_components    = FindDataSourcesFromResultID(integer_id);
     pointer_data.raw_pointer_value = pointer_value;
     simulation_results_->physical_address_data.push_back(std::move(pointer_data));
-    {
-        std::vector<DataSourceBits> source_bits = FindDataSourcesFromResultID(integer_id);
-        for (const DataSourceBits& source : source_bits)
-        {
-            uint64_t source_addr = bit_cast<uint64_t>(source.source_ptr) + source.byte_offset + source.bit_offset / 8;
-            PromoteUniformDerivedRangeForPointerValue(source_addr, 8);
-        }
-    }
+    HandleElementwisePhysicalAddressResult(integer_id, sizeof(uint64_t));
 
     TransferFlags(result_id, integer_id);
     CopyInvocationDependenceMetadata(result_id, integer_id);
     SetHoldsPbufferPtr(result_id);
+    if (GetIntegerWidthByResultId(integer_id) == 64)
+    {
+        SetHoldsPbufferPtr(integer_id);
+    }
 }
 
 void SPIRVSimulator::Op_UDiv(const Instruction& instruction)

@@ -32,6 +32,35 @@
 
 using namespace testing;
 
+inline SPIRVSimulator::InvocationLinearizationInfo MakeTestInvocationAffine(
+    int64_t origin,
+    int64_t coefficient,
+    uint8_t workgroup_mask,
+    uint8_t local_mask)
+{
+    SPIRVSimulator::InvocationLinearizationInfo affine = {};
+    if (workgroup_mask == 0 && local_mask == 0)
+    {
+        return affine;
+    }
+
+    affine.valid = true;
+    affine.value_at_dispatch_origin = origin;
+    for (uint32_t axis = 0; axis < 3; ++axis)
+    {
+        const uint8_t axis_bit = static_cast<uint8_t>(1u << axis);
+        if ((workgroup_mask & axis_bit) != 0)
+        {
+            affine.workgroup_coefficients[axis] = coefficient;
+        }
+        if ((local_mask & axis_bit) != 0)
+        {
+            affine.local_coefficients[axis] = coefficient;
+        }
+    }
+    return affine;
+}
+
 std::string opcode_to_string(spv::Op opcode);
 
 std::ostream& operator<<(std::ostream& os, SPIRVSimulator::Value const& v);

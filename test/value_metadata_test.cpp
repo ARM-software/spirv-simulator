@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,8 +25,9 @@ class ComputeBuiltinProvenanceTests : public ::SPIRVSimulator::SPIRVSimulator,
     {
         uint64_t min;
         uint64_t max;
-        uint8_t  workgroup_mask;
-        uint8_t  local_mask;
+        int64_t origin;
+        std::array<int64_t, 3> workgroup_coefficients;
+        std::array<int64_t, 3> local_coefficients;
     };
 
     static constexpr uint32_t kBuiltinVariableId = 1;
@@ -81,10 +83,13 @@ class ComputeBuiltinProvenanceTests : public ::SPIRVSimulator::SPIRVSimulator,
         EXPECT_EQ(range.min, expected.min);
         EXPECT_EQ(range.max, expected.max);
         EXPECT_EQ(range.stride, 1u);
-        EXPECT_EQ(range.invocation_linearization.workgroup_id_component_mask,
-                  expected.workgroup_mask);
-        EXPECT_EQ(range.invocation_linearization.local_invocation_id_component_mask,
-                  expected.local_mask);
+        EXPECT_TRUE(range.invocation_linearization.valid);
+        EXPECT_EQ(range.invocation_linearization.value_at_dispatch_origin,
+                  expected.origin);
+        EXPECT_EQ(range.invocation_linearization.workgroup_coefficients,
+                  expected.workgroup_coefficients);
+        EXPECT_EQ(range.invocation_linearization.local_coefficients,
+                  expected.local_coefficients);
     }
 
     void ExpectVectorAndScalarComponentRanges(
@@ -107,12 +112,7 @@ class ComputeBuiltinProvenanceTests : public ::SPIRVSimulator::SPIRVSimulator,
             ExpectRange(vector_meta.component_ranges[component],
                         expected_ranges[component]);
         }
-        EXPECT_EQ(
-            vector_meta.value_range.invocation_linearization.workgroup_id_component_mask,
-            0u);
-        EXPECT_EQ(
-            vector_meta.value_range.invocation_linearization.local_invocation_id_component_mask,
-            0u);
+        EXPECT_FALSE(vector_meta.value_range.invocation_linearization.valid);
 
         for (uint32_t component = 0; component < expected_ranges.size(); ++component)
         {
@@ -139,9 +139,9 @@ TEST_F(ComputeBuiltinProvenanceTests,
     ExpectVectorAndScalarComponentRanges(
         spv::BuiltIn::BuiltInWorkgroupId,
         {
-            ExpectedRange{ 2, 6, ::SPIRVSimulator::kInvocationComponentX, 0 },
-            ExpectedRange{ 3, 9, ::SPIRVSimulator::kInvocationComponentY, 0 },
-            ExpectedRange{ 4, 14, ::SPIRVSimulator::kInvocationComponentZ, 0 },
+            ExpectedRange{ 2, 6, 2, { 1, 0, 0 }, { 0, 0, 0 } },
+            ExpectedRange{ 3, 9, 3, { 0, 1, 0 }, { 0, 0, 0 } },
+            ExpectedRange{ 4, 14, 4, { 0, 0, 1 }, { 0, 0, 0 } },
         });
 }
 
@@ -151,9 +151,9 @@ TEST_F(ComputeBuiltinProvenanceTests,
     ExpectVectorAndScalarComponentRanges(
         spv::BuiltIn::BuiltInLocalInvocationId,
         {
-            ExpectedRange{ 0, 3, 0, ::SPIRVSimulator::kInvocationComponentX },
-            ExpectedRange{ 0, 5, 0, ::SPIRVSimulator::kInvocationComponentY },
-            ExpectedRange{ 0, 7, 0, ::SPIRVSimulator::kInvocationComponentZ },
+            ExpectedRange{ 0, 3, 0, { 0, 0, 0 }, { 1, 0, 0 } },
+            ExpectedRange{ 0, 5, 0, { 0, 0, 0 }, { 0, 1, 0 } },
+            ExpectedRange{ 0, 7, 0, { 0, 0, 0 }, { 0, 0, 1 } },
         });
 }
 
@@ -163,18 +163,9 @@ TEST_F(ComputeBuiltinProvenanceTests,
     ExpectVectorAndScalarComponentRanges(
         spv::BuiltIn::BuiltInGlobalInvocationId,
         {
-            ExpectedRange{ 8,
-                           27,
-                           ::SPIRVSimulator::kInvocationComponentX,
-                           ::SPIRVSimulator::kInvocationComponentX },
-            ExpectedRange{ 18,
-                           59,
-                           ::SPIRVSimulator::kInvocationComponentY,
-                           ::SPIRVSimulator::kInvocationComponentY },
-            ExpectedRange{ 32,
-                           119,
-                           ::SPIRVSimulator::kInvocationComponentZ,
-                           ::SPIRVSimulator::kInvocationComponentZ },
+            ExpectedRange{ 8, 27, 8, { 4, 0, 0 }, { 1, 0, 0 } },
+            ExpectedRange{ 18, 59, 18, { 0, 6, 0 }, { 0, 1, 0 } },
+            ExpectedRange{ 32, 119, 32, { 0, 0, 8 }, { 0, 0, 1 } },
         });
 }
 
@@ -185,16 +176,56 @@ TEST_F(ComputeBuiltinProvenanceTests,
                                CommonTypes::u32));
     ExpectRange(
         value_meta_[kResultId].value_range,
-        ExpectedRange{ 0,
-                       191,
-                       0,
-                       ::SPIRVSimulator::kInvocationComponentX |
-                           ::SPIRVSimulator::kInvocationComponentY |
-                           ::SPIRVSimulator::kInvocationComponentZ });
+        ExpectedRange{ 0, 191, 0, { 0, 0, 0 }, { 1, 4, 24 } });
     EXPECT_EQ(value_meta_[kResultId].invocation_dependence,
               ::SPIRVSimulator::InvocationDependence::Varying);
     EXPECT_TRUE(value_meta_[kResultId].component_invocation_dependence.empty());
     EXPECT_TRUE(value_meta_[kResultId].subobject_invocation_dependence.empty());
+}
+
+TEST_F(ComputeBuiltinProvenanceTests,
+       GlobalInvocationIdOutsideSignedAffineDomainKeepsNumericRange)
+{
+    input_data_.compute_num_workgroups.x = 1;
+    input_data_.base_workgroups.x = uint64_t{ 1 } << 62;
+    active_compute_local_size_.x = 2;
+
+    ASSERT_TRUE(ProduceBuiltin(spv::BuiltIn::BuiltInGlobalInvocationId,
+                               CommonTypes::u32,
+                               { 0 }));
+
+    const ::SPIRVSimulator::DenseValueRangeInfo& range =
+        value_meta_[kResultId].value_range;
+    EXPECT_TRUE(range.valid);
+    EXPECT_TRUE(range.thread_dependent);
+    EXPECT_TRUE(range.dense_range);
+    EXPECT_EQ(range.min, uint64_t{ 1 } << 63);
+    EXPECT_EQ(range.max, (uint64_t{ 1 } << 63) + 1);
+    EXPECT_FALSE(range.invocation_linearization.valid);
+}
+
+TEST_F(ComputeBuiltinProvenanceTests,
+       LocalInvocationIndexCoefficientOutsideSignedAffineDomainKeepsNumericRange)
+{
+    active_compute_local_size_ = {
+        uint64_t{ 1 } << 32,
+        uint64_t{ 1 } << 31,
+        1,
+        true,
+    };
+
+    ASSERT_TRUE(ProduceBuiltin(spv::BuiltIn::BuiltInLocalInvocationIndex,
+                               CommonTypes::u32));
+
+    const ::SPIRVSimulator::DenseValueRangeInfo& range =
+        value_meta_[kResultId].value_range;
+    EXPECT_TRUE(range.valid);
+    EXPECT_TRUE(range.thread_dependent);
+    EXPECT_TRUE(range.dense_range);
+    EXPECT_EQ(range.min, 0u);
+    EXPECT_EQ(range.max,
+              static_cast<uint64_t>(std::numeric_limits<int64_t>::max()));
+    EXPECT_FALSE(range.invocation_linearization.valid);
 }
 
 TEST_F(ComputeBuiltinProvenanceTests,
@@ -460,9 +491,10 @@ class CopyInvocationDependenceTests : public SPIRVSimulatorMockBase,
         uint32_t              source_id;
     };
 
+    template <TypeT T>
     PreparedCopy PrepareCopy(const ::SPIRVSimulator::Value& result_value,
                              const ::SPIRVSimulator::Value& source_value,
-                             CommonTypes                    type)
+                             T                              type)
     {
         TestParameters parameters =
             TestParametersBuilder()
@@ -608,6 +640,35 @@ TEST_P(CopyInvocationDependenceTests, EmptySourceClearsStaleTargetMetadata)
               ::SPIRVSimulator::InvocationDependence::Unknown);
     EXPECT_TRUE(result_meta.component_invocation_dependence.empty());
     EXPECT_TRUE(result_meta.subobject_invocation_dependence.empty());
+}
+
+TEST_P(CopyInvocationDependenceTests, CopiesWholeObjectStridedElementSpan)
+{
+    const ::SPIRVSimulator::Type pointer_type = ::SPIRVSimulator::Type::Pointer(
+        spv::StorageClassPhysicalStorageBuffer,
+        CommonTypes::u64);
+    const ::SPIRVSimulator::PointerV pointer = {
+        0x1000,
+        0,
+        0,
+        0,
+        spv::StorageClassPhysicalStorageBuffer,
+        {},
+    };
+    const PreparedCopy copy = PrepareCopy(pointer, pointer, pointer_type);
+
+    const ::SPIRVSimulator::StridedElementSpan source_span = {
+        true,
+        0x2000,
+        -16,
+        8,
+        sizeof(uint64_t),
+    };
+    value_meta_[copy.source_id].strided_element_span = source_span;
+
+    ExecuteCopy(copy);
+
+    EXPECT_EQ(value_meta_[copy.result_id].strided_element_span, source_span);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -898,6 +959,9 @@ class ConvertUToPtrInvocationDependenceTests : public SPIRVSimulatorMockBase,
         EXPECT_CALL(*this,
                     TransferFlags(kResultId, TypedEq<uint32_t>(kIntegerId)))
             .Times(3);
+        EXPECT_CALL(*this, GetIntegerWidthByResultId(kIntegerId))
+            .Times(3)
+            .WillRepeatedly(Return(64));
     }
 
     const std::byte* RemapPhysicalToHostPointer(uint64_t) const override
@@ -1066,6 +1130,16 @@ TEST_F(UConvertInvocationDependenceTests,
               }));
 }
 
+void ExpectInvocationAffineEqual(
+    const ::SPIRVSimulator::InvocationLinearizationInfo& actual,
+    const ::SPIRVSimulator::InvocationLinearizationInfo& expected)
+{
+    EXPECT_EQ(actual.valid, expected.valid);
+    EXPECT_EQ(actual.value_at_dispatch_origin, expected.value_at_dispatch_origin);
+    EXPECT_EQ(actual.workgroup_coefficients, expected.workgroup_coefficients);
+    EXPECT_EQ(actual.local_coefficients, expected.local_coefficients);
+}
+
 // verify that OpCompositeConstruct produces the compact vector
 // representation and the generic aggregate scalar-leaf representation.
 class CompositeMetadataTests : public SPIRVSimulatorMockBase, public Test
@@ -1082,10 +1156,8 @@ class CompositeMetadataTests : public SPIRVSimulatorMockBase, public Test
         ::SPIRVSimulator::DenseValueRangeInfo range = {
             true, true, true, min, max, 1
         };
-        range.invocation_linearization.workgroup_id_component_mask =
-            workgroup_id_component_mask;
-        range.invocation_linearization.local_invocation_id_component_mask =
-            local_invocation_id_component_mask;
+        range.invocation_linearization = MakeTestInvocationAffine(
+            static_cast<int64_t>(min), 1, workgroup_id_component_mask, local_invocation_id_component_mask);
         return range;
     }
 
@@ -1099,12 +1171,8 @@ class CompositeMetadataTests : public SPIRVSimulatorMockBase, public Test
         EXPECT_EQ(actual.min, expected.min);
         EXPECT_EQ(actual.max, expected.max);
         EXPECT_EQ(actual.stride, expected.stride);
-        EXPECT_EQ(
-            actual.invocation_linearization.workgroup_id_component_mask,
-            expected.invocation_linearization.workgroup_id_component_mask);
-        EXPECT_EQ(
-            actual.invocation_linearization.local_invocation_id_component_mask,
-            expected.invocation_linearization.local_invocation_id_component_mask);
+        ExpectInvocationAffineEqual(actual.invocation_linearization,
+                                    expected.invocation_linearization);
     }
 
     void SetValueWithBaseImplementation(uint32_t                       result_id,
@@ -2037,8 +2105,11 @@ struct SubtreeProjectionTestCase
     ::SPIRVSimulator::DenseValueRangeInfo range = {
         true, thread_dependent, dense_range, min, max, stride,
     };
-    range.invocation_linearization.workgroup_id_component_mask        = workgroup_id_component_mask;
-    range.invocation_linearization.local_invocation_id_component_mask = local_invocation_id_component_mask;
+    range.invocation_linearization = MakeTestInvocationAffine(
+        static_cast<int64_t>(min),
+        static_cast<int64_t>(stride),
+        workgroup_id_component_mask,
+        local_invocation_id_component_mask);
     return range;
 }
 
@@ -2325,10 +2396,8 @@ void ExpectProjectionRange(const ::SPIRVSimulator::DenseValueRangeInfo& actual,
     EXPECT_EQ(actual.min, expected.min);
     EXPECT_EQ(actual.max, expected.max);
     EXPECT_EQ(actual.stride, expected.stride);
-    EXPECT_EQ(actual.invocation_linearization.workgroup_id_component_mask,
-              expected.invocation_linearization.workgroup_id_component_mask);
-    EXPECT_EQ(actual.invocation_linearization.local_invocation_id_component_mask,
-              expected.invocation_linearization.local_invocation_id_component_mask);
+    ExpectInvocationAffineEqual(actual.invocation_linearization,
+                                expected.invocation_linearization);
 }
 
 void ExpectProjectionMetadata(const ::SPIRVSimulator::ValueMetadata& actual, const ExpectedValueMetadataSpec& expected)
@@ -2971,10 +3040,8 @@ enum class StoredTarget
     ::SPIRVSimulator::DenseValueRangeInfo range = {
         true, true, true, min, max, 1
     };
-    range.invocation_linearization.workgroup_id_component_mask =
-        workgroup_id_component_mask;
-    range.invocation_linearization.local_invocation_id_component_mask =
-        local_invocation_id_component_mask;
+    range.invocation_linearization = MakeTestInvocationAffine(
+        static_cast<int64_t>(min), 1, workgroup_id_component_mask, local_invocation_id_component_mask);
     return range;
 }
 
@@ -3256,12 +3323,8 @@ class StoreLoadMetadataTests : public SPIRVSimulatorMockBase, public Test
         EXPECT_EQ(actual.min, expected.min);
         EXPECT_EQ(actual.max, expected.max);
         EXPECT_EQ(actual.stride, expected.stride);
-        EXPECT_EQ(
-            actual.invocation_linearization.workgroup_id_component_mask,
-            expected.invocation_linearization.workgroup_id_component_mask);
-        EXPECT_EQ(
-            actual.invocation_linearization.local_invocation_id_component_mask,
-            expected.invocation_linearization.local_invocation_id_component_mask);
+        ExpectInvocationAffineEqual(actual.invocation_linearization,
+                                    expected.invocation_linearization);
     }
 
     void ExpectScalarResult(uint32_t result_id,
@@ -3359,12 +3422,15 @@ TEST_F(StoreLoadMetadataTests, SiblingStoresRestoreIndependentMetadata)
 
 TEST_F(StoreLoadMetadataTests, ScalarStoreLoadPreservesInvocationProvenance)
 {
-    const auto range = MakeRange(
+    auto range = MakeRange(
         70,
         79,
         ::SPIRVSimulator::kInvocationComponentY,
         ::SPIRVSimulator::kInvocationComponentX |
             ::SPIRVSimulator::kInvocationComponentZ);
+    range.invocation_linearization.value_at_dispatch_origin = 79;
+    range.invocation_linearization.workgroup_coefficients = { 0, -3, 0 };
+    range.invocation_linearization.local_coefficients = { -1, 0, 5 };
 
     StoreScalar(StoredTarget::FirstMember, 77, range);
     const uint32_t result_id = LoadScalar(StoredTarget::FirstMember);
@@ -3491,6 +3557,182 @@ TEST_F(StoreLoadMetadataTests, WorkgroupAndTaskPayloadLoadsRestoreInvocationDepe
     EXPECT_EQ(value_meta_[task_payload_result_id].invocation_dependence,
               ::SPIRVSimulator::InvocationDependence::Invariant);
 }
+
+struct InternalPointerSpanTransportCase
+{
+    const char* name;
+    uint32_t    storage_class;
+    bool        expect_span_restored;
+};
+
+class InternalPointerSpanTransportTests
+    : public SPIRVSimulatorMockBase,
+      public TestWithParam<InternalPointerSpanTransportCase>
+{
+  public:
+    MOCK_METHOD((std::pair<std::byte*, uint64_t>),
+                ResolvePointerV,
+                (const ::SPIRVSimulator::PointerV& pointer),
+                (const, override));
+    MOCK_METHOD(bool,
+                WritePointer,
+                (const ::SPIRVSimulator::PointerV& pointer,
+                 const ::SPIRVSimulator::Value& value),
+                (override));
+    MOCK_METHOD(std::optional<::SPIRVSimulator::Value>,
+                ReadPointer,
+                (const ::SPIRVSimulator::PointerV& pointer),
+                (override));
+    MOCK_METHOD((std::vector<::SPIRVSimulator::DataSourceBits>),
+                FindDataSourcesFromResultID,
+                (uint32_t result_id, uint32_t* property_flags),
+                (override));
+
+  protected:
+    static constexpr uint32_t kPhysicalPointerTypeId = 6100;
+    static constexpr uint32_t kInternalPointerId     = 6101;
+    static constexpr uint32_t kSourcePointerId       = 6102;
+    static constexpr uint32_t kLoadResultId          = 6103;
+
+    void SetUp() override
+    {
+        memory_flag_tracker_ = nullptr;
+        verbose_             = false;
+
+        values_.resize(kLoadResultId + 1);
+        value_meta_.resize(kLoadResultId + 1);
+        types_[kPhysicalPointerTypeId] = ::SPIRVSimulator::Type::Pointer(
+            spv::StorageClassPhysicalStorageBuffer,
+            CommonTypes::u64);
+
+        values_[kInternalPointerId] = ::SPIRVSimulator::PointerV{
+            1,
+            0,
+            kPhysicalPointerTypeId,
+            kInternalPointerId,
+            GetParam().storage_class,
+            {},
+        };
+        values_[kSourcePointerId] = ::SPIRVSimulator::PointerV{
+            0x1000,
+            0,
+            kPhysicalPointerTypeId,
+            kSourcePointerId,
+            spv::StorageClassPhysicalStorageBuffer,
+            {},
+        };
+
+        EXPECT_CALL(*this, GetValue(_)).WillRepeatedly([this](uint32_t id) -> ::SPIRVSimulator::Value& {
+            return values_[id];
+        });
+        EXPECT_CALL(*this, SetValue(_, _, _))
+            .WillRepeatedly([this](uint32_t id,
+                                   const ::SPIRVSimulator::Value& value,
+                                   bool clear_meta) {
+                ::SPIRVSimulator::SPIRVSimulator::SetValue(id, value, clear_meta);
+            });
+        EXPECT_CALL(*this, GetTypeByTypeId(kPhysicalPointerTypeId))
+            .WillRepeatedly(ReturnRef(types_[kPhysicalPointerTypeId]));
+        EXPECT_CALL(*this, GetTypeByResultId(_))
+            .WillRepeatedly(ReturnRef(types_[kPhysicalPointerTypeId]));
+        EXPECT_CALL(*this, ResolvePointerV(_))
+            .WillRepeatedly([this](const ::SPIRVSimulator::PointerV&) {
+                return std::pair<std::byte*, uint64_t>{ backing_.data(), 0 };
+            });
+        EXPECT_CALL(*this, WritePointer(_, _))
+            .WillRepeatedly([this](const ::SPIRVSimulator::PointerV&,
+                                   const ::SPIRVSimulator::Value& value) {
+                stored_value_ = value;
+                return true;
+            });
+        EXPECT_CALL(*this, ReadPointer(_))
+            .WillRepeatedly([this](const ::SPIRVSimulator::PointerV&)
+                                -> std::optional<::SPIRVSimulator::Value> {
+                return stored_value_;
+            });
+        EXPECT_CALL(*this, FindDataSourcesFromResultID(_, _))
+            .WillRepeatedly([](uint32_t, uint32_t* property_flags) {
+                if (property_flags != nullptr)
+                {
+                    *property_flags = 0;
+                }
+                return std::vector<::SPIRVSimulator::DataSourceBits>{};
+            });
+    }
+
+    static ::SPIRVSimulator::StridedElementSpan MakeSpan()
+    {
+        return {
+            true,
+            0x2000,
+            -16,
+            8,
+            sizeof(uint64_t),
+        };
+    }
+
+    std::array<std::byte, sizeof(uint64_t)> backing_{};
+    ::SPIRVSimulator::Value                stored_value_;
+};
+
+TEST_P(InternalPointerSpanTransportTests, WholeObjectStoreLoadUsesSafeStorageClassPolicy)
+{
+    value_meta_[kSourcePointerId].strided_element_span = MakeSpan();
+
+    const std::vector<uint32_t> store_words = {
+        0,
+        kInternalPointerId,
+        kSourcePointerId,
+    };
+    Op_Store({
+        .opcode     = spv::Op::OpStore,
+        .word_count = static_cast<uint16_t>(store_words.size()),
+        .words      = store_words,
+    });
+
+    value_meta_[kSourcePointerId] = {};
+
+    const std::vector<uint32_t> load_words = {
+        0,
+        kPhysicalPointerTypeId,
+        kLoadResultId,
+        kInternalPointerId,
+    };
+    Op_Load({
+        .opcode     = spv::Op::OpLoad,
+        .word_count = static_cast<uint16_t>(load_words.size()),
+        .words      = load_words,
+    });
+
+    const ::SPIRVSimulator::StridedElementSpan& restored_span =
+        value_meta_[kLoadResultId].strided_element_span;
+    if (GetParam().expect_span_restored)
+    {
+        EXPECT_EQ(restored_span, MakeSpan());
+    }
+    else
+    {
+        EXPECT_FALSE(restored_span.valid);
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    InternalStorageClasses,
+    InternalPointerSpanTransportTests,
+    Values(
+        InternalPointerSpanTransportCase{
+            "Function", spv::StorageClassFunction, true },
+        InternalPointerSpanTransportCase{
+            "Private", spv::StorageClassPrivate, true },
+        InternalPointerSpanTransportCase{
+            "Workgroup", spv::StorageClassWorkgroup, false },
+        InternalPointerSpanTransportCase{
+            "TaskPayloadWorkgroup",
+            spv::StorageClassTaskPayloadWorkgroupEXT,
+            false }),
+    [](const TestParamInfo<InternalPointerSpanTransportCase>& info) {
+        return info.param.name;
+    });
 
 // Exercises dynamic re-execution of the same aggregate instruction and result ID.
 // Each test changes only source metadata between executions and verifies

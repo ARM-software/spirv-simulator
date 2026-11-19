@@ -5,6 +5,7 @@
 #define ARM_SPIRV_SIMULATOR_HPP
 
 #include <iostream>
+#include <array>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -196,6 +197,7 @@ struct DescriptorCandidate
 //  to a binding with the std430 layout, the data in the byte vectors must obey the rules of
 //  that layout
 
+struct ElementwiseSourceState;
 struct PhysicalAddressData;
 
 // The following struct contains input values that should be populated by the user
@@ -424,21 +426,26 @@ struct DataSourceBitsHash
     }
 };
 
+struct PhysicalAddressRange
+{
+    MemoryFlagTracker::UniformDerivedClassId class_id = 0;
+    std::shared_ptr<ElementwiseSourceState> elementwise_source;
+};
+
 // We return a vector of these.
-// The bit_components vector contain data on where the bits that eventually become the pointer were read from.
+// The bit_components vector contains data on where the bits that eventually
+// become the pointer were read from.
 struct PhysicalAddressData
 {
     std::vector<DataSourceBits> bit_components;
     uint64_t                    raw_pointer_value = 0;
 
-    // Optional dense range metadata. When range_valid is true, this result
-    // describes a class of equally-sized pbuffer pointer elements, not just one
-    // scalar pointer. [range_start, range_end) is in the same address space as
-    // the source_ptr/byte_offset representation used elsewhere.
-    bool     range_valid = false;
-    uint64_t range_start = 0;
-    uint64_t range_end = 0;
-    uint64_t range_element_size = 0;
+    // Present only for a compressed physical-address result. A nonzero class
+    // id identifies optional persistent memory metadata, while ordered range
+    // geometry and load-time bytes are owned by the shared source state.
+    std::optional<PhysicalAddressRange> physical_address_range;
+
+    bool HasValidPhysicalAddressRange() const;
 };
 
 // ---------------------------------------------------------------------------
@@ -707,11 +714,39 @@ inline constexpr uint8_t kInvocationComponentX = 1u << 0;
 inline constexpr uint8_t kInvocationComponentY = 1u << 1;
 inline constexpr uint8_t kInvocationComponentZ = 1u << 2;
 
+inline constexpr std::array<uint8_t, 3> kInvocationComponentMasks = {
+    kInvocationComponentX,
+    kInvocationComponentY,
+    kInvocationComponentZ,
+};
+
 struct InvocationLinearizationInfo
 {
-    uint8_t workgroup_id_component_mask = 0;
-    uint8_t local_invocation_id_component_mask = 0;
+    bool valid = false;
+
+    // Value at the current dispatch origin. Workgroup coordinates are relative
+    // to SimulationData::base_workgroups; local coordinates start at zero.
+    int64_t value_at_dispatch_origin = 0;
+
+    // value = value_at_dispatch_origin
+    //       + dot(relative_workgroup_id, workgroup_coefficients)
+    //       + dot(local_invocation_id, local_coefficients)
+    std::array<int64_t, 3> workgroup_coefficients = { 0, 0, 0 };
+    std::array<int64_t, 3> local_coefficients     = { 0, 0, 0 };
 };
+
+inline uint8_t GetInvocationAxisMask(const std::array<int64_t, 3>& coefficients)
+{
+    uint8_t mask = 0;
+    for (uint32_t axis = 0; axis < coefficients.size(); ++axis)
+    {
+        if (coefficients[axis] != 0)
+        {
+            mask |= kInvocationComponentMasks[axis];
+        }
+    }
+    return mask;
+}
 
 struct DenseValueRangeInfo
 {
@@ -723,6 +758,87 @@ struct DenseValueRangeInfo
     uint64_t stride = 1;
 
     InvocationLinearizationInfo invocation_linearization;
+};
+
+// Describes a scalar value in canonical compute-dispatch invocation order:
+// value(ordinal) = first_value + ordinal * signed_step.
+struct CanonicalInvocationSequence
+{
+    int64_t  first_value = 0;
+    int64_t  signed_step = 0;
+    uint64_t count       = 0;
+    bool     one_to_one  = false;
+};
+
+// Describes pointer slots in canonical compute-dispatch invocation order:
+// address(ordinal) = first_address + ordinal * byte_stride.
+struct StridedElementSpan
+{
+    bool     valid         = false;
+    uint64_t first_address = 0;
+    int64_t  byte_stride   = 0;
+    uint64_t count         = 0;
+    uint64_t element_size  = 0;
+
+    bool operator==(const StridedElementSpan&) const = default;
+};
+
+enum class ElementwiseSourceStorageKind
+{
+    // Source bytes remain in the external host-shadow slots.
+    LazyHostShadow,
+
+    // Load-time bytes have been materialized in canonical invocation order.
+    PackedSnapshot,
+
+    // The load-time bytes can no longer be consumed safely.
+    Unavailable,
+};
+
+// One dynamic external-load version. The source geometry is immutable, while
+// all exact metadata copies share the mutable CoW state below.
+struct ElementwiseSourceState
+{
+    explicit ElementwiseSourceState(const StridedElementSpan& source_slots) : slots(source_slots) {}
+
+    const StridedElementSpan slots;
+
+    ElementwiseSourceStorageKind kind = ElementwiseSourceStorageKind::LazyHostShadow;
+
+    // Used only for PackedSnapshot. Elements are tightly packed in canonical
+    // invocation order, without source-slot padding.
+    std::vector<std::byte> packed_snapshot;
+};
+
+inline bool PhysicalAddressData::HasValidPhysicalAddressRange() const
+{
+    return raw_pointer_value == 0 &&
+           physical_address_range.has_value() &&
+           physical_address_range->elementwise_source != nullptr &&
+           physical_address_range->elementwise_source->slots.valid;
+}
+
+// Exact relation between a loaded value's invocation-ordered source bytes and
+// the corresponding persistent uniform-derived class view. These fields are
+// propagated and cleared as one metadata unit.
+struct ElementwiseRelationMetadata
+{
+    std::shared_ptr<ElementwiseSourceState> source;
+    MemoryFlagTracker::UniformDerivedClassView uniform_derived_class_view;
+};
+
+// Describes the external host-shadow bytes that one write may modify. This is
+// transient write-side state and is not retained in ValueMetadata.
+struct ExternalWriteFootprint
+{
+    enum class Kind
+    {
+        ExactSpan,
+        Unknown,
+    };
+
+    Kind kind = Kind::Unknown;
+    StridedElementSpan span;
 };
 
 enum class InvocationDependence : uint8_t
@@ -797,6 +913,14 @@ struct ValueMetadata
     uint64_t address_range_max = 0; // inclusive byte address
     uint64_t address_range_stride = 1;
     uint64_t address_element_size = 0;
+
+    // For pointer values, this optionally preserves the ordering between the
+    // canonical invocation ordinal and the addressed element slot.
+    StridedElementSpan strided_element_span;
+
+    // For loaded values, this optionally records the exact source relation for
+    // each canonical invocation.
+    ElementwiseRelationMetadata elementwise_relation;
 };
 
 struct PointerV
@@ -900,6 +1024,12 @@ struct StoredValueMetadataSnapshot
     uint64_t address_range_max = 0;
     uint64_t address_range_stride = 1;
     uint64_t address_element_size = 0;
+
+    // Whole-value canonical pointer ordering at the time of the store.
+    StridedElementSpan strided_element_span;
+
+    // Whole-value external source relation at the time of the store.
+    ElementwiseRelationMetadata elementwise_relation;
 };
 
 struct StoredValueRecord
@@ -1683,6 +1813,11 @@ class SPIRVSimulator
     std::vector<ValueMetadata> value_meta_;
     std::vector<Value> function_heap_;
 
+    // Weak registration lets external writes observe live lazy sources
+    // without extending their SSA metadata lifetime.
+    std::vector<std::weak_ptr<ElementwiseSourceState>> active_elementwise_sources_;
+    size_t next_elementwise_source_compaction_size_ = 64;
+
     // storage_class -> heap_index -> Heap Value for all non-function storage classes
     UnorderedMap<uint32_t, std::vector<Value>> heaps_;
 
@@ -1703,8 +1838,10 @@ class SPIRVSimulator
     void DeriveActiveComputeLocalSize(uint32_t entry_point_function_id);
     void SetConstantInvocationDependence(uint32_t result_id);
     void CopyNonFlagValueMetadata(uint32_t target_rid, uint32_t source_rid);
+    void CopyWholeObjectStridedElementSpan(uint32_t target_rid, uint32_t source_rid);
+    void CopyWholeObjectElementwiseRelation(uint32_t target_rid, uint32_t source_rid);
     void CopyInvocationDependenceMetadata(uint32_t target_rid, uint32_t source_rid);
-    void PropagateExternalLoadInvocationDependence(uint32_t result_id, uint32_t pointer_id);
+    void FinalizeExternalLoadInvocationDependence(uint32_t result_id, uint32_t pointer_id);
     void PropagateBitcastInvocationDependence(uint32_t    result_id,
                                               uint32_t    operand_id,
                                               const Type& result_type,
@@ -1742,6 +1879,20 @@ class SPIRVSimulator
                                                        const std::vector<uint32_t>& selected_path);
     bool TrySetComputeBuiltinValueAndMetadata(uint32_t result_id, const PointerV& pointer, uint32_t type_id);
     bool TryGetFixedNonNegativeIntegerScalar(uint32_t result_id, uint64_t& out_value) const;
+    bool TryGetInvocationAffineOperand(uint32_t operand_id, InvocationLinearizationInfo& out) const;
+    bool TryPropagateBinaryInvocationAffineAdd(uint32_t lhs_id,
+                                               uint32_t rhs_id,
+                                               InvocationLinearizationInfo& out) const;
+    bool TryPropagateBinaryInvocationAffineSub(uint32_t lhs_id,
+                                               uint32_t rhs_id,
+                                               InvocationLinearizationInfo& out) const;
+    bool TryBuildRangeFromInvocationAffine(const InvocationLinearizationInfo& affine,
+                                           const Type& result_type,
+                                           bool thread_dependent,
+                                           DenseValueRangeInfo& out_range) const;
+    bool TryPropagateBinaryInvocationAffineMul(uint32_t lhs_id,
+                                               uint32_t rhs_id,
+                                               InvocationLinearizationInfo& out) const;
     void PropagateBinaryRangeAdd(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
     void PropagateBinaryRangeSub(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
     void PropagateBinaryRangeMul(uint32_t result_id, uint32_t lhs_id, uint32_t rhs_id);
@@ -1799,8 +1950,38 @@ class SPIRVSimulator
     // Write-side consumers use this to avoid dense-range fallback for unrelated payloads such as
     // floating-point application data.
     bool CanWriteValueTypeCarryHandlePayload(const Type& type) const;
-    bool TryGetDenseStoreRange(const PointerV& pointer, uint32_t pointer_id, uint32_t result_id, uint64_t& dst_start, uint64_t& byte_size, uint64_t& element_size);
-    void PromoteUniformDerivedRangeForPointerValue(uint64_t source_addr, uint64_t element_size);
+    [[nodiscard]] static std::optional<CanonicalInvocationSequence>
+    TryCollapseToCanonicalInvocationSequence(const DenseValueRangeInfo&       range,
+                                              const ComputeDispatchDimensions& num_workgroups,
+                                              const ComputeLocalSize&          local_size);
+    bool TrySetCanonicalStridedElementSpan(uint32_t                           result_id,
+                                           const CanonicalInvocationSequence& sequence);
+    bool TryCreateLazyElementwiseSource(uint32_t result_id, const StridedElementSpan& slots);
+    void RecomputeElementwiseSourceCompactionThreshold();
+    void MaybeCompactElementwiseSourceRegistry();
+    ExternalWriteFootprint BuildExternalWriteFootprint(uint32_t pointer_id, const PointerV& pointer) const;
+    static bool ActualElementBytesOverlap(const StridedElementSpan& lhs, const StridedElementSpan& rhs);
+    void InvalidateUniformDerivedClasses(const ExternalWriteFootprint& destination);
+    static void InvalidateElementwiseSourceState(ElementwiseSourceState& source);
+    static bool MaterializeElementwiseSource(ElementwiseSourceState& source);
+    // Common outcome for compressed operations over a proven canonical
+    // invocation domain. Callers decide whether Incomplete requires write-side
+    // full dispatch or read-side coverage fallback.
+    enum class CompressedOperationResult
+    {
+        NotApplicable,
+        Complete,
+        Incomplete,
+    };
+    void PrepareElementwiseSourcesBeforeExternalWrite(const ExternalWriteFootprint& write);
+    CompressedOperationResult TryCompressedElementwiseExternalStore(uint32_t pointer_id, uint32_t object_id);
+    CompressedOperationResult TryCompressedFixedValueExternalStore(uint32_t pointer_id, uint32_t object_id);
+    CompressedOperationResult TryPublishElementwisePhysicalAddressResult(uint32_t operand_id,
+                                                                        uint64_t expected_element_size);
+    CompressedOperationResult MaybePromoteUniformDerivedPointerView(uint32_t operand_id,
+                                                                   uint64_t expected_element_size);
+    bool HasKnownMultiInvocationCoverage(const ValueMetadata& metadata) const;
+    void HandleElementwisePhysicalAddressResult(uint32_t operand_id, uint64_t expected_element_size);
 
     virtual void on_loop_begin(uint32_t header);
     virtual void on_loop_exit (uint32_t header);
