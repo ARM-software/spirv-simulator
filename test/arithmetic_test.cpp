@@ -95,6 +95,23 @@ std::vector<TestParameters> test_cases = {
             0, CommonTypes::u64, std::initializer_list<SPIRVSimulator::Value>{ uint64_t(1), uint64_t(13), uint64_t(6) })
         .build(),
     TestParametersBuilder()
+        .set_opcode(spv::Op::OpShiftRightLogical)
+        .set_operands_range(0,
+                            CommonTypes::i64,
+                            std::initializer_list<SPIRVSimulator::Value>{
+                                uint64_t(0x7ffffffffffffffc), int64_t(-8), int64_t(1) })
+        .build(),
+    TestParametersBuilder()
+        .set_opcode(spv::Op::OpShiftRightLogical)
+        .set_operands_range(0,
+                            CommonTypes::ivec2,
+                            std::initializer_list<SPIRVSimulator::Value>{
+                                std::make_shared<SPIRVSimulator::VectorV>(
+                                    std::initializer_list<uint64_t>{ 0x7ffffffffffffffc, 0x7ffffffffffffffc }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ -8, -8 }),
+                                std::make_shared<SPIRVSimulator::VectorV>(std::initializer_list<int64_t>{ 1, 1 }) })
+        .build(),
+    TestParametersBuilder()
         .set_opcode(spv::Op::OpShiftRightArithmetic)
         .set_operands_range(0,
                             CommonTypes::u64,
