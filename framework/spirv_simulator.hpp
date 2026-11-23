@@ -318,21 +318,17 @@ struct InternalPersistentData
         uninteresting_shaders.insert(shader_id);
     }
 
-#ifdef DEBUG_BUILD
     bool MarkInvocationDependenceFallbackOpcodeReported(spv::Op opcode)
     {
         std::lock_guard<std::mutex> lock(invocation_dependence_fallback_mutex);
         return reported_invocation_dependence_fallback_opcodes.insert(opcode).second;
     }
-#endif
 
 private:
     mutable std::mutex uninteresting_shaders_mutex;
     std::set<uint64_t> uninteresting_shaders;
-#ifdef DEBUG_BUILD
     std::mutex invocation_dependence_fallback_mutex;
     std::set<spv::Op> reported_invocation_dependence_fallback_opcodes;
-#endif
 };
 
 
