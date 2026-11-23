@@ -18023,7 +18023,7 @@ void SPIRVSimulator::Op_ShiftRightLogical(const Instruction& instruction)
             }
             else if (std::holds_alternative<int64_t>(vec1->elems[i]) && std::holds_alternative<int64_t>(vec2->elems[i]))
             {
-                result_vec->elems.push_back(std::get<int64_t>(vec1->elems[i]) >> std::get<int64_t>(vec2->elems[i]));
+                result_vec->elems.push_back((uint64_t)std::get<int64_t>(vec1->elems[i]) >> std::get<int64_t>(vec2->elems[i]));
             }
             else
             {
