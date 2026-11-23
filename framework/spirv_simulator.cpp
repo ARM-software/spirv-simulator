@@ -16243,7 +16243,7 @@ void SPIRVSimulator::Op_SMod(const Instruction& instruction)
             }
 
             int64_t elem_result = val_1 % val_2;
-            if (elem_result != 0 && std::signbit(elem_result != std::signbit(val_2)))
+            if (elem_result != 0 && std::signbit(elem_result) != std::signbit(val_2))
             {
                 elem_result += val_2;
             }
