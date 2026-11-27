@@ -24244,7 +24244,7 @@ void SPIRVSimulator::Op_ExecuteCallableKHR(const Instruction& instruction)
 
     // TODO:
     // Actually call the shader from the SBT & execute it
-    if (GetFlags(callable_data_id) & (SPS_FLAG_IS_DESCRIPTOR_CANDIDATE | SPS_FLAG_IS_DESCRIPTOR_BUFFER) != 0)
+    if ((GetFlags(callable_data_id) & (SPS_FLAG_IS_DESCRIPTOR_CANDIDATE | SPS_FLAG_IS_DESCRIPTOR_BUFFER)) != 0)
     {
         assertx("SPIRV Simulator: ABORT - OpExecuteCallableKHR unhandled");
     }
