@@ -48,6 +48,11 @@ target_sources(value_metadata_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} value
 target_compile_definitions(value_metadata_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
 target_link_libraries(value_metadata_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
 
+add_executable(elementwise_source_test)
+target_sources(elementwise_source_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} elementwise_source_test.cpp)
+target_compile_definitions(elementwise_source_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
+target_link_libraries(elementwise_source_test PRIVATE GTest::gtest_main GTest::gmock spirv_simulator_lib)
+
 add_executable(misc_test)
 target_sources(misc_test PRIVATE ${SOURCE_FILES} ${HEADER_FILES} misc_test.cpp)
 target_compile_definitions(misc_test PRIVATE TEST_SHADER_DIR="${PROJECT_SOURCE_DIR}/test_shaders")
@@ -77,13 +82,14 @@ gtest_discover_tests(declaration_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(compute_local_size_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(specialization_constant_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(value_metadata_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(elementwise_source_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(misc_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(tensor_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(memory_tracker_test REPORTER verbose DISCOVERY_MODE PRE_TEST)
 
 add_custom_target(run_tests
   COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -VV
-  DEPENDS arithmetic_test access_chain_address_range_test access_chain_dense_range_consumer_test declaration_test compute_local_size_test specialization_constant_test value_metadata_test misc_test tensor_test memory_tracker_test
+  DEPENDS arithmetic_test access_chain_address_range_test access_chain_dense_range_consumer_test declaration_test compute_local_size_test specialization_constant_test value_metadata_test elementwise_source_test misc_test tensor_test memory_tracker_test
 )
 
 file(GLOB SPIRV_FILES ${PROJECT_SOURCE_DIR}/test_shaders/*.spv ${PROJECT_SOURCE_DIR}/test_shaders/*.spirv)

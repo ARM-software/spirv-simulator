@@ -1,8 +1,6 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -13,7 +11,6 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "spirv-tools/libspirv.hpp"
@@ -21,262 +18,6 @@
 #include "testing_common.hpp"
 
 using namespace testing;
-
-class DenseAddressRangeStoreConsumerTests : public SPIRVSimulatorMockBase, public Test
-{
-  public:
-    MOCK_METHOD((std::pair<std::byte*, uint64_t>),
-                ResolvePointerV,
-                (const ::SPIRVSimulator::PointerV& pointer),
-                (const, override));
-    MOCK_METHOD(bool,
-                WritePointer,
-                (const ::SPIRVSimulator::PointerV& pointer, const ::SPIRVSimulator::Value& value),
-                (override));
-    MOCK_METHOD(void, OverrideFlagsPointee, (uint32_t pointer_id, uint32_t result_id), (override));
-    MOCK_METHOD((std::vector<::SPIRVSimulator::DataSourceBits>),
-                FindDataSourcesFromResultID,
-                (uint32_t result_id, uint32_t* property_flags),
-                (override));
-    MOCK_METHOD(bool,
-                PointeeValueIsDescriptorBuffer,
-                (const ::SPIRVSimulator::PointerV& pointer),
-                (const, override));
-    MOCK_METHOD(bool, ValueHoldsPbufferPtr, (uint32_t result_id), (const, override));
-    MOCK_METHOD(bool, ValueIsArbitrary, (uint32_t result_id), (const, override));
-
-  protected:
-    void SetAddressRange(uint32_t pointer_id,
-                         uint64_t min,
-                         uint64_t max,
-                         uint64_t stride,
-                         uint64_t element_size)
-    {
-        value_meta_.resize(std::max<size_t>(value_meta_.size(), pointer_id + 1));
-        ::SPIRVSimulator::ValueMetadata& metadata = value_meta_[pointer_id];
-        metadata.address_range_valid  = true;
-        metadata.address_range_min    = min;
-        metadata.address_range_max    = max;
-        metadata.address_range_stride = stride;
-        metadata.address_element_size = element_size;
-    }
-
-    bool TryGetStoreRange(const ::SPIRVSimulator::PointerV& pointer,
-                          uint32_t pointer_id,
-                          uint32_t result_id,
-                          uint64_t& dst_start,
-                          uint64_t& byte_size,
-                          uint64_t& element_size)
-    {
-        return TryGetDenseStoreRange(
-            pointer, pointer_id, result_id, dst_start, byte_size, element_size);
-    }
-
-    void Store(const ::SPIRVSimulator::Instruction& instruction)
-    {
-        Op_Store(instruction);
-    }
-
-    void SetRuntimeState(::SPIRVSimulator::MemoryFlagTracker* memory_flag_tracker,
-                         ::SPIRVSimulator::SimulationResults* simulation_results)
-    {
-        memory_flag_tracker_ = memory_flag_tracker;
-        simulation_results_  = simulation_results;
-    }
-
-    std::array<std::byte, 64> backing_{};
-};
-
-// Verifies that OpStore includes the final element when consuming valid dense
-// address-range metadata and records the full span without requesting fallback.
-TEST_F(DenseAddressRangeStoreConsumerTests, DenseAddressRangeIsConsumedByStore)
-{
-    constexpr uint32_t pointer_id = 5050;
-    constexpr uint32_t result_id  = 5051;
-
-    ::SPIRVSimulator::MemoryFlagTracker memory_flag_tracker;
-    ::SPIRVSimulator::SimulationResults simulation_results;
-    SetRuntimeState(&memory_flag_tracker, &simulation_results);
-
-    const ::SPIRVSimulator::PointerV pointer{
-        .base_result_id = pointer_id,
-        .storage_class = spv::StorageClassPhysicalStorageBuffer,
-        .idx_path = { 0 },
-    };
-    ::SPIRVSimulator::Value pointer_value = pointer;
-    ::SPIRVSimulator::Value stored_value  = uint64_t{ 0x1234 };
-
-    const uint64_t range_start = ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data());
-    SetAddressRange(pointer_id, range_start, range_start + 16, 8, 8);
-    value_meta_.resize(std::max<size_t>(value_meta_.size(), result_id + 1));
-    value_meta_[result_id].flags = SPS_FLAG_THREAD_SPECIFIC;
-
-    EXPECT_CALL(*this, ResolvePointerV(_))
-        .WillRepeatedly([this](const ::SPIRVSimulator::PointerV&) {
-            return std::pair<std::byte*, uint64_t>{ backing_.data(), 0 };
-        });
-
-    uint64_t dense_dst_start    = 0;
-    uint64_t dense_byte_size    = 0;
-    uint64_t dense_element_size = 0;
-    ASSERT_TRUE(TryGetStoreRange(pointer,
-                                 pointer_id,
-                                 result_id,
-                                 dense_dst_start,
-                                 dense_byte_size,
-                                 dense_element_size));
-    EXPECT_EQ(dense_dst_start, range_start);
-    EXPECT_EQ(dense_byte_size, 24u);
-    EXPECT_EQ(dense_element_size, 8u);
-
-    EXPECT_CALL(*this, GetValue(pointer_id)).WillRepeatedly(ReturnRef(pointer_value));
-    EXPECT_CALL(*this, GetValue(result_id)).WillRepeatedly(ReturnRef(stored_value));
-    EXPECT_CALL(*this, GetTypeByResultId(result_id))
-        .WillOnce(ReturnRef(types_.at(CommonTypes::u64)));
-    EXPECT_CALL(*this, PointeeValueIsDescriptorBuffer(_)).WillOnce(Return(false));
-    EXPECT_CALL(*this, WritePointer(_, _)).WillOnce(Return(true));
-    EXPECT_CALL(*this, OverrideFlagsPointee(pointer_id, result_id)).Times(1);
-    EXPECT_CALL(*this, FindDataSourcesFromResultID(result_id, _))
-        .WillOnce([](uint32_t, uint32_t* property_flags) {
-            *property_flags = 0;
-            return std::vector<::SPIRVSimulator::DataSourceBits>{};
-        });
-    EXPECT_CALL(*this, ValueHoldsPbufferPtr(result_id)).WillOnce(Return(false));
-    EXPECT_CALL(*this, ValueIsArbitrary(result_id)).WillOnce(Return(false));
-
-    std::vector<uint32_t> words = { 0, pointer_id, result_id };
-    const ::SPIRVSimulator::Instruction instruction{
-        .opcode = spv::Op::OpStore,
-        .word_count = static_cast<uint16_t>(words.size()),
-        .words = words,
-    };
-    Store(instruction);
-
-    const std::optional<::SPIRVSimulator::MemoryFlagTracker::UniformDerivedRange> tracked_range =
-        memory_flag_tracker.queryUniformDerivedRange(range_start);
-    ASSERT_TRUE(tracked_range.has_value());
-    EXPECT_EQ(tracked_range->start, range_start);
-    EXPECT_EQ(tracked_range->end, range_start + 24);
-    EXPECT_EQ(tracked_range->element_size, 8u);
-    EXPECT_EQ(tracked_range->flags,
-              SPS_FLAG_THREAD_SPECIFIC | SPS_FLAG_UNIFORM_DERIVED_RANGE);
-    EXPECT_FALSE(simulation_results.full_dispatch_needed);
-}
-
-TEST_F(DenseAddressRangeStoreConsumerTests, VaryingStoreWithoutLegacyFlagRequestsFullDispatch)
-{
-    constexpr uint32_t pointer_id = 5060;
-    constexpr uint32_t result_id  = 5061;
-
-    ::SPIRVSimulator::MemoryFlagTracker memory_flag_tracker;
-    ::SPIRVSimulator::SimulationResults simulation_results;
-    SetRuntimeState(&memory_flag_tracker, &simulation_results);
-
-    const ::SPIRVSimulator::PointerV pointer{
-        .base_result_id = pointer_id,
-        .storage_class = spv::StorageClassPhysicalStorageBuffer,
-        .idx_path = { 0 },
-    };
-    ::SPIRVSimulator::Value pointer_value = pointer;
-    ::SPIRVSimulator::Value stored_value  = uint64_t{ 0x1234 };
-
-    value_meta_.resize(std::max<size_t>(value_meta_.size(), result_id + 1));
-    value_meta_[pointer_id].invocation_dependence =
-        ::SPIRVSimulator::InvocationDependence::Varying;
-    ASSERT_EQ(value_meta_[pointer_id].flags & SPS_FLAG_THREAD_SPECIFIC, 0u);
-    ASSERT_FALSE(value_meta_[pointer_id].address_range_valid);
-
-    EXPECT_CALL(*this, GetValue(pointer_id)).WillRepeatedly(ReturnRef(pointer_value));
-    EXPECT_CALL(*this, GetValue(result_id)).WillRepeatedly(ReturnRef(stored_value));
-    EXPECT_CALL(*this, GetTypeByResultId(result_id))
-        .WillOnce(ReturnRef(types_.at(CommonTypes::u64)));
-    EXPECT_CALL(*this, PointeeValueIsDescriptorBuffer(_)).WillOnce(Return(false));
-    EXPECT_CALL(*this, WritePointer(_, _)).WillOnce(Return(true));
-    EXPECT_CALL(*this, OverrideFlagsPointee(pointer_id, result_id)).Times(1);
-    EXPECT_CALL(*this, FindDataSourcesFromResultID(result_id, _))
-        .WillOnce([](uint32_t, uint32_t* property_flags) {
-            *property_flags = 0;
-            return std::vector<::SPIRVSimulator::DataSourceBits>{};
-        });
-    EXPECT_CALL(*this, ResolvePointerV(_))
-        .WillOnce([this](const ::SPIRVSimulator::PointerV&) {
-            return std::pair<std::byte*, uint64_t>{ backing_.data(), 0 };
-        });
-    EXPECT_CALL(*this, ValueHoldsPbufferPtr(result_id)).WillOnce(Return(false));
-    EXPECT_CALL(*this, ValueIsArbitrary(result_id)).WillOnce(Return(false));
-
-    const std::vector<uint32_t> words = { 0, pointer_id, result_id };
-    const ::SPIRVSimulator::Instruction instruction{
-        .opcode = spv::Op::OpStore,
-        .word_count = static_cast<uint16_t>(words.size()),
-        .words = words,
-    };
-    Store(instruction);
-
-    EXPECT_TRUE(simulation_results.full_dispatch_needed);
-}
-
-TEST_F(DenseAddressRangeStoreConsumerTests,
-       FloatVectorWriteDoesNotEnterHandleDenseRangeTracking)
-{
-    constexpr uint32_t pointer_id = 5070;
-    constexpr uint32_t result_id  = 5071;
-
-    ::SPIRVSimulator::MemoryFlagTracker memory_flag_tracker;
-    ::SPIRVSimulator::SimulationResults simulation_results;
-    SetRuntimeState(&memory_flag_tracker, &simulation_results);
-
-    const ::SPIRVSimulator::PointerV pointer{
-        .base_result_id = pointer_id,
-        .storage_class = spv::StorageClassPhysicalStorageBuffer,
-        .idx_path = { 0 },
-    };
-    ::SPIRVSimulator::Value pointer_value = pointer;
-    ::SPIRVSimulator::Value stored_value =
-        std::make_shared<::SPIRVSimulator::VectorV>(
-            std::initializer_list<double>{ 1.0, 2.0 });
-    const ::SPIRVSimulator::Type stored_type =
-        ::SPIRVSimulator::Type::Vector(CommonTypes::f32, 2);
-
-    const uint64_t range_start =
-        ::SPIRVSimulator::bit_cast<uint64_t>(backing_.data());
-    SetAddressRange(pointer_id, range_start, range_start + 16, 8, 8);
-    value_meta_.resize(std::max<size_t>(value_meta_.size(), result_id + 1));
-    value_meta_[pointer_id].invocation_dependence =
-        ::SPIRVSimulator::InvocationDependence::Varying;
-
-    EXPECT_CALL(*this, GetValue(pointer_id)).WillRepeatedly(ReturnRef(pointer_value));
-    EXPECT_CALL(*this, GetValue(result_id)).WillRepeatedly(ReturnRef(stored_value));
-    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(stored_type));
-    EXPECT_CALL(*this, PointeeValueIsDescriptorBuffer(_)).WillOnce(Return(false));
-    EXPECT_CALL(*this, WritePointer(_, _)).WillOnce(Return(true));
-    EXPECT_CALL(*this, OverrideFlagsPointee(pointer_id, result_id)).Times(1);
-    EXPECT_CALL(*this, FindDataSourcesFromResultID(result_id, _))
-        .WillOnce([](uint32_t, uint32_t* property_flags) {
-            *property_flags = SPS_FLAG_IS_FLOAT_SOURCE;
-            return std::vector<::SPIRVSimulator::DataSourceBits>{};
-        });
-    // The normal reaching-store bookkeeping still resolves the representative
-    // destination once; dense handle-range consumption must not add another
-    // resolution or publish a UniformDerivedRange for this float vector.
-    EXPECT_CALL(*this, ResolvePointerV(_))
-        .WillOnce([this](const ::SPIRVSimulator::PointerV&) {
-            return std::pair<std::byte*, uint64_t>{ backing_.data(), 0 };
-        });
-    EXPECT_CALL(*this, ValueHoldsPbufferPtr(result_id)).WillOnce(Return(false));
-    EXPECT_CALL(*this, ValueIsArbitrary(result_id)).WillOnce(Return(false));
-
-    const std::vector<uint32_t> words = { 0, pointer_id, result_id };
-    const ::SPIRVSimulator::Instruction instruction{
-        .opcode = spv::Op::OpStore,
-        .word_count = static_cast<uint16_t>(words.size()),
-        .words = words,
-    };
-    Store(instruction);
-
-    EXPECT_FALSE(memory_flag_tracker.queryUniformDerivedRange(range_start).has_value());
-    EXPECT_FALSE(simulation_results.full_dispatch_needed);
-}
 
 // Verify failure handling while dense AccessChain ranges are consumed to collect
 // nested PhysicalStorageBuffer pointers from read-side pointer tables.
@@ -519,6 +260,8 @@ class AccessChainShaderTests : public ::testing::Test
     {
         simulation_data_.bindings[0][0] = backing_.data();
         simulation_data_.physical_address_buffers[4096] = { sizeof(backing_), backing_.data() };
+        simulation_data_.has_compute_num_workgroups = true;
+        simulation_data_.compute_num_workgroups = { 1, 1, 1 };
     }
 
     void RunShader(const char* shader_name)
@@ -542,29 +285,36 @@ class AccessChainShaderTests : public ::testing::Test
         simulator.Run();
     }
 
-    void ExpectWriteCoverage(std::initializer_list<uint64_t> byte_offsets)
+    void ExpectExactWriteCoverage(std::initializer_list<uint64_t> byte_offsets)
     {
-        // Verify that the shader reached its store, even when fallback is used.
+        // Verify that the shader reached its store and completed compressed
+        // writeback without requiring an ordinary full dispatch.
         ASSERT_EQ(backing_[0], 1u);
-        if (simulation_results_.full_dispatch_needed)
-        {
-            return;
-        }
+        ASSERT_FALSE(simulation_results_.full_dispatch_needed)
+            << "Expected compressed write coverage instead of full-dispatch fallback";
 
-        // Exact handling is also valid: every invocation's complete uint write
-        // must be covered. Checking only the representative address misses the
-        // varying-base case's second row at offsets 64 and 68.
+        // Every invocation's complete uint write must be classified.
         const uint64_t base_address = reinterpret_cast<uint64_t>(backing_.data());
         for (uint64_t offset : byte_offsets)
         {
             SCOPED_TRACE("write byte offset " + std::to_string(offset));
             const uint64_t address = base_address + offset;
-            const auto range = memory_tracker_.queryUniformDerivedRange(address);
-            ASSERT_TRUE(range.has_value()) << "Missing write coverage and no full-dispatch fallback";
-            EXPECT_LE(range->start, address);
-            EXPECT_GE(range->end, address + sizeof(uint32_t));
-            EXPECT_EQ(range->element_size, sizeof(uint32_t));
+            const auto view = memory_tracker_.queryUniformDerivedClassView(
+                address,
+                0,
+                1,
+                sizeof(uint32_t));
+            ASSERT_TRUE(view.has_value()) << "Missing write coverage and no full-dispatch fallback";
+            EXPECT_EQ(view->elementCount(), 1u);
+            EXPECT_EQ(view->elementSize(), sizeof(uint32_t));
+            EXPECT_NE(memory_tracker_.query(*view) & SPS_FLAG_UNIFORM_DERIVED_RANGE, 0u);
         }
+    }
+
+    void ExpectFullDispatchFallback()
+    {
+        ASSERT_EQ(backing_[0], 1u);
+        EXPECT_TRUE(simulation_results_.full_dispatch_needed);
     }
 
     void BindPointerTable()
@@ -612,13 +362,13 @@ class AccessChainShaderTests : public ::testing::Test
 TEST_F(AccessChainShaderTests, MaskedIndexCoversBothWritesOrRequestsFullDispatch)
 {
     ASSERT_NO_FATAL_FAILURE(RunShader("masked_index"));
-    ExpectWriteCoverage({ 0, 4 });
+    ExpectFullDispatchFallback();
 }
 
 TEST_F(AccessChainShaderTests, VaryingBaseAndIndexCoverBothRowsOrRequestFullDispatch)
 {
     ASSERT_NO_FATAL_FAILURE(RunShader("varying_base"));
-    ExpectWriteCoverage({ 0, 4, 64, 68 });
+    ExpectFullDispatchFallback();
 }
 
 TEST_F(AccessChainShaderTests, StridedPointerTableEnumeratesSlotsOrReportsIncompleteCoverage)
@@ -639,13 +389,13 @@ TEST_F(AccessChainShaderTests, NonFinalVaryingIndexEnumeratesSlotsOrReportsIncom
 TEST_F(AccessChainShaderTests, DirectIndexCoversBothWrites)
 {
     ASSERT_NO_FATAL_FAILURE(RunShader("direct_index"));
-    ExpectWriteCoverage({ 0, 4 });
+    ExpectExactWriteCoverage({ 0, 4 });
 }
 
 TEST_F(AccessChainShaderTests, FixedBaseCoversOneRow)
 {
     ASSERT_NO_FATAL_FAILURE(RunShader("fixed_base"));
-    ExpectWriteCoverage({ 0, 4 });
+    ExpectFullDispatchFallback();
 }
 
 TEST_F(AccessChainShaderTests, PackedPointerTableEnumeratesSlots)

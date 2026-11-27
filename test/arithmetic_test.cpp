@@ -346,9 +346,27 @@ TEST_F(AtomicArithmeticTests, AtomicSMaxInterpretsUnsignedTypeAsSigned)
     EXPECT_TRUE(this->ExecuteInstruction(instruction));
 }
 
+uint8_t TestWorkgroupAxisMask(const ::SPIRVSimulator::InvocationLinearizationInfo& affine)
+{
+    return affine.valid ? ::SPIRVSimulator::GetInvocationAxisMask(affine.workgroup_coefficients) : 0;
+}
+
+uint8_t TestLocalAxisMask(const ::SPIRVSimulator::InvocationLinearizationInfo& affine)
+{
+    return affine.valid ? ::SPIRVSimulator::GetInvocationAxisMask(affine.local_coefficients) : 0;
+}
+
 class RangePropagationTests : public SPIRVSimulatorMockBase, public Test
 {
   public:
+    void SetUp() override
+    {
+        // These tests exercise numeric/range fallback without a concrete
+        // dispatch domain. Affine-to-range reconstruction is covered by the
+        // derived AffineToRangePropagationTests fixture.
+        simulation_data_ = nullptr;
+    }
+
     void SetRange(uint32_t result_id,
                   uint64_t min,
                   uint64_t max,
@@ -366,10 +384,8 @@ class RangePropagationTests : public SPIRVSimulatorMockBase, public Test
         meta.value_range.min = min;
         meta.value_range.max = max;
         meta.value_range.stride = stride;
-        meta.value_range.invocation_linearization.workgroup_id_component_mask =
-            workgroup_mask;
-        meta.value_range.invocation_linearization.local_invocation_id_component_mask =
-            local_mask;
+        meta.value_range.invocation_linearization = MakeTestInvocationAffine(
+            static_cast<int64_t>(min), static_cast<int64_t>(stride), workgroup_mask, local_mask);
     }
 
     void ExpectRange(uint32_t result_id,
@@ -388,10 +404,21 @@ class RangePropagationTests : public SPIRVSimulatorMockBase, public Test
         EXPECT_EQ(range.min, min);
         EXPECT_EQ(range.max, max);
         EXPECT_EQ(range.stride, stride);
-        EXPECT_EQ(range.invocation_linearization.workgroup_id_component_mask,
-                  workgroup_mask);
-        EXPECT_EQ(range.invocation_linearization.local_invocation_id_component_mask,
-                  local_mask);
+        EXPECT_EQ(TestWorkgroupAxisMask(range.invocation_linearization), workgroup_mask);
+        EXPECT_EQ(TestLocalAxisMask(range.invocation_linearization), local_mask);
+    }
+
+    void ExpectAffine(uint32_t result_id,
+                      int64_t origin,
+                      const std::array<int64_t, 3>& workgroup_coefficients,
+                      const std::array<int64_t, 3>& local_coefficients) const
+    {
+        const ::SPIRVSimulator::InvocationLinearizationInfo& affine =
+            value_meta_[result_id].value_range.invocation_linearization;
+        ASSERT_TRUE(affine.valid);
+        EXPECT_EQ(affine.value_at_dispatch_origin, origin);
+        EXPECT_EQ(affine.workgroup_coefficients, workgroup_coefficients);
+        EXPECT_EQ(affine.local_coefficients, local_coefficients);
     }
 
     void SetDefinitionAndDependence(
@@ -617,8 +644,8 @@ TEST_F(RangePropagationTests, ScalarMultiplyPropagatesRange)
              ::SPIRVSimulator::kInvocationComponentY);
     SetConstantLikeDefinition(rhs_id);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateMul(result_id, lhs_id, rhs_id);
 
@@ -629,6 +656,7 @@ TEST_F(RangePropagationTests, ScalarMultiplyPropagatesRange)
                 true,
                 ::SPIRVSimulator::kInvocationComponentY,
                 ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 0, { 0, 4, 0 }, { 0, 4, 0 });
 }
 
 TEST_F(RangePropagationTests, FixedScalarMultiplyPropagatesRange)
@@ -650,8 +678,8 @@ TEST_F(RangePropagationTests, FixedScalarMultiplyPropagatesRange)
              ::SPIRVSimulator::kInvocationComponentX,
              ::SPIRVSimulator::kInvocationComponentX);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(lhs_id)).WillOnce(ReturnRef(lhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
 
     PropagateMul(result_id, lhs_id, rhs_id);
 
@@ -662,6 +690,7 @@ TEST_F(RangePropagationTests, FixedScalarMultiplyPropagatesRange)
                 true,
                 ::SPIRVSimulator::kInvocationComponentX,
                 ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id, 0, { 4, 0, 0 }, { 4, 0, 0 });
 }
 
 TEST_F(RangePropagationTests, RangeMultiplyFixedZeroCanonicalizesDenseSingleton)
@@ -683,8 +712,8 @@ TEST_F(RangePropagationTests, RangeMultiplyFixedZeroCanonicalizesDenseSingleton)
              ::SPIRVSimulator::kInvocationComponentY);
     SetConstantLikeDefinition(rhs_id);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateMul(result_id, lhs_id, rhs_id);
 
@@ -692,9 +721,8 @@ TEST_F(RangePropagationTests, RangeMultiplyFixedZeroCanonicalizesDenseSingleton)
                 0,
                 0,
                 1,
-                true,
-                ::SPIRVSimulator::kInvocationComponentX,
-                ::SPIRVSimulator::kInvocationComponentY);
+                true);
+    ExpectAffine(result_id, 0, { 0, 0, 0 }, { 0, 0, 0 });
 }
 
 TEST_F(RangePropagationTests, FixedZeroMultiplyRangeCanonicalizesDenseSingleton)
@@ -716,8 +744,8 @@ TEST_F(RangePropagationTests, FixedZeroMultiplyRangeCanonicalizesDenseSingleton)
              ::SPIRVSimulator::kInvocationComponentY,
              ::SPIRVSimulator::kInvocationComponentZ);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(lhs_id)).WillOnce(ReturnRef(lhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
 
     PropagateMul(result_id, lhs_id, rhs_id);
 
@@ -725,9 +753,8 @@ TEST_F(RangePropagationTests, FixedZeroMultiplyRangeCanonicalizesDenseSingleton)
                 0,
                 0,
                 1,
-                true,
-                ::SPIRVSimulator::kInvocationComponentY,
-                ::SPIRVSimulator::kInvocationComponentZ);
+                true);
+    ExpectAffine(result_id, 0, { 0, 0, 0 }, { 0, 0, 0 });
 }
 
 TEST_F(RangePropagationTests, SingletonRangeMultiplyCanonicalizesDenseResult)
@@ -749,8 +776,8 @@ TEST_F(RangePropagationTests, SingletonRangeMultiplyCanonicalizesDenseResult)
              ::SPIRVSimulator::kInvocationComponentY);
     SetConstantLikeDefinition(rhs_id);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateMul(result_id, lhs_id, rhs_id);
 
@@ -791,6 +818,7 @@ TEST_F(RangePropagationTests, TwoNonSingletonRangesKeepCheckedEnvelopeNonDense)
     PropagateMul(result_id, lhs_id, rhs_id);
 
     ExpectRange(result_id, 4, 18, 1, false);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
 }
 
 TEST_F(RangePropagationTests, ResultTypeOverflowSkipsMultiplyRangePropagation)
@@ -850,8 +878,9 @@ TEST_F(RangePropagationTests, PixelIndexLinearizationCombinesMultiplyAndAdd)
     EXPECT_CALL(*this, GetTypeByResultId(row_offset_id))
         .WillOnce(ReturnRef(result_type));
     EXPECT_CALL(*this, GetTypeByResultId(width_id))
-        .WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(width_id)).WillOnce(ReturnRef(width_value));
+        .Times(2)
+        .WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(width_id)).Times(2).WillRepeatedly(ReturnRef(width_value));
     EXPECT_CALL(*this, GetTypeByResultId(result_id))
         .WillOnce(ReturnRef(result_type));
 
@@ -874,6 +903,7 @@ TEST_F(RangePropagationTests, PixelIndexLinearizationCombinesMultiplyAndAdd)
                     ::SPIRVSimulator::kInvocationComponentY,
                 ::SPIRVSimulator::kInvocationComponentX |
                     ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 0, { 1, 640, 0 }, { 1, 640, 0 });
 }
 
 TEST_F(RangePropagationTests, PixelIndexLinearizationAcceptsReversedAddOperands)
@@ -936,8 +966,9 @@ TEST_F(RangePropagationTests, SingletonRangeAddCanonicalizesDenseTranslation)
     EXPECT_CALL(*this, GetTypeByResultId(result_id))
         .WillOnce(ReturnRef(result_type));
     EXPECT_CALL(*this, GetTypeByResultId(rhs_id))
-        .WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+        .Times(2)
+        .WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateAdd(result_id, lhs_id, rhs_id);
 
@@ -948,6 +979,7 @@ TEST_F(RangePropagationTests, SingletonRangeAddCanonicalizesDenseTranslation)
                 true,
                 ::SPIRVSimulator::kInvocationComponentZ,
                 ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 12, { 0, 0, 9 }, { 0, 9, 0 });
 }
 
 TEST_F(RangePropagationTests, RangePlusFixedZeroPreservesDenseTranslation)
@@ -969,8 +1001,8 @@ TEST_F(RangePropagationTests, RangePlusFixedZeroPreservesDenseTranslation)
              ::SPIRVSimulator::kInvocationComponentY);
     SetConstantLikeDefinition(rhs_id);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateAdd(result_id, lhs_id, rhs_id);
 
@@ -1002,8 +1034,8 @@ TEST_F(RangePropagationTests, FixedZeroPlusRangePreservesDenseTranslation)
              ::SPIRVSimulator::kInvocationComponentY,
              ::SPIRVSimulator::kInvocationComponentZ);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(lhs_id)).WillOnce(ReturnRef(lhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
 
     PropagateAdd(result_id, lhs_id, rhs_id);
 
@@ -1044,7 +1076,16 @@ TEST_F(RangePropagationTests, PixelIndexLinearizationRejectsRowHoles)
 
     PropagateAdd(result_id, row_offset_id, x_id);
 
-    ExpectRange(result_id, 0, 307198, 1, false);
+    ExpectRange(result_id,
+                0,
+                307198,
+                1,
+                false,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 0, { 1, 640, 0 }, { 1, 640, 0 });
 }
 
 TEST_F(RangePropagationTests, PixelIndexLinearizationRejectsOverlappingAxes)
@@ -1075,7 +1116,14 @@ TEST_F(RangePropagationTests, PixelIndexLinearizationRejectsOverlappingAxes)
 
     PropagateAdd(result_id, row_offset_id, x_id);
 
-    ExpectRange(result_id, 0, 307199, 1, false);
+    ExpectRange(result_id,
+                0,
+                307199,
+                1,
+                false,
+                ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 0, { 0, 641, 0 }, { 0, 641, 0 });
 }
 
 TEST_F(RangePropagationTests, RangeMinusFixedScalarPreservesDenseTranslation)
@@ -1099,8 +1147,9 @@ TEST_F(RangePropagationTests, RangeMinusFixedScalarPreservesDenseTranslation)
     EXPECT_CALL(*this, GetTypeByResultId(result_id))
         .WillOnce(ReturnRef(result_type));
     EXPECT_CALL(*this, GetTypeByResultId(rhs_id))
-        .WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+        .Times(2)
+        .WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
@@ -1111,6 +1160,7 @@ TEST_F(RangePropagationTests, RangeMinusFixedScalarPreservesDenseTranslation)
                 true,
                 ::SPIRVSimulator::kInvocationComponentX,
                 ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 7, { 2, 0, 0 }, { 0, 2, 0 });
 }
 
 TEST_F(RangePropagationTests, RangeMinusFixedZeroPreservesDenseTranslation)
@@ -1132,8 +1182,8 @@ TEST_F(RangePropagationTests, RangeMinusFixedZeroPreservesDenseTranslation)
              ::SPIRVSimulator::kInvocationComponentY);
     SetConstantLikeDefinition(rhs_id);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
@@ -1165,8 +1215,8 @@ TEST_F(RangePropagationTests, FixedZeroMinusNonZeroRangeSkipsPropagation)
              ::SPIRVSimulator::kInvocationComponentY,
              ::SPIRVSimulator::kInvocationComponentZ);
     EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(lhs_id)).WillOnce(ReturnRef(lhs_value));
+    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
@@ -1194,8 +1244,9 @@ TEST_F(RangePropagationTests, FixedScalarMinusRangePreservesDenseReflection)
     EXPECT_CALL(*this, GetTypeByResultId(result_id))
         .WillOnce(ReturnRef(result_type));
     EXPECT_CALL(*this, GetTypeByResultId(lhs_id))
-        .WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(lhs_id)).WillOnce(ReturnRef(lhs_value));
+        .Times(2)
+        .WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
@@ -1206,6 +1257,7 @@ TEST_F(RangePropagationTests, FixedScalarMinusRangePreservesDenseReflection)
                 true,
                 ::SPIRVSimulator::kInvocationComponentY,
                 ::SPIRVSimulator::kInvocationComponentZ);
+    ExpectAffine(result_id, 17, { 0, -2, 0 }, { 0, 0, -2 });
 }
 
 TEST_F(RangePropagationTests, IndependentRangesNormalizeToDenseSubtraction)
@@ -1275,7 +1327,16 @@ TEST_F(RangePropagationTests, SubtractionNormalizationRejectsRowHoles)
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
-    ExpectRange(result_id, 0, 307198, 1, false);
+    ExpectRange(result_id,
+                0,
+                307198,
+                1,
+                false,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 638, { -1, 640, 0 }, { -1, 640, 0 });
 }
 
 TEST_F(RangePropagationTests, SubtractionNormalizationRejectsOverlappingAxes)
@@ -1306,7 +1367,14 @@ TEST_F(RangePropagationTests, SubtractionNormalizationRejectsOverlappingAxes)
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
-    ExpectRange(result_id, 0, 307199, 1, false);
+    ExpectRange(result_id,
+                0,
+                307199,
+                1,
+                false,
+                ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 639, { 0, 639, 0 }, { 0, 639, 0 });
 }
 
 TEST_F(RangePropagationTests, SubtractionUnderflowSkipsRangePropagation)
@@ -1330,12 +1398,559 @@ TEST_F(RangePropagationTests, SubtractionUnderflowSkipsRangePropagation)
     EXPECT_CALL(*this, GetTypeByResultId(result_id))
         .WillOnce(ReturnRef(result_type));
     EXPECT_CALL(*this, GetTypeByResultId(rhs_id))
-        .WillOnce(ReturnRef(result_type));
-    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+        .Times(2)
+        .WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
 
     PropagateSub(result_id, lhs_id, rhs_id);
 
     EXPECT_FALSE(GetMetadata(result_id).value_range.valid);
+}
+
+TEST_F(RangePropagationTests, AffineOverflowDoesNotInvalidateNumericRange)
+{
+    constexpr uint32_t result_id = 370;
+    constexpr uint32_t lhs_id = 371;
+    constexpr uint32_t rhs_id = 372;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetRange(lhs_id, 0, 0, 1, true, ::SPIRVSimulator::kInvocationComponentX);
+    SetRange(rhs_id, 0, 0, 1, true, ::SPIRVSimulator::kInvocationComponentX);
+    value_meta_[lhs_id].value_range.invocation_linearization.workgroup_coefficients[0] =
+        std::numeric_limits<int64_t>::max();
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id, 0, 0, 1, true);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
+}
+
+TEST_F(RangePropagationTests, FixedScalarPlusRangePropagatesCompleteAffine)
+{
+    constexpr uint32_t result_id = 380;
+    constexpr uint32_t lhs_id = 381;
+    constexpr uint32_t rhs_id = 382;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value lhs_value = uint64_t{ 5 };
+
+    SetConstantLikeDefinition(lhs_id);
+    SetRange(rhs_id,
+             4,
+             10,
+             2,
+             true,
+             ::SPIRVSimulator::kInvocationComponentY,
+             ::SPIRVSimulator::kInvocationComponentZ);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
+
+    PropagateAdd(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id,
+                9,
+                15,
+                2,
+                true,
+                ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentZ);
+    ExpectAffine(result_id, 9, { 0, 2, 0 }, { 0, 0, 2 });
+}
+
+TEST_F(RangePropagationTests, SingletonRangesNormalizeToInvariantMultiplyAffine)
+{
+    constexpr uint32_t result_id = 390;
+    constexpr uint32_t lhs_id = 391;
+    constexpr uint32_t rhs_id = 392;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetRange(lhs_id, 7, 7, 1, true);
+    SetRange(rhs_id, 3, 3, 1, true);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateMul(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id, 21, 21, 1, true);
+    ExpectAffine(result_id, 21, { 0, 0, 0 }, { 0, 0, 0 });
+}
+
+TEST_F(RangePropagationTests, DenseNumericRangeDoesNotRequireAffineOperandProof)
+{
+    constexpr uint32_t result_id = 400;
+    constexpr uint32_t lhs_id = 401;
+    constexpr uint32_t rhs_id = 402;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value rhs_value = uint64_t{ 5 };
+
+    SetRange(lhs_id, 4, 10, 2, true);
+    SetConstantLikeDefinition(rhs_id);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).WillOnce(ReturnRef(rhs_value));
+
+    PropagateAdd(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id, 9, 15, 2, true);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
+}
+
+TEST_F(RangePropagationTests, DenseNumericSubtractionDoesNotRequireAffineOperandProof)
+{
+    constexpr uint32_t result_id = 403;
+    constexpr uint32_t lhs_id = 404;
+    constexpr uint32_t rhs_id = 405;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value lhs_value = uint64_t{ 20 };
+
+    SetConstantLikeDefinition(lhs_id);
+    SetRange(rhs_id, 3, 9, 2, true);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(lhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(lhs_id)).Times(2).WillRepeatedly(ReturnRef(lhs_value));
+
+    PropagateSub(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id, 11, 17, 2, true);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
+}
+
+TEST_F(RangePropagationTests, AffineSubOverflowDoesNotInvalidateNumericRange)
+{
+    constexpr uint32_t result_id = 410;
+    constexpr uint32_t lhs_id = 411;
+    constexpr uint32_t rhs_id = 412;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetRange(lhs_id, 0, 0, 1, true, ::SPIRVSimulator::kInvocationComponentX);
+    SetRange(rhs_id, 0, 0, 1, true, ::SPIRVSimulator::kInvocationComponentX);
+    value_meta_[lhs_id].value_range.invocation_linearization.workgroup_coefficients[0] =
+        std::numeric_limits<int64_t>::min();
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateSub(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id, 0, 0, 1, true);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
+}
+
+TEST_F(RangePropagationTests, AffineMulOverflowDoesNotInvalidateNumericRange)
+{
+    constexpr uint32_t result_id = 420;
+    constexpr uint32_t lhs_id = 421;
+    constexpr uint32_t rhs_id = 422;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value rhs_value = uint64_t{ 2 };
+
+    SetRange(lhs_id, 0, 0, 1, true, ::SPIRVSimulator::kInvocationComponentX);
+    value_meta_[lhs_id].value_range.invocation_linearization.workgroup_coefficients[0] =
+        std::numeric_limits<int64_t>::max();
+    SetConstantLikeDefinition(rhs_id);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(rhs_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(rhs_id)).Times(2).WillRepeatedly(ReturnRef(rhs_value));
+
+    PropagateMul(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id, 0, 0, 1, true);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
+}
+
+TEST_F(RangePropagationTests, SingletonOutsideSignedDomainKeepsNumericRange)
+{
+    constexpr uint32_t result_id = 430;
+    constexpr uint32_t lhs_id = 431;
+    constexpr uint32_t rhs_id = 432;
+    constexpr uint64_t outside_signed_domain =
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + uint64_t{ 1 };
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(64, false);
+
+    SetRange(lhs_id, outside_signed_domain, outside_signed_domain, 1, true);
+    SetRange(rhs_id, 0, 0, 1, true);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, lhs_id, rhs_id);
+
+    ExpectRange(result_id,
+                outside_signed_domain,
+                outside_signed_domain,
+                1,
+                true);
+    EXPECT_FALSE(value_meta_[result_id].value_range.invocation_linearization.valid);
+}
+
+class AffineToRangePropagationTests : public RangePropagationTests
+{
+  protected:
+    void SetUp() override
+    {
+        SetDispatchDomain({ 2, 3, 1 }, { 4, 5, 1, true });
+    }
+
+    void SetDispatchDomain(
+        const ::SPIRVSimulator::ComputeDispatchDimensions& num_workgroups,
+        const ::SPIRVSimulator::ComputeLocalSize&          local_size)
+    {
+        simulation_data_storage_ = {};
+        simulation_data_storage_.has_compute_num_workgroups = true;
+        simulation_data_storage_.compute_num_workgroups = num_workgroups;
+        simulation_data_storage_.compute_local_size = local_size;
+        simulation_data_ = &simulation_data_storage_;
+        active_compute_local_size_ = local_size;
+    }
+
+    void SetAffineRange(
+        uint32_t                              result_id,
+        uint64_t                              min,
+        uint64_t                              max,
+        uint64_t                              stride,
+        bool                                  dense_range,
+        int64_t                               origin,
+        const std::array<int64_t, 3>&         workgroup_coefficients,
+        const std::array<int64_t, 3>&         local_coefficients)
+    {
+        SetRange(result_id, min, max, stride, dense_range);
+        ::SPIRVSimulator::InvocationLinearizationInfo& affine =
+            value_meta_[result_id].value_range.invocation_linearization;
+        affine = {};
+        affine.valid = true;
+        affine.value_at_dispatch_origin = origin;
+        affine.workgroup_coefficients = workgroup_coefficients;
+        affine.local_coefficients = local_coefficients;
+    }
+
+    ::SPIRVSimulator::SimulationData simulation_data_storage_;
+};
+
+TEST_F(AffineToRangePropagationTests, PixelIndexMinusItselfProducesDenseZero)
+{
+    constexpr uint32_t result_id = 440;
+    constexpr uint32_t pixel_index_id = 441;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(pixel_index_id,
+                   0,
+                   119,
+                   1,
+                   true,
+                   0,
+                   { 4, 40, 0 },
+                   { 1, 8, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateSub(result_id, pixel_index_id, pixel_index_id);
+
+    ExpectRange(result_id, 0, 0, 1, true);
+    ExpectAffine(result_id, 0, { 0, 0, 0 }, { 0, 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, LinearMinusRowBaseCancelsCorrelatedAxis)
+{
+    constexpr uint32_t result_id = 450;
+    constexpr uint32_t linear_id = 451;
+    constexpr uint32_t row_base_id = 452;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(linear_id, 0, 119, 1, true, 0, { 4, 40, 0 }, { 1, 8, 0 });
+    SetAffineRange(row_base_id, 0, 112, 8, true, 0, { 0, 40, 0 }, { 0, 8, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateSub(result_id, linear_id, row_base_id);
+
+    ExpectRange(result_id,
+                0,
+                7,
+                1,
+                true,
+                ::SPIRVSimulator::kInvocationComponentX,
+                ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id, 0, { 4, 0, 0 }, { 1, 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, GlobalXMinusGroupBaseProducesRepeatedLocalXRange)
+{
+    constexpr uint32_t result_id = 460;
+    constexpr uint32_t global_x_id = 461;
+    constexpr uint32_t group_base_id = 462;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    SetAffineRange(group_base_id, 0, 4, 4, true, 0, { 4, 0, 0 }, { 0, 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateSub(result_id, global_x_id, group_base_id);
+
+    ExpectRange(result_id,
+                0,
+                3,
+                1,
+                true,
+                0,
+                ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id, 0, { 0, 0, 0 }, { 1, 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, LinearPlusRowBasePublishesExactNonDenseRange)
+{
+    constexpr uint32_t result_id = 470;
+    constexpr uint32_t linear_id = 471;
+    constexpr uint32_t row_base_id = 472;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(linear_id, 0, 119, 1, true, 0, { 4, 40, 0 }, { 1, 8, 0 });
+    SetAffineRange(row_base_id, 0, 112, 8, true, 0, { 0, 40, 0 }, { 0, 8, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, linear_id, row_base_id);
+
+    ExpectRange(result_id,
+                0,
+                231,
+                1,
+                false,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 0, { 4, 80, 0 }, { 1, 16, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, SameAxisAddProducesDenseStrideTwoRange)
+{
+    constexpr uint32_t result_id = 480;
+    constexpr uint32_t global_x_id = 481;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, global_x_id, global_x_id);
+
+    ExpectRange(result_id,
+                0,
+                14,
+                2,
+                true,
+                ::SPIRVSimulator::kInvocationComponentX,
+                ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id, 0, { 8, 0, 0 }, { 2, 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, NegativeCorrelatedResultDoesNotPublishRange)
+{
+    constexpr uint32_t result_id = 490;
+    constexpr uint32_t group_base_id = 491;
+    constexpr uint32_t global_x_id = 492;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(group_base_id, 0, 4, 4, true, 0, { 4, 0, 0 }, { 0, 0, 0 });
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateSub(result_id, group_base_id, global_x_id);
+
+    EXPECT_FALSE(GetMetadata(result_id).value_range.valid);
+}
+
+TEST_F(AffineToRangePropagationTests, ResultTypeOverflowDoesNotPublishRange)
+{
+    constexpr uint32_t result_id = 500;
+    constexpr uint32_t operand_id = 501;
+    constexpr uint64_t u32_max = std::numeric_limits<uint32_t>::max();
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetDispatchDomain({ 1, 1, 1 }, { 2, 1, 1, true });
+    SetAffineRange(operand_id,
+                   0,
+                   u32_max,
+                   u32_max,
+                   true,
+                   0,
+                   { 0, 0, 0 },
+                   { static_cast<int64_t>(u32_max), 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, operand_id, operand_id);
+
+    EXPECT_FALSE(GetMetadata(result_id).value_range.valid);
+}
+
+TEST_F(AffineToRangePropagationTests, SignedBoundsOverflowFallsBackToUnsignedNumericRange)
+{
+    constexpr uint32_t result_id = 510;
+    constexpr uint32_t operand_id = 511;
+    constexpr uint64_t coefficient =
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / 2;
+    constexpr uint64_t operand_max = coefficient * 2;
+    constexpr uint64_t result_max = operand_max * 2;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(64, false);
+
+    SetDispatchDomain({ 1, 1, 1 }, { 3, 1, 1, true });
+    SetAffineRange(operand_id,
+                   0,
+                   operand_max,
+                   coefficient,
+                   true,
+                   0,
+                   { 0, 0, 0 },
+                   { static_cast<int64_t>(coefficient), 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, operand_id, operand_id);
+
+    ExpectRange(result_id,
+                0,
+                result_max,
+                1,
+                false,
+                0,
+                ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id,
+                 0,
+                 { 0, 0, 0 },
+                 { static_cast<int64_t>(coefficient * 2), 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, IndependentAxesAddUsesAffineFirst)
+{
+    constexpr uint32_t result_id = 520;
+    constexpr uint32_t row_base_id = 521;
+    constexpr uint32_t global_x_id = 522;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(row_base_id, 0, 112, 8, true, 0, { 0, 40, 0 }, { 0, 8, 0 });
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateAdd(result_id, row_base_id, global_x_id);
+
+    ExpectRange(result_id,
+                0,
+                119,
+                1,
+                true,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 0, { 4, 40, 0 }, { 1, 8, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, FixedTranslationUsesAffineFirst)
+{
+    constexpr uint32_t result_id = 530;
+    constexpr uint32_t global_x_id = 531;
+    constexpr uint32_t fixed_id = 532;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value fixed_value = uint64_t{ 5 };
+
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    SetConstantLikeDefinition(fixed_id);
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(fixed_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(fixed_id)).Times(2).WillRepeatedly(ReturnRef(fixed_value));
+
+    PropagateAdd(result_id, global_x_id, fixed_id);
+
+    ExpectRange(result_id,
+                5,
+                12,
+                1,
+                true,
+                ::SPIRVSimulator::kInvocationComponentX,
+                ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id, 5, { 4, 0, 0 }, { 1, 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, FixedReflectionUsesAffineFirst)
+{
+    constexpr uint32_t result_id = 540;
+    constexpr uint32_t fixed_id = 541;
+    constexpr uint32_t global_x_id = 542;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+    ::SPIRVSimulator::Value fixed_value = uint64_t{ 7 };
+
+    SetConstantLikeDefinition(fixed_id);
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetTypeByResultId(fixed_id)).Times(2).WillRepeatedly(ReturnRef(result_type));
+    EXPECT_CALL(*this, GetValue(fixed_id)).Times(2).WillRepeatedly(ReturnRef(fixed_value));
+
+    PropagateSub(result_id, fixed_id, global_x_id);
+
+    ExpectRange(result_id,
+                0,
+                7,
+                1,
+                true,
+                ::SPIRVSimulator::kInvocationComponentX,
+                ::SPIRVSimulator::kInvocationComponentX);
+    ExpectAffine(result_id, 7, { -4, 0, 0 }, { -1, 0, 0 });
+}
+
+TEST_F(AffineToRangePropagationTests, IndependentSubtractionUsesAffineFirst)
+{
+    constexpr uint32_t result_id = 550;
+    constexpr uint32_t row_end_id = 551;
+    constexpr uint32_t global_x_id = 552;
+
+    const ::SPIRVSimulator::Type result_type =
+        ::SPIRVSimulator::Type::Int(32, false);
+
+    SetAffineRange(row_end_id, 7, 119, 8, true, 7, { 0, 40, 0 }, { 0, 8, 0 });
+    SetAffineRange(global_x_id, 0, 7, 1, true, 0, { 4, 0, 0 }, { 1, 0, 0 });
+    EXPECT_CALL(*this, GetTypeByResultId(result_id)).WillOnce(ReturnRef(result_type));
+
+    PropagateSub(result_id, row_end_id, global_x_id);
+
+    ExpectRange(result_id,
+                0,
+                119,
+                1,
+                true,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY,
+                ::SPIRVSimulator::kInvocationComponentX |
+                    ::SPIRVSimulator::kInvocationComponentY);
+    ExpectAffine(result_id, 7, { -4, 40, 0 }, { -1, 8, 0 });
 }
 
 class ElementwiseIntegerInvocationDependenceTests : public SPIRVSimulatorMockBase, public TestWithParam<spv::Op>
@@ -1350,6 +1965,7 @@ class ElementwiseIntegerInvocationDependenceTests : public SPIRVSimulatorMockBas
 
     void SetUp() override
     {
+        simulation_data_     = nullptr;
         memory_flag_tracker_ = nullptr;
         verbose_             = false;
         values_.resize(kNextResultId + 1);
@@ -1368,6 +1984,17 @@ class ElementwiseIntegerInvocationDependenceTests : public SPIRVSimulatorMockBas
         EXPECT_CALL(*this, TransferFlags(A<uint32_t>(), A<uint32_t>())).Times(AnyNumber());
         EXPECT_CALL(*this, TransferFlags(A<uint32_t>(), A<uint64_t>())).Times(AnyNumber());
         EXPECT_CALL(*this, HasFlags(_, _)).WillRepeatedly(Return(false));
+    }
+
+    void SetDispatchDomain(
+        const ::SPIRVSimulator::ComputeDispatchDimensions& num_workgroups,
+        const ::SPIRVSimulator::ComputeLocalSize&          local_size)
+    {
+        simulation_data_storage_ = {};
+        simulation_data_storage_.has_compute_num_workgroups = true;
+        simulation_data_storage_.compute_num_workgroups = num_workgroups;
+        simulation_data_ = &simulation_data_storage_;
+        active_compute_local_size_ = local_size;
     }
 
     void SetTypedValue(uint32_t id, uint32_t type_id, ::SPIRVSimulator::Value value)
@@ -1419,6 +2046,7 @@ class ElementwiseIntegerInvocationDependenceTests : public SPIRVSimulatorMockBas
     }
 
     ::SPIRVSimulator::UnorderedMap<uint32_t, uint32_t> value_type_ids_;
+    ::SPIRVSimulator::SimulationData                   simulation_data_storage_;
 };
 
 TEST_P(ElementwiseIntegerInvocationDependenceTests, ScalarCombinesAllInvocationDependenceStates)
@@ -1511,6 +2139,8 @@ TEST_P(ElementwiseIntegerInvocationDependenceTests, MissingVectorComponentProofF
 
 TEST_P(ElementwiseIntegerInvocationDependenceTests, InvocationDependenceCoexistsWithRangeMetadata)
 {
+    SetDispatchDomain({ 2, 1, 1 }, { 1, 2, 1, true });
+
     SetTypedValue(kLhsId, CommonTypes::u64, uint64_t{ 4 });
     SetTypedValue(kRhsId, CommonTypes::u64, uint64_t{ 2 });
     SetTypedValue(kResultId, CommonTypes::u64, std::monostate{});
@@ -1522,8 +2152,10 @@ TEST_P(ElementwiseIntegerInvocationDependenceTests, InvocationDependenceCoexists
     lhs_range.min                                                         = 4;
     lhs_range.max                                                         = 7;
     lhs_range.stride                                                      = 1;
-    lhs_range.invocation_linearization.workgroup_id_component_mask        = ::SPIRVSimulator::kInvocationComponentX;
-    lhs_range.invocation_linearization.local_invocation_id_component_mask = ::SPIRVSimulator::kInvocationComponentY;
+    lhs_range.invocation_linearization.valid                              = true;
+    lhs_range.invocation_linearization.value_at_dispatch_origin           = 4;
+    lhs_range.invocation_linearization.workgroup_coefficients             = { 2, 0, 0 };
+    lhs_range.invocation_linearization.local_coefficients                 = { 0, 1, 0 };
     value_meta_[kLhsId].invocation_dependence                             = Dependence::Varying;
     value_meta_[kRhsId].invocation_dependence                             = Dependence::Invariant;
 
@@ -1533,9 +2165,9 @@ TEST_P(ElementwiseIntegerInvocationDependenceTests, InvocationDependenceCoexists
     ASSERT_TRUE(result_meta.value_range.valid);
     EXPECT_TRUE(result_meta.value_range.thread_dependent);
     EXPECT_TRUE(result_meta.value_range.dense_range);
-    EXPECT_EQ(result_meta.value_range.invocation_linearization.workgroup_id_component_mask,
+    EXPECT_EQ(TestWorkgroupAxisMask(result_meta.value_range.invocation_linearization),
               ::SPIRVSimulator::kInvocationComponentX);
-    EXPECT_EQ(result_meta.value_range.invocation_linearization.local_invocation_id_component_mask,
+    EXPECT_EQ(TestLocalAxisMask(result_meta.value_range.invocation_linearization),
               ::SPIRVSimulator::kInvocationComponentY);
     EXPECT_EQ(result_meta.invocation_dependence, Dependence::Varying);
 
